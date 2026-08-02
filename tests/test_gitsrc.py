@@ -150,14 +150,14 @@ class TestCollisions(unittest.TestCase):
     def test_renames_appear_as_new_path_only(self):
         runner = ReplayRunner({
             "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
-            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "old.ts\0new.ts\0", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "new.ts\0", "stderr": ""},
             "git diff --name-only -z HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
             "git ls-files --others --exclude-standard -z": {"returncode": 0, "stdout": "", "stderr": ""},
         })
-        # Renames are tracked as both old and new by merge-base diff, but git diff --name-only -z
-        # returns only the new path when a rename is detected
+        # Git's --name-only applies rename detection by default and reports only the new path.
         result = touched_files(runner, "/t/one", "main")
-        self.assertEqual(result, {"old.ts", "new.ts"})
+        self.assertIn("new.ts", result)
+        self.assertNotIn("old.ts", result)
 
     def test_paths_with_spaces_and_non_ascii(self):
         runner = ReplayRunner({
