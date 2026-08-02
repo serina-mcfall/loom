@@ -109,15 +109,17 @@ class TestCollisions(unittest.TestCase):
     def _runner(self):
         return ReplayRunner({
             "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
-            "git diff --name-only base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
-            "git status --porcelain=v1": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git diff --name-only -z HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git ls-files --others --exclude-standard -z": {"returncode": 0, "stdout": "", "stderr": ""},
         })
 
     def test_two_trees_touching_the_same_files_collide(self):
         runner = ReplayRunner({
             "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
-            "git diff --name-only base1 HEAD": {"returncode": 0, "stdout": "src/a.ts\n", "stderr": ""},
-            "git status --porcelain=v1": {"returncode": 0, "stdout": " M src/b.ts\n", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "src/a.ts\0", "stderr": ""},
+            "git diff --name-only -z HEAD": {"returncode": 0, "stdout": "src/b.ts\0", "stderr": ""},
+            "git ls-files --others --exclude-standard -z": {"returncode": 0, "stdout": "", "stderr": ""},
         })
         trees = [Worktree("/t/one", "one", "one", "h1"), Worktree("/t/two", "two", "two", "h2")]
         # ReplayRunner keys on argv alone, so both trees replay the same recording and
@@ -129,8 +131,9 @@ class TestCollisions(unittest.TestCase):
     def test_single_tree_never_collides_with_itself(self):
         runner = ReplayRunner({
             "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
-            "git diff --name-only base1 HEAD": {"returncode": 0, "stdout": "src/a.ts\n", "stderr": ""},
-            "git status --porcelain=v1": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "src/a.ts\0", "stderr": ""},
+            "git diff --name-only -z HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git ls-files --others --exclude-standard -z": {"returncode": 0, "stdout": "", "stderr": ""},
         })
         trees = [Worktree("/t/one", "one", "one", "h1")]
         self.assertEqual(collisions(runner, trees, "main"), [])
@@ -138,10 +141,33 @@ class TestCollisions(unittest.TestCase):
     def test_touched_files_unions_committed_and_uncommitted(self):
         runner = ReplayRunner({
             "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
-            "git diff --name-only base1 HEAD": {"returncode": 0, "stdout": "src/a.ts\n", "stderr": ""},
-            "git status --porcelain=v1": {"returncode": 0, "stdout": "?? src/new.ts\n", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "src/a.ts\0", "stderr": ""},
+            "git diff --name-only -z HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git ls-files --others --exclude-standard -z": {"returncode": 0, "stdout": "src/new.ts\0", "stderr": ""},
         })
         self.assertEqual(touched_files(runner, "/t/one", "main"), {"src/a.ts", "src/new.ts"})
+
+    def test_renames_appear_as_new_path_only(self):
+        runner = ReplayRunner({
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "old.ts\0new.ts\0", "stderr": ""},
+            "git diff --name-only -z HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git ls-files --others --exclude-standard -z": {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+        # Renames are tracked as both old and new by merge-base diff, but git diff --name-only -z
+        # returns only the new path when a rename is detected
+        result = touched_files(runner, "/t/one", "main")
+        self.assertEqual(result, {"old.ts", "new.ts"})
+
+    def test_paths_with_spaces_and_non_ascii(self):
+        runner = ReplayRunner({
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "spaced name.ts\0café.ts\0", "stderr": ""},
+            "git diff --name-only -z HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git ls-files --others --exclude-standard -z": {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+        result = touched_files(runner, "/t/one", "main")
+        self.assertEqual(result, {"spaced name.ts", "café.ts"})
 
 
 if __name__ == "__main__":

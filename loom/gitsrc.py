@@ -146,14 +146,17 @@ def touched_files(runner: Runner, path: str, base: str) -> set[str]:
     files: set[str] = set()
     mb = runner.run(["git", "merge-base", base, "HEAD"], cwd=path)
     if mb.ok and mb.stdout.strip():
-        d = runner.run(["git", "diff", "--name-only", mb.stdout.strip(), "HEAD"], cwd=path)
+        d = runner.run(["git", "diff", "--name-only", "-z", mb.stdout.strip(), "HEAD"], cwd=path)
         if d.ok:
-            files.update(f for f in d.stdout.splitlines() if f)
-    s = runner.run(["git", "status", "--porcelain=v1"], cwd=path)
-    if s.ok:
-        for line in s.stdout.splitlines():
-            if len(line) > 3:
-                files.add(line[3:].strip())
+            files.update(f for f in d.stdout.split("\0") if f)
+    # Tracked changes (staged and unstaged)
+    t = runner.run(["git", "diff", "--name-only", "-z", "HEAD"], cwd=path)
+    if t.ok:
+        files.update(f for f in t.stdout.split("\0") if f)
+    # Untracked files
+    u = runner.run(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=path)
+    if u.ok:
+        files.update(f for f in u.stdout.split("\0") if f)
     return files
 
 
