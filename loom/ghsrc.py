@@ -13,6 +13,7 @@ HTTPS_RE = re.compile(r"^https://github\.com/(?P<repo>[^/]+/[^/]+?)(?:\.git)?/?$
 PR_FIELDS = "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,updatedAt"
 ISSUE_FIELDS = "number,title,labels,assignees"
 FAILING = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
+GOOD = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
 
 @dataclass
@@ -56,17 +57,23 @@ def origin_repo(runner: Runner, root: str) -> str | None:
 
 
 def derive_checks(rollup: list[dict]) -> str:
-    """No checks configured is 'none', which is not the same as 'passing'."""
+    """No checks configured is 'none', which is not the same as 'passing'.
+
+    Uses a whitelist for passing states so unknown states degrade to pending,
+    not passing — a tool that reports unknown states as green lies in the one
+    direction that matters.
+    """
     if not rollup:
         return "none"
-    states = []
-    for c in rollup:
-        states.append((c.get("conclusion") or c.get("state") or "").upper())
-    if any(s in FAILING for s in states):
+    tokens = [(c.get("conclusion") or c.get("state") or "").upper() for c in rollup]
+    if any(s in FAILING for s in tokens):
         return "failing"
     if any(c.get("status") not in (None, "COMPLETED") for c in rollup):
         return "pending"
-    return "passing"
+    # Passing only if every token is known-good; unknown states mean pending.
+    if all(t in GOOD for t in tokens):
+        return "passing"
+    return "pending"
 
 
 def _fetch_json(runner: Runner, root: str, argv: list[str], name: str):

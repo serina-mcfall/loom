@@ -45,6 +45,26 @@ class TestDeriveChecks(unittest.TestCase):
     def test_all_successful_is_passing(self):
         self.assertEqual(derive_checks([{"status": "COMPLETED", "conclusion": "SUCCESS"}]), "passing")
 
+    def test_legacy_commit_status_pending_is_pending(self):
+        # Legacy commit-status contexts have state but no status key
+        self.assertEqual(derive_checks([{"state": "PENDING", "context": "ci/x"}]), "pending")
+
+    def test_legacy_commit_status_expected_is_pending(self):
+        # Unknown legacy states should degrade to pending, not pass
+        self.assertEqual(derive_checks([{"state": "EXPECTED", "context": "ci/x"}]), "pending")
+
+    def test_check_run_stale_is_pending(self):
+        # Unknown conclusion states should degrade to pending
+        self.assertEqual(derive_checks([{"status": "COMPLETED", "conclusion": "STALE"}]), "pending")
+
+    def test_invented_future_state_is_pending(self):
+        # New states not in the whitelist must not report as passing
+        self.assertEqual(derive_checks([{"status": "COMPLETED", "conclusion": "SOME_FUTURE_STATE"}]), "pending")
+
+    def test_skipped_is_passing(self):
+        # SKIPPED is in the whitelist and should pass
+        self.assertEqual(derive_checks([{"status": "COMPLETED", "conclusion": "SKIPPED"}]), "passing")
+
 
 class TestFetchPrs(unittest.TestCase):
     def test_empty_review_decision_becomes_none(self):
