@@ -101,15 +101,15 @@ The interface between every unit. Versioned, because two consumers parse it.
   "generated_at": "2026-08-03T07:45:00+12:00",
   "duration_ms": 340,
   "repos": [{
-    "name": "worktrees-challenge",
-    "root": "/home/serina/Launchpad/worktrees-challenge",
-    "issue_repo": "serina-mcfall/worktrees-challenge",
+    "name": "example-repo",
+    "root": "/home/you/Projects/example-repo",
+    "issue_repo": "you/example-repo",
     "default_branch": "main",
 
     "worktrees": [{
-      "dir": "slice10-lineup",
-      "path": "/home/serina/Launchpad/meridian-worktrees/slice10-lineup",
-      "branch": "fix/lineup-first-load-silent",
+      "dir": "feature-b",
+      "path": "/home/you/Projects/example-worktrees/feature-b",
+      "branch": "fix/feature-b-silent-load",
       "head": "3f0d19c",
       "ahead": 3,
       "behind": 1,
@@ -120,26 +120,26 @@ The interface between every unit. Versioned, because two consumers parse it.
         "source": "hook",
         "since": "2026-08-03T07:41:00+12:00",
         "pid": 2176024,
-        "tmux_window": "wm-slice10-lineup"
+        "tmux_window": "wm-feature-b"
       },
       "pr": 58
     }],
 
     "prs": [{
-      "number": 58, "title": "…", "branch": "fix/lineup-first-load-silent",
+      "number": 58, "title": "…", "branch": "fix/feature-b-silent-load",
       "draft": false, "review_decision": null, "checks": "passing",
-      "worktree": "slice10-lineup", "updated_at": "…"
+      "worktree": "feature-b", "updated_at": "…"
     }],
 
     "issues": [{ "number": 55, "title": "…", "labels": ["bug","client"], "assignees": [] }],
 
-    "collisions": [{ "file": "src/clues/board.ts", "branches": ["slice6-batch","slice7-cluecard"] }],
+    "collisions": [{ "file": "src/board.ts", "branches": ["feature-a","feature-c"] }],
 
-    "commits": [{ "when": "…", "branch": "slice7-cluecard", "sha": "161948b",
+    "commits": [{ "when": "…", "branch": "feature-c", "sha": "161948b",
                   "subject": "…", "files": 2, "add": 64, "del": 1 }],
 
     "flags": [{ "kind": "orphan_pr", "severity": "warn", "subject": "PR #56",
-                "detail": "branch slice6-hop-line-null has no worktree" }],
+                "detail": "branch fix/feature-a-null-case has no worktree" }],
 
     "sources": [{ "name": "gh", "ok": false, "error": "HTTP 403 rate limited",
                   "last_good": "2026-08-03T07:41:00+12:00" }]
@@ -164,18 +164,24 @@ The interface between every unit. Versioned, because two consumers parse it.
 decision in the design.
 
 It comes from an observed failure. On 2026-08-03, `gh issue list` run inside
-`worktrees-challenge` returned **empty with exit code 0**, because no default repository
-is set and `gh` resolved to the `launchpad-26` upstream rather than the `serina-mcfall`
-origin. Four issues were open at the time. A dashboard that trusted that output would
-have displayed "0 issues" in confident green.
+a repository with both an `origin` and an `upstream` remote returned **empty with exit
+code 0**, because no default repository was set and `gh` resolved to the `upstream` fork
+parent rather than the `origin` where the issues actually live. Four issues were open at
+the time. A dashboard that trusted that output would have displayed "0 issues" in
+confident green.
 
 Therefore:
 
 1. Every panel is backed by a named source. If the source failed, the panel renders
    `PRs unavailable — gh: HTTP 403, last good 4m ago`. It never renders an empty list.
-2. `issue_repo` is derived from the `origin` remote URL and passed to **every** `gh`
-   invocation as `-R`. `gh` is never allowed to resolve the repository itself.
+2. `issue_repo` is derived from the `origin` remote URL and passed explicitly to **every**
+   `gh` call. `gh` is never allowed to resolve the repository itself.
 3. An empty panel and a broken panel must look different at a glance, always.
+
+**The flag is not uniform, and assuming it is will break the build.** `gh pr list` and
+`gh issue list` take `-R owner/repo`; `gh repo view` takes the repository as a positional
+argument and rejects `-R` outright. Every `gh` command Loom uses must have its repo-pinning
+form confirmed against `--help` before it is relied on.
 
 ### Stale state is caught, not trusted
 
@@ -186,7 +192,7 @@ the state is `stale` — never `working`.
 ## Panels
 
 ```
-┌─ LOOM ─ worktrees-challenge ────────── 6 trees · 4 PRs · 4 issues ─ ●live 3s ┐
+┌─ LOOM ─ example-repo ───────────────── 6 trees · 4 PRs · 4 issues ─ ●live 3s ┐
 │  NEEDS YOU                                                                   │
 │  WORKTREES        │  COLLISIONS       │  TICKER                              │
 │  PRS & ISSUES     │  LOOSE ENDS                                              │
@@ -261,7 +267,7 @@ Requirements, not aspirations. Each is verifiable.
 - Status is **never** colour alone: a glyph and a word — `⛔ waiting`, `▶ working`,
   `○ idle`, `✕ stale`, `? unknown`.
 - The collisions matrix is a real `<table>` with row and column headers. Every cell
-  carries text, so a screen reader hears "board.ts, slice7, collides" rather than silence.
+  carries text, so a screen reader hears "board.ts, feature-c, collides" rather than silence.
 - The "needs you" strip is `aria-live="polite"`, **debounced to ~15 seconds**. A 2-second
   live region would make a screen reader unusable.
 - Every collapse control is a real `<button>`, keyboard reachable, `:focus-visible`
@@ -283,7 +289,7 @@ measured value ever occur.
 | "waiting on you" row | Hook state with no waiting session — row absent | A `Notification` state file — row present |
 | Stale agent | Live pid with `working` — reports `working` | Dead pid with `working` — reports `stale` |
 | Collision detection | Two worktrees editing different files — no collision | Two worktrees editing one file — collision |
-| `-R` pinning | — | Every recorded `gh` command line contains `-R <issue_repo>` |
+| Repo pinning | — | Every recorded `gh` command line names the resolved `issue_repo` explicitly |
 
 ## Out of scope for v1
 
@@ -306,11 +312,15 @@ Deferred deliberately, not forgotten:
 
 ## Grounding
 
-Observed on 2026-08-03 in `worktrees-challenge`, and used to shape this design:
+Observed on 2026-08-03 in a private repository running a live agent fleet, and used to
+shape this design. Specifics are generalised here because that repository is private.
 
-- 6 worktrees under `~/Launchpad/meridian-worktrees/`, all with uncommitted changes
-- 6 live `claude` processes, one per worktree, in tmux session `worktrees`
-- 4 open PRs and 4 open issues on `serina-mcfall/worktrees-challenge`
-- 2 PRs with no corresponding worktree: #56 `slice6-hop-line-null`, #57 `fix/days-after-retry`
-- 1 stale directory: `meridian-worktrees/wave1-apiclient`, no longer a git worktree
-- `gh` resolving to the wrong remote and returning empty results with exit code 0
+- 6 worktrees in a sibling directory, every one with uncommitted changes
+- 6 live `claude` processes, one per worktree, in a single tmux session
+- 4 open pull requests and 4 open issues
+- 2 pull requests whose branch had no corresponding worktree
+- 1 directory left behind that was no longer a git worktree
+- `gh` resolving to the wrong remote and returning empty results with **exit code 0**
+
+That last observation is the origin of the error-honesty requirement above, and it is the
+single most load-bearing fact in this design.
