@@ -1,0 +1,4 @@
+.repoql/
+__pycache__/
+*.pyc
+.venv/
