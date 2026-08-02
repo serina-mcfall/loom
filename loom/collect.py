@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -23,7 +23,8 @@ def _now_iso() -> str:
 
 def find_flags(trees: list[gitsrc.Worktree], prs: list[ghsrc.PullRequest],
                worktree_parent: str | None,
-               listdir: Callable[[str], list[str]] = os.listdir) -> list[dict]:
+               listdir: Callable[[str], list[str]] = os.listdir,
+               isdir: Callable[[str], bool] = os.path.isdir) -> list[dict]:
     flags: list[dict] = []
     branches = {t.branch for t in trees if t.branch}
 
@@ -41,6 +42,15 @@ def find_flags(trees: list[gitsrc.Worktree], prs: list[ghsrc.PullRequest],
             entries = []
         for name in sorted(entries):
             if name.startswith(".") or name in known:
+                continue
+            full = os.path.join(worktree_parent, name)
+            if not isdir(full):
+                continue
+            try:
+                inner = listdir(full)
+            except OSError:
+                inner = []
+            if ".git" in inner:
                 continue
             flags.append({"kind": "stale_dir", "severity": "warn", "subject": name,
                           "detail": f"{name} is not a git worktree"})
@@ -67,12 +77,26 @@ def reap(state_dir: str, older_than_hours: int = 24,
             continue
         try:
             when = datetime.fromisoformat(record.get("since", ""))
+            if when.tzinfo is None:
+                continue
+            if (now - when).total_seconds() > older_than_hours * 3600:
+                f.unlink(missing_ok=True)
+                removed += 1
         except (TypeError, ValueError):
             continue
-        if (now - when).total_seconds() > older_than_hours * 3600:
-            f.unlink(missing_ok=True)
-            removed += 1
     return removed
+
+
+def _last_commit(runner: Runner, path: str) -> dict | None:
+    """The worktree's own HEAD commit, not the repo-wide log used for the ticker."""
+    r = runner.run(["git", "log", "-1", "--format=%h%x1f%aI%x1f%s"], cwd=path)
+    if not r.ok or not r.stdout.strip():
+        return None
+    parts = r.stdout.strip().split("\x1f")
+    if len(parts) != 3:
+        return None
+    sha, when, subject = parts
+    return {"sha": sha, "when": when, "subject": subject}
 
 
 def collect(runner: Runner, root: str,
@@ -93,12 +117,16 @@ def collect(runner: Runner, root: str,
     if repo:
         prs, pr_status = ghsrc.fetch_prs(runner, root, repo)
         issues, issue_status = ghsrc.fetch_issues(runner, root, repo)
+        pr_status = replace(pr_status, name="gh:prs")
+        issue_status = replace(issue_status, name="gh:issues")
     else:
         prs, issues = [], []
-        pr_status = issue_status = ghsrc.SourceStatus(
-            "gh", False, "could not resolve a github repo from the origin remote")
+        no_repo = "could not resolve a github repo from the origin remote"
+        pr_status = ghsrc.SourceStatus("gh:prs", False, no_repo)
+        issue_status = ghsrc.SourceStatus("gh:issues", False, no_repo)
 
     by_branch = {p.branch: p.number for p in prs}
+    tree_by_branch = {t.branch: t.dir for t in trees if t.branch}
     tree_dicts = []
     for t in trees:
         a = agents_mod.agent_for(t.path, sessions, panes)
@@ -106,7 +134,14 @@ def collect(runner: Runner, root: str,
             "dir": t.dir, "path": t.path, "branch": t.branch, "head": t.head,
             "ahead": t.ahead, "behind": t.behind, "dirty": asdict(t.dirty),
             "agent": asdict(a), "pr": by_branch.get(t.branch or ""),
+            "last_commit": _last_commit(runner, t.path),
         })
+
+    pr_dicts = []
+    for p in prs:
+        d = asdict(p)
+        d["worktree"] = tree_by_branch.get(p.branch)
+        pr_dicts.append(d)
 
     parent = _worktree_parent(trees, root)
     return {
@@ -119,7 +154,7 @@ def collect(runner: Runner, root: str,
             "issue_repo": repo,
             "default_branch": base,
             "worktrees": tree_dicts,
-            "prs": [asdict(p) for p in prs],
+            "prs": pr_dicts,
             "issues": [asdict(i) for i in issues],
             "collisions": gitsrc.collisions(runner, trees, base),
             "commits": [asdict(c) for c in gitsrc.recent_commits(runner, root)],
@@ -127,8 +162,8 @@ def collect(runner: Runner, root: str,
             "sources": [
                 asdict(ghsrc.SourceStatus("git", True)),
                 asdict(pr_status),
-                asdict(ghsrc.SourceStatus("hooks", True) if sessions
-                       else ghsrc.SourceStatus("hooks", False, "no session state files found")),
+                asdict(issue_status),
+                asdict(ghsrc.SourceStatus("hooks", True)),
                 asdict(ghsrc.SourceStatus("tmux", bool(panes),
                                           None if panes else "no tmux server")),
             ],
