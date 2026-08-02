@@ -219,7 +219,7 @@ The "needs you" strip is ordered by how much a human is the bottleneck.
 | # | Condition | Rationale |
 |---|---|---|
 | 1 | Agent blocked on a permission prompt | Burning wall-clock doing nothing; only a human unblocks it |
-| 2 | PR with passing checks and no review | Finished work, parked; only a human moves it |
+| 2 | PR with no review, and checks **not failing** | Finished work, parked; only a human moves it |
 | 3 | Two dirty worktrees touching one file | A conflict not yet paid for; cheapest to act now |
 | 4 | PR with failing checks | An agent can fix it, but a human may want to redirect |
 | 5 | Agent stopped with uncommitted work | Work at risk of being lost |
@@ -309,6 +309,44 @@ Deferred deliberately, not forgotten:
 2. `loom serve` is a foreground process. Closing its tmux pane stops it.
 3. The snapshot schema is versioned because two consumers parse it and would otherwise
    drift silently.
+
+## Corrections made during execution
+
+Recorded rather than silently rewritten, because a spec that quietly matches whatever got
+built teaches nobody anything. Each was forced by evidence, and each is dated 2026-08-03.
+
+**1. Rank 2 asked for the impossible.** It read "PR with passing checks and no review".
+Observed on the watched repository: every open PR has `statusCheckRollup: []` because no CI
+is configured, so `checks` is `"none"` and a condition requiring `"passing"` could never
+fire once. The second-most-important alert in the product was unreachable. Corrected above
+to "no review, and checks not failing", where `"none"` counts as not failing.
+
+**2. One `gh` source became two.** The `sources` example below shows a single `gh` entry.
+PRs and issues are two independent `gh` calls that can fail independently — the shipped
+snapshot therefore carries `gh:prs` and `gh:issues` separately. A single entry meant a
+failed issue fetch could hide behind a successful PR fetch, which is this document's
+founding incident reproduced inside the mechanism written to prevent it.
+
+**3. `hooks` is never a failed source.** An empty state directory is the expected condition
+before hooks are installed, not a breakage. Reporting it as `ok: false` was the same
+empty-versus-broken confusion the `sources` list exists to prevent. How many agents
+actually have hook data is derivable from each worktree's `agent.source`.
+
+**4. The field is `review`, not `review_decision`.** The snapshot example below uses
+`review_decision`; the implementation and both its consumers use `review`. The shorter name
+won because it was already threaded through the code when the drift was noticed. Named here
+so the example is not read as authoritative.
+
+**5. Check states are whitelisted, not blacklisted.** Not in the original text, but it
+belongs with this document's other honesty rules: `checks` is reported as `"passing"` only
+for states known to be good — `SUCCESS`, `NEUTRAL`, `SKIPPED`. Anything unrecognised,
+including states GitHub has not invented yet, degrades to `"pending"`. A blacklist fails
+open, and a dashboard that calls an unknown state green is lying in the one direction that
+matters.
+
+**6. Task 0 needed a second mechanism.** Silencing the tooling artefacts took both a
+committed `.gitignore` and the shared `.git/info/exclude`. A `.gitignore` on `main` reaches
+no other branch's checkout, so on its own it changed nothing across six worktrees.
 
 ## Grounding
 
