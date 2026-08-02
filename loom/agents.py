@@ -66,9 +66,23 @@ def agent_for(path: str, sessions: list[dict], panes: list[dict],
               is_alive: Callable[[int], bool] = pid_alive) -> AgentState:
     window = next((p["window"] for p in panes if p["path"] == path), None)
 
+    norm_path = os.path.realpath(path)
+    state_priority = {"waiting": 0, "working": 1, "idle": 2, "stale": 3, "stopped": 4}
+
+    # Collect all sessions whose cwd is the worktree or inside it
+    matching_sessions = []
     for s in sessions:
-        if s.get("cwd") != path:
-            continue
+        s_cwd = os.path.realpath(s.get("cwd", ""))
+        if s_cwd == norm_path or s_cwd.startswith(norm_path + os.sep):
+            matching_sessions.append(s)
+
+    if matching_sessions:
+        # Sort by priority (ascending), then by since (descending, most recent first)
+        # Stable sort: sort by since first (descending), then by priority (ascending)
+        matching_sessions.sort(key=lambda s: s.get("since", ""), reverse=True)
+        matching_sessions.sort(key=lambda s: state_priority.get(s.get("state"), 5))
+
+        s = matching_sessions[0]
         state = s.get("state", "unknown")
         pid = s.get("pid")
         if state in ACTIVE_STATES and pid is not None and not is_alive(int(pid)):

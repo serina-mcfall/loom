@@ -74,6 +74,36 @@ class TestAgentFor(unittest.TestCase):
     def test_nothing_anywhere_is_none(self):
         self.assertEqual(agent_for("/t/one", [], [], ALIVE).state, "none")
 
+    def test_session_in_subdirectory_is_matched(self):
+        sessions = [{"cwd": "/t/one/sub", "state": "working", "pid": 42, "since": "T"}]
+        a = agent_for("/t/one", sessions, [], ALIVE)
+        self.assertEqual((a.state, a.source), ("working", "hook"))
+
+    def test_session_cwd_with_trailing_slash_is_matched(self):
+        sessions = [{"cwd": "/t/one/", "state": "working", "pid": 42, "since": "T"}]
+        a = agent_for("/t/one", sessions, [], ALIVE)
+        self.assertEqual((a.state, a.source), ("working", "hook"))
+
+    def test_similar_path_does_not_match(self):
+        sessions = [{"cwd": "/t/one-other", "state": "working", "pid": 42, "since": "T"}]
+        self.assertEqual(agent_for("/t/one", sessions, [], ALIVE).state, "none")
+
+    def test_waiting_beats_idle_by_priority(self):
+        sessions = [
+            {"cwd": "/t/one", "state": "idle", "pid": 42, "since": "2026-08-03T10:20:00"},
+            {"cwd": "/t/one", "state": "waiting", "pid": 43, "since": "2026-08-03T10:19:00"},
+        ]
+        a = agent_for("/t/one", sessions, [], ALIVE)
+        self.assertEqual(a.state, "waiting")
+
+    def test_newer_working_wins_over_older_working(self):
+        sessions = [
+            {"cwd": "/t/one", "state": "working", "pid": 42, "since": "2026-08-03T10:19:00"},
+            {"cwd": "/t/one", "state": "working", "pid": 43, "since": "2026-08-03T10:20:00"},
+        ]
+        a = agent_for("/t/one", sessions, [], ALIVE)
+        self.assertEqual(a.pid, 43)
+
 
 if __name__ == "__main__":
     unittest.main()
