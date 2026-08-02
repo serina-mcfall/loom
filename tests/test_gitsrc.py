@@ -1,6 +1,6 @@
 import unittest
 from loom.runner import ReplayRunner
-from loom.gitsrc import list_worktrees, ahead_behind, dirty_counts, Dirty
+from loom.gitsrc import list_worktrees, ahead_behind, dirty_counts, Dirty, recent_commits, touched_files, collisions, Worktree
 
 PORCELAIN = (
     "worktree /repo\n"
@@ -74,6 +74,74 @@ class TestDirtyCounts(unittest.TestCase):
             "git status --porcelain=v1": {"returncode": 0, "stdout": "", "stderr": ""},
         })
         self.assertEqual(dirty_counts(runner, "/trees/a"), Dirty(0, 0, 0))
+
+
+LOG = (
+    "\x1e161948b\x1f2026-08-03T07:31:55+12:00\x1ftest(clues): flatten\x1fHEAD -> feature-c\n"
+    "3\t1\tsrc/board.ts\n"
+    "10\t0\tsrc/clue.ts\n"
+    "\x1eaaaa111\x1f2026-08-03T07:30:38+12:00\x1fCorrect the shell\x1fHEAD -> feature-b\n"
+    "1\t1\tsrc/shell.ts\n"
+)
+
+
+class TestRecentCommits(unittest.TestCase):
+    def setUp(self):
+        self.runner = ReplayRunner({
+            "git log --all --no-merges -n 40 "
+            "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat":
+                {"returncode": 0, "stdout": LOG, "stderr": ""},
+        })
+
+    def test_parses_each_commit_with_its_stats(self):
+        commits = recent_commits(self.runner, "/repo")
+        self.assertEqual(len(commits), 2)
+        self.assertEqual(commits[0].sha, "161948b")
+        self.assertEqual(commits[0].files, 2)
+        self.assertEqual(commits[0].add, 13)
+        self.assertEqual(commits[0].dele, 1)
+
+    def test_branch_comes_from_the_decoration(self):
+        self.assertEqual(recent_commits(self.runner, "/repo")[0].branch, "feature-c")
+
+
+class TestCollisions(unittest.TestCase):
+    def _runner(self):
+        return ReplayRunner({
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git status --porcelain=v1": {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+
+    def test_two_trees_touching_the_same_files_collide(self):
+        runner = ReplayRunner({
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only base1 HEAD": {"returncode": 0, "stdout": "src/a.ts\n", "stderr": ""},
+            "git status --porcelain=v1": {"returncode": 0, "stdout": " M src/b.ts\n", "stderr": ""},
+        })
+        trees = [Worktree("/t/one", "one", "one", "h1"), Worktree("/t/two", "two", "two", "h2")]
+        # ReplayRunner keys on argv alone, so both trees replay the same recording and
+        # therefore both touch {a.ts, b.ts}. Positive control.
+        result = collisions(runner, trees, "main")
+        self.assertEqual([c["file"] for c in result], ["src/a.ts", "src/b.ts"])
+        self.assertEqual(result[0]["branches"], ["one", "two"])
+
+    def test_single_tree_never_collides_with_itself(self):
+        runner = ReplayRunner({
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only base1 HEAD": {"returncode": 0, "stdout": "src/a.ts\n", "stderr": ""},
+            "git status --porcelain=v1": {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+        trees = [Worktree("/t/one", "one", "one", "h1")]
+        self.assertEqual(collisions(runner, trees, "main"), [])
+
+    def test_touched_files_unions_committed_and_uncommitted(self):
+        runner = ReplayRunner({
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only base1 HEAD": {"returncode": 0, "stdout": "src/a.ts\n", "stderr": ""},
+            "git status --porcelain=v1": {"returncode": 0, "stdout": "?? src/new.ts\n", "stderr": ""},
+        })
+        self.assertEqual(touched_files(runner, "/t/one", "main"), {"src/a.ts", "src/new.ts"})
 
 
 if __name__ == "__main__":
