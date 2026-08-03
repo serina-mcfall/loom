@@ -37,7 +37,7 @@ These were chosen explicitly and are not open for re-litigation during planning.
 | Moment of use | Glance on return, live in a pane, **and** triage ranking |
 | Scope | Current repository, with an `--all` flag widening to every Launchpad child |
 | Form factor | Local browser dashboard **and** a Claude Code skill |
-| Agent state source | Hooks are authoritative; process liveness is the fallback |
+| Agent state source | Hooks say what an agent is doing; the process list corroborates that it exists |
 | v1 slice | Everything `git` + `gh` + hooks can feed. Cost/telemetry and replay deferred |
 | Home | Its own repository (`loom`); the skill lives in `serina-skills` and drives it |
 
@@ -127,7 +127,7 @@ The interface between every unit. Versioned, because two consumers parse it.
 
     "prs": [{
       "number": 58, "title": "…", "branch": "fix/feature-b-silent-load",
-      "draft": false, "review_decision": null, "checks": "passing",
+      "draft": false, "review": null, "checks": "passing",
       "worktree": "feature-b", "updated_at": "…"
     }],
 
@@ -141,8 +141,12 @@ The interface between every unit. Versioned, because two consumers parse it.
     "flags": [{ "kind": "orphan_pr", "severity": "warn", "subject": "PR #56",
                 "detail": "branch fix/feature-a-null-case has no worktree" }],
 
-    "sources": [{ "name": "gh", "ok": false, "error": "HTTP 403 rate limited",
-                  "last_good": "2026-08-03T07:41:00+12:00" }]
+    "sources": [{ "name": "git", "ok": true },
+                { "name": "gh:prs", "ok": true },
+                { "name": "gh:issues", "ok": false, "error": "HTTP 403 rate limited",
+                  "last_good": "2026-08-03T07:41:00+12:00" },
+                { "name": "hooks", "ok": true },
+                { "name": "tmux", "ok": true }]
   }]
 }
 ```
@@ -151,10 +155,10 @@ The interface between every unit. Versioned, because two consumers parse it.
 
 | Value | Meaning |
 |---|---|
-| `working` | A hook reported activity and the process is alive |
+| `working` | A hook reported activity, uncontradicted by the process source |
 | `waiting` | A `Notification` hook fired — blocked on a permission prompt or input |
 | `idle` | Session alive, turn finished, awaiting a prompt |
-| `stale` | State file claims activity but the recorded pid is gone |
+| `stale` | Hook claims activity, but the process source sees agents and none for this tree |
 | `unknown` | Process alive, no hook data — hooks not installed for this session |
 | `stopped` | Session ended |
 
@@ -185,9 +189,11 @@ form confirmed against `--help` before it is relied on.
 
 ### Stale state is caught, not trusted
 
-A crashed agent leaves a state file reading `working` forever. `collect` cross-checks the
-recorded pid against a live process. If the file claims activity and nothing is running,
-the state is `stale` — never `working`.
+A crashed agent leaves a state file reading `working` forever. `collect` corroborates the
+hook's claim against the process source. If the process source can see agents but none for
+that worktree, the state is `stale` — never `working`. If it can see nothing at all, nothing
+is corroborated and the hook stands: declaring every agent dead on no evidence is worse than
+reporting a state that may be a few seconds old.
 
 ## Panels
 
