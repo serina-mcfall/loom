@@ -41,6 +41,12 @@ class AgentState:
     # shell wrapper's parent, which is long gone by the time anything reads it.
     pid: int | None = None
     tmux_window: str | None = None
+    # Seconds since the winning session last refreshed, or None when that
+    # cannot be determined (missing, unreadable, naive or future timestamp).
+    # None means CANNOT TELL and must never be read as zero. Exposed because
+    # `state` alone cannot distinguish a live blocked agent from a dead one,
+    # and rank 1 needs to know the difference.
+    age_seconds: float | None = None
 
 
 def read_state_dir(state_dir: str) -> list[dict]:
@@ -89,12 +95,34 @@ def _age_seconds(since: str | None, now: datetime) -> float | None:
         stamp = datetime.fromisoformat(since)
     except (TypeError, ValueError):
         return None
+
+    # A NAIVE STAMP IS UNANSWERABLE, NOT ASSUMABLE.
+    #
+    # An earlier version adopted `now`'s zone, which produced a zone-dependent
+    # answer: the same record, the same real age, read `stale` at UTC+12 and
+    # `working` at UTC-06. In any negative-offset zone a dead agent read alive
+    # for up to |offset| hours — the forbidden direction — and neither the UTC
+    # fixtures nor a check on a +12 machine could see it, because +12 pushed the
+    # error the safe way.
+    #
+    # `reap()` already refuses to act on a naive `since` (collect.py). This now
+    # matches it: one input, one meaning, across the whole snapshot.
     if stamp.tzinfo is None:
-        # A naive stamp cannot be subtracted from an aware `now` — that raises
-        # TypeError, which previously took out the whole of collect(). Adopt
-        # now's zone rather than assuming one.
-        stamp = stamp.replace(tzinfo=now.tzinfo)
-    return (now - stamp).total_seconds()
+        return None
+    if now.tzinfo is None:
+        # Symmetrical: an unusable clock is as unanswerable as an unusable stamp.
+        # Previously this raised TypeError out of collect() and killed the entire
+        # snapshot, and no test watched which clock collect() passed.
+        return None
+
+    age = (now - stamp).total_seconds()
+    if age < 0:
+        # A timestamp in the future is evidence of a broken producer — a clock
+        # correction, a record copied from a machine ahead — not evidence of
+        # health. `age > limit` would silently never fire on a negative age and
+        # report `working` indefinitely.
+        return None
+    return age
 
 
 def agent_for(path: str, sessions: list[dict], panes: list[dict],
@@ -175,7 +203,8 @@ def agent_for(path: str, sessions: list[dict], panes: list[dict],
 
         state, s = effective[0]
         pid = s.get("pid")
-        return AgentState(state, "hook", s.get("since"), pid, window)
+        return AgentState(state, "hook", s.get("since"), pid, window,
+                          _age_seconds(s.get("since"), now))
 
     for p in panes:
         if p["path"] == path and p["command"] in AGENT_COMMANDS:

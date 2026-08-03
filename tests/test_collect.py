@@ -2,7 +2,7 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from loom.gitsrc import Worktree
@@ -219,6 +219,73 @@ class TestCollectSources(unittest.TestCase):
         sources = {s["name"]: s for s in repo["sources"]}
         self.assertFalse(sources["git:default-branch"]["ok"])
         self.assertIsNotNone(sources["git:default-branch"]["error"])
+
+
+
+
+class TestCollectPassesARealClock(unittest.TestCase):
+    """The clock `collect()` hands to agent_for was untested, and it decides
+    every staleness verdict in the snapshot.
+
+    Found by review: replacing it with `datetime(1970,1,1)` passed all 189 tests,
+    which means nothing is ever stale and a dead agent reports `working` forever
+    — the forbidden direction, invisible to the suite. Replacing it with
+    `datetime(3000,1,1)` also passed, meaning everything is always stale. Both
+    survived because every other collect() test uses an EMPTY state directory,
+    so no test had ever run collect() with a session file on disk.
+
+    These tests read the resulting `agent` block, so a wrong clock cannot pass.
+    """
+
+    def _state_dir(self, state, since):
+        d = tempfile.mkdtemp()
+        Path(d, "s1.json").write_text(json.dumps(
+            {"session_id": "s1", "cwd": "/repo", "state": state,
+             "since": since, "pid": 1}))
+        return d
+
+    def _snapshot(self, state, since):
+        # Reuses TestCollectSources' recordings so this stays a REAL collect()
+        # call end to end — the point is the clock it passes through, and a
+        # hand-rolled runner could diverge from the shape collect() drives.
+        rec = TestCollectSources._recordings(
+            self,
+            pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+            issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+        )
+        return collect(ReplayRunner(rec), "/repo",
+                       self._state_dir(state, since), include_gh=True)
+
+    def _agent(self, snapshot):
+        trees = snapshot["repos"][0]["worktrees"]
+        # The fixture's worktree is /repo itself.
+        return next(t["agent"] for t in trees if t["path"] == "/repo")
+
+    def test_a_fresh_working_session_survives_collect(self):
+        # A wall-clock far in the past would stale nothing; far in the future
+        # would stale everything. This pins the near end.
+        fresh = (datetime.now(timezone.utc).astimezone() - timedelta(seconds=5)).isoformat()
+        a = self._agent(self._snapshot("working", fresh))
+        self.assertEqual(a["state"], "working")
+        self.assertIsNotNone(a["age_seconds"])
+        self.assertLess(a["age_seconds"], 60, "a 5s-old record must read as seconds old")
+
+    def test_an_ancient_working_session_is_staled_by_collect(self):
+        # And this pins the far end. Together they bracket the clock: it must be
+        # roughly now, not 1970 and not 3000.
+        old = (datetime.now(timezone.utc).astimezone() - timedelta(days=2)).isoformat()
+        a = self._agent(self._snapshot("working", old))
+        self.assertEqual(a["state"], "stale")
+
+    def test_the_clock_collect_passes_is_timezone_aware(self):
+        # A naive clock previously raised TypeError out of agent_for and took the
+        # whole snapshot with it. _age_seconds now refuses a naive clock rather
+        # than crashing, which would turn the crash into a silent "never stale" —
+        # so the clock itself has to be aware, and this is what says so.
+        old = (datetime.now(timezone.utc).astimezone() - timedelta(days=2)).isoformat()
+        a = self._agent(self._snapshot("working", old))
+        self.assertEqual(a["state"], "stale",
+                         "a naive clock would make age_seconds None and never stale")
 
 
 if __name__ == "__main__":

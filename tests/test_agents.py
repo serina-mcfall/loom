@@ -137,14 +137,50 @@ class TestAgentFor(unittest.TestCase):
         sessions = [{"cwd": "/t/one", "state": "working", "pid": 42}]
         self.assertEqual(agent_for("/t/one", sessions, [], NOW).state, "working")
 
-    def test_a_naive_timestamp_is_aged_rather_than_crashing(self):
-        # The hook writes tz-aware stamps, but a hand-edited or older file may be
-        # naive. Comparing naive to aware raises TypeError, which previously took
-        # out the whole of collect().
-        naive_old = (NOW - timedelta(seconds=PARKED_STALE_SECONDS + 60)).replace(tzinfo=None)
+    def test_a_naive_timestamp_is_unanswerable_not_assumed(self):
+        # An earlier version adopted now's zone, which made the answer depend on
+        # the reader's timezone: the same record at the same real age read `stale`
+        # at UTC+12 and `working` at UTC-06. In a negative-offset zone a dead agent
+        # read alive for hours — the forbidden direction — and it was invisible
+        # both to UTC fixtures and to a check on a +12 machine.
+        naive_old = (NOW - timedelta(seconds=PARKED_STALE_SECONDS * 3)).replace(tzinfo=None)
         sessions = [{"cwd": "/t/one", "state": "waiting", "pid": 42,
                      "since": naive_old.isoformat()}]
-        self.assertEqual(agent_for("/t/one", sessions, [], NOW).state, "stale")
+        self.assertEqual(agent_for("/t/one", sessions, [], NOW).state, "waiting")
+
+    def test_the_naive_answer_is_the_same_in_every_timezone(self):
+        # The regression guard for the zone dependency. Without it, the test above
+        # could pass at +12 and fail at -06, which is exactly what happened.
+        naive_old = (NOW - timedelta(seconds=PARKED_STALE_SECONDS * 3)).replace(tzinfo=None)
+        sessions = [{"cwd": "/t/one", "state": "working", "pid": 42,
+                     "since": naive_old.isoformat()}]
+        for offset in (-11, -6, 0, 5, 12):
+            now = NOW.astimezone(timezone(timedelta(hours=offset)))
+            self.assertEqual(agent_for("/t/one", sessions, [], now).state, "working",
+                             f"naive stamps must read the same at UTC{offset:+d}")
+
+    def test_a_naive_CLOCK_does_not_crash_the_snapshot(self):
+        # Symmetry with the stamp: an unusable clock is as unanswerable as an
+        # unusable timestamp. This previously raised TypeError out of agent_for and
+        # took the whole of collect() with it, and no test watched which clock
+        # collect() passed.
+        sessions = [{"cwd": "/t/one", "state": "working", "pid": 42,
+                     "since": ago(WORKING_STALE_SECONDS * 5)}]
+        naive_now = NOW.replace(tzinfo=None)
+        self.assertEqual(agent_for("/t/one", sessions, [], naive_now).state, "working")
+
+    def test_a_timestamp_in_the_future_is_not_treated_as_fresh(self):
+        # `age > limit` silently never fires on a negative age, so a stamp from a
+        # machine whose clock is ahead reported `working` for as long as it stayed
+        # ahead. A future timestamp is evidence of a broken producer, not of health.
+        future = (NOW + timedelta(days=3)).isoformat()
+        sessions = [{"cwd": "/t/one", "state": "working", "pid": 42, "since": future}]
+        a = agent_for("/t/one", sessions, [], NOW)
+        # Not staled (we cannot date it), but the age is refused rather than
+        # counted as zero — which is what `_age_seconds` returning None means.
+        from loom.agents import _age_seconds
+        self.assertIsNone(_age_seconds(future, NOW))
+        self.assertEqual(a.state, "working")
 
     def test_branch_panes_here_equals_active_count_nothing_staled_waiting_wins(self):
         # Branch: panes_here (2) >= active (2) -> nothing is staled. This is the

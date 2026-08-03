@@ -8,9 +8,12 @@ def repo(**over):
     return base
 
 
-def tree(dir_, branch, state="none", unstaged=0):
+def tree(dir_, branch, state="none", unstaged=0, age=5.0):
+    # `age` defaults to 5 seconds — freshly refreshed — because that is what an
+    # existing fixture written before rank 1 required freshness meant to say.
+    # Tests about staleness state it explicitly.
     return {"dir": dir_, "branch": branch,
-            "agent": {"state": state, "source": "hook"},
+            "agent": {"state": state, "source": "hook", "age_seconds": age},
             "dirty": {"staged": 0, "unstaged": unstaged, "untracked": 0}}
 
 
@@ -20,6 +23,37 @@ def pr(number, branch, review=None, checks="none"):
 
 
 class TestNeedsYou(unittest.TestCase):
+    def test_a_stale_waiting_claim_does_not_earn_rank_1(self):
+        # THE REGRESSION GUARD. A terminal closed at a permission prompt leaves a
+        # `waiting` record that never refreshes, and nothing else clears it —
+        # reap() only removes `stopped`. Before this, rank 1 stayed lit for twelve
+        # hours, and a strip that is never empty is a strip nobody reads.
+        from loom.rank import RANK1_MAX_AGE_SECONDS
+        r = repo(worktrees=[tree("a", "fa", "waiting", age=RANK1_MAX_AGE_SECONDS + 60)])
+        self.assertEqual([i["kind"] for i in needs_you(r)], [])
+
+    def test_a_fresh_waiting_claim_still_earns_rank_1(self):
+        # The positive control. Without it the guard above could pass simply
+        # because rank 1 never fires at all.
+        from loom.rank import RANK1_MAX_AGE_SECONDS
+        r = repo(worktrees=[tree("a", "fa", "waiting", age=RANK1_MAX_AGE_SECONDS - 60)])
+        self.assertEqual([i["kind"] for i in needs_you(r)], ["agent_waiting"])
+
+    def test_an_undatable_waiting_claim_does_not_earn_rank_1(self):
+        # age_seconds is None when the timestamp is missing, unreadable, naive or
+        # in the future. "I cannot date this" must not be promoted to the top
+        # alert — but the worktree row still shows `waiting`, so nothing is hidden.
+        r = repo(worktrees=[tree("a", "fa", "waiting", age=None)])
+        self.assertEqual([i["kind"] for i in needs_you(r)], [])
+
+    def test_a_waiting_claim_with_no_age_field_at_all_does_not_earn_rank_1(self):
+        # An older snapshot, or a hand-written one, has no age_seconds key. Absent
+        # must behave as undatable rather than as fresh.
+        r = repo(worktrees=[{"dir": "a", "branch": "fa",
+                             "agent": {"state": "waiting", "source": "hook"},
+                             "dirty": {"staged": 0, "unstaged": 0, "untracked": 0}}])
+        self.assertEqual([i["kind"] for i in needs_you(r)], [])
+
     def test_a_quiet_fleet_produces_an_empty_strip(self):
         # Negative control: the strip must be able to be empty.
         self.assertEqual(needs_you(repo(worktrees=[tree("a", "feature-a", "working")])), [])
@@ -92,7 +126,7 @@ class TestNeedsYou(unittest.TestCase):
         # If a worktree dict is missing "dir", the entry should use a placeholder,
         # not raise KeyError and lose the entire strip.
         items = needs_you(repo(worktrees=[
-            {"agent": {"state": "waiting", "source": "hook"}, "branch": "x",
+            {"agent": {"state": "waiting", "source": "hook", "age_seconds": 5.0}, "branch": "x",
              "dirty": {"staged": 0, "unstaged": 0, "untracked": 0}},
         ]))
         self.assertEqual(items[0]["subject"], "<unnamed worktree>")

@@ -3,6 +3,12 @@ from __future__ import annotations
 import re
 
 
+# How recently a `waiting` claim must have been refreshed to earn rank 1.
+# Half an hour: long enough that a real prompt raised just before you
+# stepped away still shows, short enough that a closed terminal stops
+# shouting. Tunable — this is a judgement about attention, not a fact.
+RANK1_MAX_AGE_SECONDS = 30 * 60
+
 def _natural_sort_key(s: str) -> tuple:
     """Sort key that treats embedded numbers numerically, not lexicographically.
 
@@ -17,7 +23,23 @@ def needs_you(repo: dict) -> list[dict]:
 
     for t in repo.get("worktrees", []):
         agent = t.get("agent") or {}
-        if agent.get("state") == "waiting":
+        # RANK 1 REQUIRES A FRESH CLAIM, not merely the `waiting` label.
+        #
+        # A `waiting` agent is blocked on a human by definition and stops
+        # refreshing its timestamp, so a session that CRASHED while waiting is
+        # indistinguishable from one still waiting — the state file cannot tell
+        # them apart and neither can this function.
+        #
+        # What it can do is refuse to raise the top alert on a claim it cannot
+        # date. Before this, a terminal closed at a permission prompt kept rank 1
+        # lit for twelve hours, and a strip that is never empty is a strip nobody
+        # reads — which would cost the one alert the whole design rests on.
+        #
+        # The worktree row still shows `waiting`, so nothing is hidden; only the
+        # interrupt-the-human promotion is withheld.
+        age = agent.get("age_seconds")
+        fresh_enough = age is not None and age <= RANK1_MAX_AGE_SECONDS
+        if agent.get("state") == "waiting" and fresh_enough:
             worktree_dir = t.get("dir", "<unnamed worktree>")
             items.append({"rank": 1, "kind": "agent_waiting", "subject": worktree_dir,
                           "detail": "agent is blocked on a prompt"})
