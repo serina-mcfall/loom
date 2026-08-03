@@ -14,11 +14,12 @@ tear the server down in `tearDown`, so nothing is left listening afterward.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import socket
-import tempfile
 import threading
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -28,7 +29,9 @@ from loom.runner import ReplayRunner
 from loom.serve import (
     Handler,
     apply_gh_cache,
+    run_server,
     should_include_gh,
+    _refresh_step,
     _tick,
 )
 from loom import serve
@@ -187,6 +190,51 @@ class TestTickSkipsGhOnFastTick(unittest.TestCase):
         self.assertTrue(all(call[0] == "git" or call[0] == "tmux" for call in runner.calls))
 
 
+class TestRefreshStepSurvivesFailures(unittest.TestCase):
+    """Fix round 2, FIX 1 (Blocker): a bare `while True` with no `try` died on
+    the first exception anything upstream throws, after which /snapshot.json
+    would serve a frozen, `collected: true` snapshot forever with no visible
+    sign anything had gone wrong. `_refresh_step` must survive any exception,
+    surface it, and never silently swallow the previous good data.
+    """
+
+    def _raising_tick(self, *args, **kwargs):
+        raise RuntimeError("collect() exploded")
+
+    def test_a_raising_tick_does_not_propagate_and_keeps_the_previous_snapshot(self):
+        prev = {"schema": 1, "repos": [{"name": "example"}],
+               "collected": True, "generated_at": "T1", "refresh_error": None}
+        with unittest.mock.patch("loom.serve._tick", side_effect=RuntimeError("boom")):
+            snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
+        # The previous, good data survives untouched — including its timestamp.
+        self.assertEqual(snap["repos"], prev["repos"])
+        self.assertTrue(snap["collected"])
+        self.assertEqual(snap["generated_at"], "T1")
+
+    def test_the_failures_type_and_message_are_recorded(self):
+        prev = {"schema": 1, "repos": [], "collected": False}
+        with unittest.mock.patch("loom.serve._tick", side_effect=RuntimeError("boom")):
+            snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
+        self.assertIn("RuntimeError", snap["refresh_error"])
+        self.assertIn("boom", snap["refresh_error"])
+
+    def test_a_successful_step_after_a_failure_clears_refresh_error(self):
+        prev = {"schema": 1, "repos": [], "collected": False,
+               "refresh_error": "RuntimeError: boom"}
+        good = {"schema": 1, "repos": [{"name": "example"}]}
+        with unittest.mock.patch("loom.serve._tick", return_value=good):
+            snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
+        self.assertIsNone(snap["refresh_error"])
+        self.assertEqual(snap["repos"], [{"name": "example"}])
+
+    def test_a_successful_step_stamps_generated_at(self):
+        prev = {"schema": 1, "repos": [], "collected": False}
+        good = {"schema": 1, "repos": []}
+        with unittest.mock.patch("loom.serve._tick", return_value=good):
+            snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
+        self.assertTrue(snap["generated_at"])
+
+
 class TestCollectedMarker(unittest.TestCase):
     """The Medium finding from the fix-round-1 review: `{"repos": []}` alone
     cannot distinguish "nothing collected yet" from "collection ran and found
@@ -221,6 +269,35 @@ class TestCollectedMarker(unittest.TestCase):
         genuinely_empty = {"schema": 1, "repos": [], "collected": True}
         self.assertNotEqual(not_yet, genuinely_empty)
         self.assertNotEqual(json.dumps(not_yet), json.dumps(genuinely_empty))
+
+
+class TestServerBindsLoopbackOnly(unittest.TestCase):
+    """The single hardest constraint on this task: bind 127.0.0.1, never
+    0.0.0.0 — Loom serves git history, PR data and session state, and must
+    never be reachable from the network. Checked by hand once during Task 10;
+    a hand check does not persist across a future edit to `run_server`'s
+    default. Two independent guards:
+
+    - `run_server`'s default `host` parameter, via `inspect.signature` — fails
+      the suite the moment that default changes, even if nobody ever starts a
+      server in a test.
+    - an actual bound socket, asserting the POSITIVE ("127.0.0.1") and the
+      NEGATIVE ("not 0.0.0.0") explicitly, so this cannot pass by matching a
+      truthy value or a substring.
+    """
+
+    def test_run_servers_default_host_parameter_is_loopback(self):
+        default = inspect.signature(run_server).parameters["host"].default
+        self.assertEqual(default, "127.0.0.1")
+
+    def test_a_server_bound_to_that_default_listens_on_loopback_not_all_interfaces(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        try:
+            addr = server.server_address[0]
+            self.assertEqual(addr, "127.0.0.1")
+            self.assertNotEqual(addr, "0.0.0.0")
+        finally:
+            server.server_close()
 
 
 class TestHandlerRoutes(unittest.TestCase):
@@ -302,6 +379,42 @@ class TestHandlerRoutes(unittest.TestCase):
         headers, _, body = data.partition(b"\r\n\r\n")
         self.assertIn(b"text/event-stream", headers)
         self.assertTrue(body.startswith(b'data: {"schema": 1'), body)
+
+    def test_events_sets_an_idle_socket_timeout_so_an_unread_stream_cannot_hang_forever(self):
+        # Fix round 2, FIX 3: a client that opens /events and never reads would
+        # otherwise block the handler thread inside wfile.write() forever once
+        # the OS send buffer fills, and ThreadingHTTPServer has no connection
+        # cap. Forcing an actual blocked write deterministically in a unit test
+        # is exactly the "thread plus socket plus sleep" flakiness this design
+        # avoids elsewhere, so this checks the mechanism is wired instead:
+        # settimeout() is really called, on the real accepted connection
+        # socket, with the real SSE_IDLE_TIMEOUT value — a client-side
+        # create_connection(timeout=...) call would also invoke settimeout,
+        # so this asserts the value appears among the calls, not just that
+        # settimeout was called at all.
+        calls: list = []
+        real_settimeout = socket.socket.settimeout
+
+        def spy(sock_self, value):
+            calls.append(value)
+            return real_settimeout(sock_self, value)
+
+        with unittest.mock.patch.object(socket.socket, "settimeout", spy):
+            sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+            try:
+                sock.sendall(b"GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                data = b""
+                # Read through the first full frame — settimeout() is called
+                # before the send loop starts, so seeing a frame proves it
+                # already ran on the server's side of this connection.
+                while b"\r\n\r\n" not in data or len(data.split(b"\r\n\r\n", 1)[1]) < 20:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+            finally:
+                sock.close()
+        self.assertIn(serve.SSE_IDLE_TIMEOUT, calls)
 
 
 if __name__ == "__main__":

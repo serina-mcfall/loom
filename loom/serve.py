@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
 from datetime import datetime, timezone
@@ -13,6 +14,12 @@ from .runner import Runner
 STATIC = Path(__file__).resolve().parent / "static"
 FAST_SECONDS = 2
 SLOW_SECONDS = 60
+# A client that opens /events and never reads would otherwise block a request
+# thread forever inside wfile.write() once the OS send buffer fills — and
+# ThreadingHTTPServer spawns one thread per connection with no cap, so an idle
+# client is enough to leak threads without bound. This turns that block into a
+# timeout, treated the same as a disconnect.
+SSE_IDLE_TIMEOUT = 30
 
 _lock = threading.Lock()
 # "collected": False marks the window before the first refresh finishes. Without
@@ -97,6 +104,40 @@ def _tick(all_repos: bool, include_gh: bool, cached_gh: dict[str, dict],
     return snap
 
 
+def _refresh_step(prev_snapshot: dict, all_repos: bool, include_gh: bool,
+                  cached_gh: dict[str, dict], runner: Runner | None = None) -> dict:
+    """One iteration of the refresh loop's body, extracted so a raising
+    collector can be tested directly instead of by racing a real thread.
+
+    On success: a fresh snapshot, stamped with `generated_at` (wall-clock time
+    of THIS successful collection) and `refresh_error: None`.
+
+    On failure (`_tick` raises anything): the **previous** snapshot, with
+    `refresh_error` set to the exception's type and message, and
+    `generated_at` left UNCHANGED — updating it on failure would make a stale
+    snapshot's timestamp look fresh, defeating the one signal that lets a
+    consumer detect staleness even if this function's own error surfacing is
+    somehow bypassed. A frozen `generated_at` is detectable; a `generated_at`
+    that keeps advancing while the underlying data doesn't is not.
+
+    Never raises itself: this is what makes `_refresh_loop`'s `while True`
+    unkillable by anything short of process exit — the specific bug this
+    replaces was a bare `while True` with no `try` at all, where a `KeyError`
+    (or any future exception) ended the daemon thread silently, after which
+    `/snapshot.json` would serve `collected: true` and a frozen snapshot
+    forever with no visible sign anything had gone wrong.
+    """
+    try:
+        snap = _tick(all_repos, include_gh, cached_gh, runner=runner)
+        snap["generated_at"] = _now_iso()
+        snap["refresh_error"] = None
+        return snap
+    except Exception as exc:
+        stale = dict(prev_snapshot)
+        stale["refresh_error"] = f"{type(exc).__name__}: {exc}"
+        return stale
+
+
 def _refresh_loop(all_repos: bool) -> None:
     """git and hooks every FAST_SECONDS; gh at most once every SLOW_SECONDS."""
     global _snapshot
@@ -105,8 +146,10 @@ def _refresh_loop(all_repos: bool) -> None:
     while True:
         now = time.monotonic()
         include_gh = should_include_gh(now, last_slow, bool(cached_gh))
-        snap = _tick(all_repos, include_gh, cached_gh)
-        if include_gh:
+        with _lock:
+            prev = _snapshot
+        snap = _refresh_step(prev, all_repos, include_gh, cached_gh)
+        if snap.get("refresh_error") is None and include_gh:
             last_slow = now
         with _lock:
             _snapshot = snap
@@ -129,8 +172,14 @@ class Handler(BaseHTTPRequestHandler):
     def _send_file(self, path: Path, ctype: str) -> None:
         try:
             body = path.read_bytes()
-        except OSError:
+        except FileNotFoundError:
             self._send(404, b"not found", "text/plain")
+            return
+        except OSError as exc:
+            # Present but unreadable (permissions, a directory named like a
+            # file, ...) is a different problem than absent — a 404 here would
+            # send a maintainer looking for a file that already exists.
+            self._send(500, f"could not read {path.name}: {exc}".encode(), "text/plain")
             return
         self._send(200, body, ctype)
 
@@ -160,6 +209,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
+            self.connection.settimeout(SSE_IDLE_TIMEOUT)
             last = None
             try:
                 while True:
@@ -170,7 +220,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.flush()
                         last = body
                     time.sleep(FAST_SECONDS)
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, TimeoutError, socket.timeout):
                 return
         else:
             self._send(404, b"not found", "text/plain")
