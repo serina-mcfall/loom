@@ -327,6 +327,61 @@ Deferred deliberately, not forgotten:
 3. The snapshot schema is versioned because two consumers parse it and would otherwise
    drift silently.
 
+## Threat model
+
+Added 2026-08-03. Loom reads from sources other people can write to, and serves the result
+over HTTP — so it needs this written down rather than assumed. The table's shape is
+borrowed from the `agent-lockdown-challenge` common loop, whose central distinction applies
+directly here: **a prompt is guidance; a harness or sandbox is containment.** The same
+holds for a spec — a rule stated in prose is not a boundary until something enforces it.
+
+| Area | Answer |
+|---|---|
+| **Useful task** | Report the true state of a worktree fleet to one local human |
+| **Untrusted input** | Branch names, commit subjects, file paths, PR and issue titles, label and author names, tmux window names, and every hook state file |
+| **Valuable access** | The full git history and working trees of every watched repo; `gh` running under the operator's authenticated credentials; `~/.loom/state/`; the ability to spawn subprocesses |
+| **Exit paths** | The HTTP server; the CLI's stdout, which the skill pipes into a conversation transcript; the browser page |
+| **Boundary** | Enforced in code and listed below — not in prose |
+
+### Who controls the untrusted inputs
+
+Worth stating plainly, because it is easy to assume this data is ours:
+
+- **Anyone who can open a pull request or issue** controls PR titles, issue titles, labels
+  and author names. On a public repository that is anyone at all.
+- **Anyone who can push a branch** controls branch names, commit subjects and file paths.
+- **Any agent** controls its own hook state file, including the `cwd` it claims.
+
+### Boundaries that are enforced
+
+Each was verified rather than assumed, on 2026-08-03:
+
+| Boundary | Mechanism | How it was checked |
+|---|---|---|
+| No shell interpretation of any command | `subprocess.run` with an argv list; **no `shell=True` anywhere**, no `os.system` | grepped the whole package |
+| Untrusted strings never become markup | the page sets `textContent` only; **zero uses of `innerHTML`** | grepped the page source |
+| The server is not reachable off-host | bound to `127.0.0.1`, never `0.0.0.0` | stated in `serve`; verify with `ss -ltnp` |
+| No conversation content leaves a session | the hook records six fields; `transcript_path` is deliberately not among them | asserted by a test that passes a payload containing a prompt and a credentials path |
+| `gh` cannot act, only read | only `pr list` and `issue list` are ever invoked | no write subcommand exists in the code |
+| No third-party supply chain | standard library only | no dependency file exists |
+
+### Gaps, with honest severity
+
+| Gap | Severity | Why |
+|---|---|---|
+| **A sandboxed agent may be reported `stale`** | **Medium** | Staleness corroborates against `pane_current_command ∈ {claude, node}`. An agent in a sandboxed lane may present as `bwrap`, `docker` or a wrapper, so Loom would see no agent and mark a healthy one dead. Untested — needs a lane running to confirm |
+| A hook state file is trusted absolutely | Low | Any agent can claim any state, or a `cwd` belonging to another worktree, masking a real agent there. Writing the file already requires local access |
+| `origin_repo` accepts a leading `--` | Low | `git@github.com:--upload-pack=evil/x.git` yields `--upload-pack=evil/x`, which is then passed as a `-R` value. Requires write access to `.git/config` first. GitHub names cannot start with `-`, so the regex should reject it |
+| The snapshot contains `$HOME` paths | Low | The CLI's output names the operator's home directory and repository layout, and the skill pipes that into a conversation transcript |
+| The local server has no origin check or CSP | Low | Any process on the host can read the snapshot. Browsers block cross-origin reads without CORS headers, and none are set, but DNS rebinding against a loopback service is a known class |
+
+### The rule these gaps share
+
+Every one is an instance of the same principle this document already applies to error
+reporting: **a boundary that is true by accident is not a boundary.** The page is
+XSS-safe because of how it happened to be written, not because a rule requires it. That is
+now a stated requirement, and any future change that reaches for `innerHTML` is a defect.
+
 ## Corrections made during execution
 
 Recorded rather than silently rewritten, because a spec that quietly matches whatever got
