@@ -173,5 +173,58 @@ class TestNeedsYou(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+
+
+class TestRankAgainstRealAgentFor(unittest.TestCase):
+    """The original reproduction from PR #12's review, driven end to end.
+
+    Every other rank test injects `age_seconds` through the `tree()` helper, which
+    bypasses `agent_for`'s merge entirely. So the two-session scenario that
+    actually motivated the fix — a crashed `waiting` record beside a live
+    `working` one — was verified by hand and pinned by nothing. A regression in
+    how `agent_for` picks the winner, or in whether it populates `age_seconds` at
+    all, would have been invisible to the suite.
+    """
+
+    def _tree_from(self, sessions, now):
+        from dataclasses import asdict
+        from loom.agents import agent_for
+        a = agent_for("/repo", sessions, [], now)
+        return {"dir": "repo", "branch": "main", "agent": asdict(a),
+                "dirty": {"staged": 0, "unstaged": 0, "untracked": 0}}
+
+    def test_a_crashed_waiting_record_does_not_mask_a_live_working_one(self):
+        from datetime import datetime, timedelta, timezone
+        from loom.rank import RANK1_MAX_AGE_SECONDS
+        now = datetime(2026, 8, 4, 12, 0, 0, tzinfo=timezone.utc)
+        ago = lambda s: (now - timedelta(seconds=s)).isoformat()
+        sessions = [
+            # closed at a permission prompt, well past the rank-1 window
+            {"cwd": "/repo", "state": "waiting", "pid": 999,
+             "since": ago(RANK1_MAX_AGE_SECONDS * 4)},
+            # demonstrably alive
+            {"cwd": "/repo", "state": "working", "pid": 123, "since": ago(3)},
+        ]
+        tree = self._tree_from(sessions, now)
+        # The row still reports `waiting` — that is deliberate, since a blocked
+        # agent may genuinely be there and hiding it would be the unsafe direction.
+        self.assertEqual(tree["agent"]["state"], "waiting")
+        # But it must NOT claim the top alert on a claim it cannot date as recent.
+        self.assertEqual([i["kind"] for i in needs_you(repo(worktrees=[tree]))], [])
+
+    def test_a_genuinely_fresh_waiting_record_still_reaches_rank_1(self):
+        # The positive control: without it the test above could pass because
+        # agent_for never populates age_seconds at all.
+        from datetime import datetime, timedelta, timezone
+        now = datetime(2026, 8, 4, 12, 0, 0, tzinfo=timezone.utc)
+        sessions = [{"cwd": "/repo", "state": "waiting", "pid": 1,
+                     "since": (now - timedelta(seconds=30)).isoformat()}]
+        tree = self._tree_from(sessions, now)
+        self.assertIsNotNone(tree["agent"]["age_seconds"],
+                             "agent_for must populate age_seconds or rank 1 can never fire")
+        self.assertEqual([i["kind"] for i in needs_you(repo(worktrees=[tree]))],
+                         ["agent_waiting"])
+
+
 if __name__ == "__main__":
     unittest.main()

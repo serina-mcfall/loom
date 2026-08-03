@@ -277,15 +277,17 @@ class TestCollectPassesARealClock(unittest.TestCase):
         a = self._agent(self._snapshot("working", old))
         self.assertEqual(a["state"], "stale")
 
-    def test_the_clock_collect_passes_is_timezone_aware(self):
-        # A naive clock previously raised TypeError out of agent_for and took the
-        # whole snapshot with it. _age_seconds now refuses a naive clock rather
-        # than crashing, which would turn the crash into a silent "never stale" —
-        # so the clock itself has to be aware, and this is what says so.
-        old = (datetime.now(timezone.utc).astimezone() - timedelta(days=2)).isoformat()
-        a = self._agent(self._snapshot("working", old))
-        self.assertEqual(a["state"], "stale",
-                         "a naive clock would make age_seconds None and never stale")
+    # A third test asserting "the clock is timezone-aware" was written here and
+    # DELETED after review. Its body was byte-identical to the test above, and it
+    # could never have done what its name claimed: `collect()` computes `now`
+    # internally, so no test at this layer can hand it a naive clock. It detected
+    # nothing the test above does not — with it removed, all three clock mutations
+    # still failed. It was a false coverage claim, the ninth instance of that
+    # pattern in this project and the first written by the author of the fix it
+    # was meant to guard.
+    #
+    # The naive-clock case IS covered, one layer down, where a clock can actually
+    # be injected: tests/test_agents.py::test_a_naive_CLOCK_does_not_crash_the_snapshot.
 
 
 if __name__ == "__main__":
