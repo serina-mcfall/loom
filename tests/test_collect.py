@@ -180,6 +180,28 @@ class TestCollectSources(unittest.TestCase):
         sources = {s["name"]: s for s in snapshot["repos"][0]["sources"]}
         self.assertTrue(sources["hooks"]["ok"])
 
+    def test_include_gh_false_issues_no_gh_command_and_reports_not_fetched(self):
+        # The regression guard for the caller who forgets to substitute cached data:
+        # skipping gh must be an honest "not fetched", never a silent "0 PRs".
+        recordings = self._recordings(
+            pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+            issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+        )
+        runner = ReplayRunner(recordings)
+        snapshot = collect(runner, "/repo", tempfile.mkdtemp(), include_gh=False)
+        repo = snapshot["repos"][0]
+
+        self.assertEqual(repo["prs"], [])
+        self.assertEqual(repo["issues"], [])
+
+        sources = {s["name"]: s for s in repo["sources"]}
+        self.assertFalse(sources["gh:prs"]["ok"])
+        self.assertEqual(sources["gh:prs"]["error"], "not fetched this cycle")
+        self.assertFalse(sources["gh:issues"]["ok"])
+        self.assertEqual(sources["gh:issues"]["error"], "not fetched this cycle")
+
+        self.assertFalse(any(c[0] == "gh" for c in runner.calls))
+
     def test_guessed_default_branch_is_reported_not_swallowed(self):
         # The regression guard for Finding 2: a failed origin/HEAD lookup must not
         # silently masquerade as a resolved "main" with every source reporting ok.

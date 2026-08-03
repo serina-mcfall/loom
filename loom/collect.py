@@ -100,7 +100,8 @@ def _last_commit(runner: Runner, path: str) -> dict | None:
 
 
 def collect(runner: Runner, root: str,
-            state_dir: str = agents_mod.DEFAULT_STATE_DIR) -> dict:
+            state_dir: str = agents_mod.DEFAULT_STATE_DIR,
+            include_gh: bool = True) -> dict:
     started = time.monotonic()
     reap(state_dir)
     base, base_resolved = gitsrc.default_branch(runner, root)
@@ -114,16 +115,25 @@ def collect(runner: Runner, root: str,
         t.dirty = gitsrc.dirty_counts(runner, t.path)
 
     repo = ghsrc.origin_repo(runner, root)
-    if repo:
-        prs, pr_status = ghsrc.fetch_prs(runner, root, repo)
-        issues, issue_status = ghsrc.fetch_issues(runner, root, repo)
-        pr_status = replace(pr_status, name="gh:prs")
-        issue_status = replace(issue_status, name="gh:issues")
-    else:
+    if not include_gh:
+        # Skip the gh calls entirely rather than fetch-and-discard: the whole point
+        # of this flag is to avoid the network call. Report not-fetched, never ok=True
+        # — an empty list must never be mistaken for "zero open PRs".
         prs, issues = [], []
-        no_repo = "could not resolve a github repo from the origin remote"
-        pr_status = ghsrc.SourceStatus("gh:prs", False, no_repo)
-        issue_status = ghsrc.SourceStatus("gh:issues", False, no_repo)
+        not_fetched = "not fetched this cycle"
+        pr_status = ghsrc.SourceStatus("gh:prs", False, not_fetched)
+        issue_status = ghsrc.SourceStatus("gh:issues", False, not_fetched)
+    else:
+        if repo:
+            prs, pr_status = ghsrc.fetch_prs(runner, root, repo)
+            issues, issue_status = ghsrc.fetch_issues(runner, root, repo)
+            pr_status = replace(pr_status, name="gh:prs")
+            issue_status = replace(issue_status, name="gh:issues")
+        else:
+            prs, issues = [], []
+            no_repo = "could not resolve a github repo from the origin remote"
+            pr_status = ghsrc.SourceStatus("gh:prs", False, no_repo)
+            issue_status = ghsrc.SourceStatus("gh:issues", False, no_repo)
 
     by_branch = {p.branch: p.number for p in prs}
     tree_by_branch = {t.branch: t.dir for t in trees if t.branch}
