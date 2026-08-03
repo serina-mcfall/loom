@@ -388,12 +388,26 @@ class TestHandlerRoutes(unittest.TestCase):
             self._get("/nope")
         self.assertEqual(cm.exception.code, 404)
 
-    def test_the_index_route_404s_cleanly_when_static_assets_do_not_exist_yet(self):
-        # Task 11 builds loom/static/index.html; until then this must be a clean
-        # 404, never an unhandled FileNotFoundError that kills the request thread.
+    def test_a_missing_static_file_404s_cleanly_instead_of_raising(self):
+        # This used to pin the behavior by requesting "/" while the whole
+        # loom/static/ directory was absent (true when Task 10 was written,
+        # false the moment Task 11 landed — a test whose setup depends on a
+        # file NOT existing yet has an expiry date baked in, and nothing warns
+        # you when it silently starts passing for the wrong reason). A path
+        # that can never exist is a condition the test controls itself instead
+        # of inheriting from the repo's state.
         with self.assertRaises(urllib.error.HTTPError) as cm:
-            self._get("/")
+            self._get("/static/definitely-not-here.css")
         self.assertEqual(cm.exception.code, 404)
+
+    def test_the_index_route_serves_the_real_index_html(self):
+        # Task 11 built loom/static/index.html; "/" is a live route now, not
+        # just a clean-404 placeholder, and nothing else in this suite covers it.
+        with self._get("/") as r:
+            self.assertEqual(r.status, 200)
+            self.assertIn("text/html", r.headers.get("Content-Type", ""))
+            body = r.read().decode()
+        self.assertIn("<html", body.lower())
 
     def test_events_streams_a_schema_one_frame_immediately(self):
         # Not urllib: the /events response is HTTP/1.1 with neither Content-Length
