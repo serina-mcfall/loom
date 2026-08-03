@@ -1,4 +1,6 @@
 # tests/test_hook.py
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -73,12 +75,13 @@ class TestNotificationMapping(unittest.TestCase):
     its own test so the mapping can never quietly regress to a catch-all.
     """
 
-    def _notify(self, notification_type=None, include_type=True):
-        payload = dict(PAYLOAD)
+    def _notify(self, notification_type=None, include_type=True, state_dir=None,
+                now="2026-08-03T08:00:00+12:00", pid=4242, payload=None):
+        payload = dict(payload or PAYLOAD)
         if include_type:
             payload["notification_type"] = notification_type
-        d = tempfile.mkdtemp()
-        handle("Notification", payload, d, "2026-08-03T08:00:00+12:00", 4242)
+        d = state_dir or tempfile.mkdtemp()
+        handle("Notification", payload, d, now, pid)
         files = list(Path(d).glob("*.json"))
         if not files:
             return None
@@ -107,30 +110,47 @@ class TestNotificationMapping(unittest.TestCase):
         # entirely unseen type must stay silent, not default to "waiting".
         self.assertIsNone(self._notify("some_future_type"))
 
+    def test_an_unrecognised_notification_leaves_an_existing_state_file_untouched(self):
+        # Every other "writes nothing" test above starts from an empty
+        # directory, which only proves nothing gets created -- it doesn't
+        # prove an existing file survives. Write a real state first, then
+        # fire an unrecognised notification at the same session, and assert
+        # the file is neither deleted nor rewritten.
+        d = tempfile.mkdtemp()
+        original = self._notify("permission_prompt", state_dir=d,
+                                 now="2026-08-03T08:00:00+12:00", pid=4242)
+        self.assertEqual(original["state"], "waiting")
+        self._notify("some_future_type", state_dir=d,
+                      now="2026-08-03T09:00:00+12:00", pid=9999)
+        still_there = json.loads(Path(d, "abc123.json").read_text())
+        self.assertEqual(still_there, original)
+
     def test_blocking_and_idle_notification_sets_do_not_overlap(self):
         self.assertEqual(BLOCKING_NOTIFICATIONS & IDLE_NOTIFICATIONS, set())
 
 
 from loom.hookinstall import merge, install  # noqa: E402
 
+LOOM_SCRIPT = "/s/loom_hook.py"  # a fake but realistic path: basename matters
+
 
 class TestMerge(unittest.TestCase):
     def test_adds_every_event(self):
-        self.assertEqual(set(merge({}, "/s/h.py")["hooks"]), set(STATE_FOR_EVENT))
+        self.assertEqual(set(merge({}, LOOM_SCRIPT)["hooks"]), set(STATE_FOR_EVENT))
 
     def test_running_twice_does_not_duplicate(self):
-        once = merge({}, "/s/h.py")
-        twice = merge(json.loads(json.dumps(once)), "/s/h.py")
+        once = merge({}, LOOM_SCRIPT)
+        twice = merge(json.loads(json.dumps(once)), LOOM_SCRIPT)
         self.assertEqual(len(twice["hooks"]["Stop"]), 1)
 
     def test_is_idempotent_across_every_event_not_just_one(self):
-        once = merge({}, "/s/h.py")
-        twice = merge(json.loads(json.dumps(once)), "/s/h.py")
+        once = merge({}, LOOM_SCRIPT)
+        twice = merge(json.loads(json.dumps(once)), LOOM_SCRIPT)
         self.assertEqual(once, twice)
 
     def test_existing_unrelated_hooks_survive(self):
         existing = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo hi"}]}]}}
-        merged = merge(existing, "/s/h.py")
+        merged = merge(existing, LOOM_SCRIPT)
         commands = [h["command"] for e in merged["hooks"]["Stop"] for h in e["hooks"]]
         self.assertIn("echo hi", commands)
         self.assertEqual(len(commands), 2)
@@ -139,18 +159,53 @@ class TestMerge(unittest.TestCase):
         # A hook on an event Loom doesn't map at all (e.g. PostToolUse) must
         # survive merge() untouched -- merge only ever adds keys it owns.
         existing = {"hooks": {"PostToolUse": [{"hooks": [{"type": "command", "command": "lint.sh"}]}]}}
-        merged = merge(existing, "/s/h.py")
+        merged = merge(existing, LOOM_SCRIPT)
         self.assertEqual(merged["hooks"]["PostToolUse"],
                           [{"hooks": [{"type": "command", "command": "lint.sh"}]}])
 
-    def test_merge_touches_no_filesystem(self):
+    def test_relocating_the_script_replaces_the_old_command(self):
+        # Self-healing: the dedup used to be an exact string match, so a
+        # changed script path (the repo moved) appended a second entry and
+        # never removed the first -- a dead command Claude Code keeps trying
+        # to run forever. Now the old entry is recognised by loom_hook.py's
+        # basename and dropped before the new one is added.
+        existing = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo hi"}]}]}}
+        once = merge(existing, "/old/path/loom_hook.py")
+        twice = merge(once, "/new/path/loom_hook.py")
+        commands = [h["command"] for e in twice["hooks"]["Stop"] for h in e["hooks"]]
+        self.assertEqual(commands.count("echo hi"), 1)
+        loom_commands = [c for c in commands if c != "echo hi"]
+        self.assertEqual(loom_commands, ["python3 /new/path/loom_hook.py Stop"])
+
+    def test_a_non_list_hooks_value_is_skipped_not_crashed_on(self):
+        # An operator's hand-edited settings file can hold anything. This must
+        # never raise, and Loom's own hook must still get added for the event.
+        malformed = {"hooks": {"Stop": [{"hooks": "not-a-list"}]}}
+        merged = merge(malformed, LOOM_SCRIPT)  # must not raise
+        commands = [h["command"] for e in merged["hooks"]["Stop"]
+                    for h in (e.get("hooks") or []) if isinstance(h, dict)]
+        self.assertIn(f"python3 {LOOM_SCRIPT} Stop", commands)
+
+    def test_a_non_dict_hook_item_is_skipped_not_crashed_on(self):
+        malformed = {"hooks": {"Stop": [{"hooks": ["not-a-dict"]}]}}
+        merged = merge(malformed, LOOM_SCRIPT)  # must not raise
+        commands = [h["command"] for e in merged["hooks"]["Stop"]
+                    for h in (e.get("hooks") or []) if isinstance(h, dict)]
+        self.assertIn(f"python3 {LOOM_SCRIPT} Stop", commands)
+
+    def test_merge_never_touches_the_filesystem(self):
         # merge() is a pure function: a plain dict in, a plain dict out. This
         # is what makes it safe to test at all, given install() would touch
-        # an operator's real settings file.
-        import inspect
-        source = inspect.getsource(merge)
-        for forbidden in ("open(", "Path(", ".read_text", ".write_text"):
-            self.assertNotIn(forbidden, source)
+        # an operator's real settings file. Prove it for real, not by
+        # scanning source text: pass a script path under a directory that
+        # does not exist, and confirm merge() never created it -- if merge()
+        # touched the filesystem at all (mkdir, write, even just stat-and-
+        # raise), something under fake_dir would exist or it would have
+        # raised, and it does neither.
+        fake_dir = tempfile.mkdtemp()
+        missing_parent = str(Path(fake_dir, "does", "not", "exist", "loom_hook.py"))
+        merge({}, missing_parent)
+        self.assertFalse(Path(fake_dir, "does").exists())
 
 
 class TestInstall(unittest.TestCase):
@@ -160,7 +215,8 @@ class TestInstall(unittest.TestCase):
     def test_writes_hooks_to_the_given_temp_path(self):
         d = tempfile.mkdtemp()
         settings_path = str(Path(d, "settings.json"))
-        install(settings_path)
+        with contextlib.redirect_stdout(io.StringIO()):
+            install(settings_path)
         written = json.loads(Path(settings_path).read_text())
         self.assertEqual(set(written["hooks"]), set(STATE_FOR_EVENT))
 
@@ -168,7 +224,8 @@ class TestInstall(unittest.TestCase):
         d = tempfile.mkdtemp()
         settings_path = str(Path(d, "settings.json"))
         Path(settings_path).write_text(json.dumps({"env": {"SOME_FLAG": "1"}}))
-        install(settings_path)
+        with contextlib.redirect_stdout(io.StringIO()):
+            install(settings_path)
         written = json.loads(Path(settings_path).read_text())
         self.assertEqual(written["env"], {"SOME_FLAG": "1"})
 

@@ -89,7 +89,14 @@ def handle(event: str, payload: dict, state_dir: str, now: str, pid: int) -> dic
         "pid": pid,
     }
     Path(state_dir).mkdir(parents=True, exist_ok=True)
-    tmp = Path(state_dir, f".{session_id}.tmp")
+    # Per-process temp name: a single session can fire PreToolUse concurrently
+    # when a turn issues parallel tool calls, and two invocations racing on the
+    # same ".<session_id>.tmp" path would clobber or FileNotFoundError each
+    # other's replace(). Each process gets its own temp file; the final
+    # replace() onto "<session_id>.json" stays atomic, and whichever write
+    # lands last on the real file wins -- which is correct, since the newest
+    # state is the one we want.
+    tmp = Path(state_dir, f".{session_id}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(record))
     tmp.replace(Path(state_dir, f"{session_id}.json"))
     return record
@@ -102,7 +109,16 @@ def main() -> int:
     except (json.JSONDecodeError, ValueError):
         payload = {}
     now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-    handle(event, payload, DEFAULT_STATE_DIR, now, os.getppid())
+    try:
+        handle(event, payload, DEFAULT_STATE_DIR, now, os.getppid())
+    except OSError as exc:
+        # Per the Claude Code hooks docs: exit 2 is a blocking error, any other
+        # non-zero exit is non-blocking (the triggering tool call proceeds
+        # regardless), and Notification hooks cannot block at all. So a crash
+        # here would never break anything -- it would just spam the transcript
+        # with a traceback on every single firing. Print one line to stderr
+        # (visible in the transcript, so the failure isn't hidden) and exit 0.
+        print(f"loom hook: could not write state: {exc}", file=sys.stderr)
     return 0
 
 
