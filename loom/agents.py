@@ -73,26 +73,34 @@ def agent_for(path: str, sessions: list[dict], panes: list[dict]) -> AgentState:
             matching_sessions.append(s)
 
     if matching_sessions:
-        # Corroboration: tmux is the only independent signal for whether a hook's
-        # active state is still real. If tmux has no visibility at all (no panes
-        # anywhere), nothing can be corroborated, so we trust the hook rather than
-        # declare every agent dead just because tmux isn't running. If tmux does
-        # have visibility, an active state is only corroborated when some pane in
-        # this worktree is actually running an agent command.
-        has_agent_pane = any(
-            _pane_in_worktree(p["path"], norm_path) and p["command"] in AGENT_COMMANDS
-            for p in panes
+        # Corroboration is counting, not ranking. Recency tells us *which*
+        # session is still alive; it must never be used to decide *which state
+        # matters most* — that is priority's job, below, and priority alone.
+        panes_here = sum(
+            1 for p in panes
+            if _pane_in_worktree(p["path"], norm_path) and p["command"] in AGENT_COMMANDS
         )
-        tmux_has_visibility = bool(panes)
+        active_sessions = [s for s in matching_sessions if s.get("state") in ACTIVE_STATES]
+        active = len(active_sessions)
 
-        # A crashed session's hook file is never updated again, so when two
-        # session files claim an active state for the same cwd, the most
-        # recently-updated one is the one tmux is actually seeing; any other,
-        # older active claim for that same cwd is an abandoned leftover, no
-        # matter how "urgent" its raw state would otherwise rank.
-        active_since = [s.get("since", "") for s in matching_sessions
-                        if s.get("state") in ACTIVE_STATES]
-        most_recent_active = max(active_since) if active_since else None
+        stale_ids: set[int] = set()
+        if not panes:
+            # No tmux visibility at all: nothing can be corroborated either way,
+            # so trust every hook state as-is rather than declare everything
+            # dead just because tmux isn't running.
+            pass
+        elif panes_here == 0:
+            # tmux has visibility, but none of it is in this worktree: the
+            # agent is gone. Every active claim here is stale.
+            stale_ids = {id(s) for s in active_sessions}
+        elif panes_here < active:
+            # Fewer corroborating panes than active claims: the surplus must be
+            # dead. Keep the `panes_here` freshest by `since` as live — a live
+            # session keeps updating its timestamp, a crashed one doesn't — and
+            # stale the rest, regardless of their raw priority.
+            ranked = sorted(active_sessions, key=lambda s: s.get("since", ""), reverse=True)
+            stale_ids = {id(s) for s in ranked[panes_here:]}
+        # else panes_here >= active: every active claim could be live; stale nothing.
 
         # Compute the effective (post-staleness) state for every candidate
         # *before* ranking by priority, so a live session always wins on its own
@@ -100,9 +108,8 @@ def agent_for(path: str, sessions: list[dict], panes: list[dict]) -> AgentState:
         effective: list[tuple[str, dict]] = []
         for s in matching_sessions:
             state = s.get("state", "unknown")
-            if state in ACTIVE_STATES and tmux_has_visibility:
-                if not has_agent_pane or s.get("since", "") != most_recent_active:
-                    state = "stale"
+            if id(s) in stale_ids:
+                state = "stale"
             effective.append((state, s))
 
         # Sort by priority (ascending), then by since (descending, most recent
