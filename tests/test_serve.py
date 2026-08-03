@@ -15,6 +15,7 @@ tear the server down in `tearDown`, so nothing is left listening afterward.
 from __future__ import annotations
 
 import inspect
+import io
 import json
 import socket
 import threading
@@ -22,6 +23,7 @@ import unittest
 import unittest.mock
 import urllib.error
 import urllib.request
+from contextlib import redirect_stdout
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -275,29 +277,63 @@ class TestServerBindsLoopbackOnly(unittest.TestCase):
     """The single hardest constraint on this task: bind 127.0.0.1, never
     0.0.0.0 — Loom serves git history, PR data and session state, and must
     never be reachable from the network. Checked by hand once during Task 10;
-    a hand check does not persist across a future edit to `run_server`'s
-    default. Two independent guards:
+    a hand check does not persist across a future edit.
+
+    Two independent things can break the loopback guarantee, and fix-round-2's
+    first pass at this class only covered one of them:
 
     - `run_server`'s default `host` parameter, via `inspect.signature` — fails
       the suite the moment that default changes, even if nobody ever starts a
       server in a test.
-    - an actual bound socket, asserting the POSITIVE ("127.0.0.1") and the
-      NEGATIVE ("not 0.0.0.0") explicitly, so this cannot pass by matching a
-      truthy value or a substring.
+    - the actual bind CALL inside `run_server` — hardcoding `"0.0.0.0"` at the
+      `ThreadingHTTPServer((host, port), Handler)` line, while leaving the
+      `host="127.0.0.1"` default untouched, would satisfy the first guard and
+      still listen on every interface. `test_run_server_actually_passes_the_
+      loopback_host_to_the_server_constructor` calls the real `run_server` and
+      inspects the tuple it actually hands to the server constructor — a
+      `ThreadingHTTPServer` spy stands in so no real socket is ever opened, and
+      a patched `threading.Thread` keeps the (real, subprocess-calling) refresh
+      loop from ever starting. Verified by mutation: hardcoding `"0.0.0.0"` at
+      that line made this test fail while leaving the other 179 tests green —
+      see the fix-round-3 note in the report for the exact commands.
+
+    An earlier version of this class also asserted `addr == "127.0.0.1"`
+    immediately followed by `assertNotEqual(addr, "0.0.0.0")` against a
+    hand-built `ThreadingHTTPServer(("127.0.0.1", 0), ...)` — unconditionally
+    true given the line above it, since the literal was typed directly into
+    the test. It tested that the socket module honors its own arguments, not
+    that this codebase passes the right one. Deleted in favor of the
+    mutation-verified end-to-end test above, which actually exercises
+    `run_server`.
     """
 
     def test_run_servers_default_host_parameter_is_loopback(self):
         default = inspect.signature(run_server).parameters["host"].default
         self.assertEqual(default, "127.0.0.1")
 
-    def test_a_server_bound_to_that_default_listens_on_loopback_not_all_interfaces(self):
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        try:
-            addr = server.server_address[0]
-            self.assertEqual(addr, "127.0.0.1")
-            self.assertNotEqual(addr, "0.0.0.0")
-        finally:
-            server.server_close()
+    def test_run_server_actually_passes_the_loopback_host_to_the_server_constructor(self):
+        recorded: dict = {}
+
+        class FakeServer:
+            def __init__(self, address, handler_cls):
+                recorded["address"] = address
+
+            def serve_forever(self):
+                # run_server already catches KeyboardInterrupt and returns 0;
+                # this ends the call without ever opening a real socket.
+                raise KeyboardInterrupt
+
+        with unittest.mock.patch.object(serve, "ThreadingHTTPServer", FakeServer), \
+             unittest.mock.patch("threading.Thread") as fake_thread_cls:
+            # The refresh loop calls the real, subprocess-invoking build_snapshot;
+            # patching Thread out means it is constructed (harmlessly) but
+            # .start() never actually runs it.
+            with redirect_stdout(io.StringIO()):
+                result = serve.run_server(port=0)
+
+        self.assertEqual(result, 0)
+        fake_thread_cls.return_value.start.assert_called_once()
+        self.assertEqual(recorded["address"], ("127.0.0.1", 0))
 
 
 class TestHandlerRoutes(unittest.TestCase):
