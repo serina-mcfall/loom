@@ -37,7 +37,7 @@ These were chosen explicitly and are not open for re-litigation during planning.
 | Moment of use | Glance on return, live in a pane, **and** triage ranking |
 | Scope | Current repository, with an `--all` flag widening to every Launchpad child |
 | Form factor | Local browser dashboard **and** a Claude Code skill |
-| Agent state source | Hooks are authoritative; process liveness is the fallback |
+| Agent state source | Hooks say what an agent is doing; the process list corroborates that it exists |
 | v1 slice | Everything `git` + `gh` + hooks can feed. Cost/telemetry and replay deferred |
 | Home | Its own repository (`loom`); the skill lives in `serina-skills` and drives it |
 
@@ -127,7 +127,7 @@ The interface between every unit. Versioned, because two consumers parse it.
 
     "prs": [{
       "number": 58, "title": "…", "branch": "fix/feature-b-silent-load",
-      "draft": false, "review_decision": null, "checks": "passing",
+      "draft": false, "review": null, "checks": "passing",
       "worktree": "feature-b", "updated_at": "…"
     }],
 
@@ -141,8 +141,12 @@ The interface between every unit. Versioned, because two consumers parse it.
     "flags": [{ "kind": "orphan_pr", "severity": "warn", "subject": "PR #56",
                 "detail": "branch fix/feature-a-null-case has no worktree" }],
 
-    "sources": [{ "name": "gh", "ok": false, "error": "HTTP 403 rate limited",
-                  "last_good": "2026-08-03T07:41:00+12:00" }]
+    "sources": [{ "name": "git", "ok": true },
+                { "name": "gh:prs", "ok": true },
+                { "name": "gh:issues", "ok": false, "error": "HTTP 403 rate limited",
+                  "last_good": "2026-08-03T07:41:00+12:00" },
+                { "name": "hooks", "ok": true },
+                { "name": "tmux", "ok": true }]
   }]
 }
 ```
@@ -151,10 +155,10 @@ The interface between every unit. Versioned, because two consumers parse it.
 
 | Value | Meaning |
 |---|---|
-| `working` | A hook reported activity and the process is alive |
+| `working` | A hook reported activity, uncontradicted by the process source |
 | `waiting` | A `Notification` hook fired — blocked on a permission prompt or input |
 | `idle` | Session alive, turn finished, awaiting a prompt |
-| `stale` | State file claims activity but the recorded pid is gone |
+| `stale` | Hook claims activity, but the process source sees agents and none for this tree |
 | `unknown` | Process alive, no hook data — hooks not installed for this session |
 | `stopped` | Session ended |
 
@@ -185,9 +189,11 @@ form confirmed against `--help` before it is relied on.
 
 ### Stale state is caught, not trusted
 
-A crashed agent leaves a state file reading `working` forever. `collect` cross-checks the
-recorded pid against a live process. If the file claims activity and nothing is running,
-the state is `stale` — never `working`.
+A crashed agent leaves a state file reading `working` forever. `collect` corroborates the
+hook's claim against the process source. If the process source can see agents but none for
+that worktree, the state is `stale` — never `working`. If it can see nothing at all, nothing
+is corroborated and the hook stands: declaring every agent dead on no evidence is worse than
+reporting a state that may be a few seconds old.
 
 ## Panels
 
@@ -219,7 +225,7 @@ The "needs you" strip is ordered by how much a human is the bottleneck.
 | # | Condition | Rationale |
 |---|---|---|
 | 1 | Agent blocked on a permission prompt | Burning wall-clock doing nothing; only a human unblocks it |
-| 2 | PR with passing checks and no review | Finished work, parked; only a human moves it |
+| 2 | PR with no review, and checks **not failing** | Finished work, parked; only a human moves it |
 | 3 | Two dirty worktrees touching one file | A conflict not yet paid for; cheapest to act now |
 | 4 | PR with failing checks | An agent can fix it, but a human may want to redirect |
 | 5 | Agent stopped with uncommitted work | Work at risk of being lost |
@@ -231,7 +237,7 @@ Everything else stays out of the strip and lives in the lower panels.
 
 | Hook event | Writes |
 |---|---|
-| `SessionStart` | session id, cwd, `state: idle`, pid |
+| `SessionStart` | session id, cwd, `state: idle`, pid (a debugging aid only) |
 | `UserPromptSubmit` | `state: working` |
 | `PreToolUse` | `state: working`, current tool name |
 | `Notification` | `state: waiting` — this powers rank #1 |
@@ -244,6 +250,17 @@ Written to `~/.loom/state/<session-id>.json`.
 report an agent that stopped and left uncommitted work behind. `collect` removes state
 files that have been `stopped` for more than 24 hours, so the directory does not grow
 without bound.
+
+**The pid is not a liveness signal.** A command hook runs under `sh -c`, so
+`os.getppid()` is a shell wrapper that exits within milliseconds — verified by execution
+2026-08-03. Using it for staleness would mark every hooked agent `stale` immediately,
+defeating the authoritative source entirely.
+
+**Staleness comes from corroboration.** Hooks say WHAT an agent is doing; the process list
+says WHETHER it exists. An active hook state is downgraded to `stale` only when the process
+source can see agents but none for that worktree. When it can see nothing at all — no tmux
+server — nothing is corroborated and the hook state stands, because declaring every agent
+dead on no evidence is the worse lie.
 
 **Privacy boundary.** The state file contains only: session id, working directory, state,
 tool name, timestamp, pid. No prompts, no model output, no file contents, no environment.
@@ -309,6 +326,99 @@ Deferred deliberately, not forgotten:
 2. `loom serve` is a foreground process. Closing its tmux pane stops it.
 3. The snapshot schema is versioned because two consumers parse it and would otherwise
    drift silently.
+
+## Threat model
+
+Added 2026-08-03. Loom reads from sources other people can write to, and serves the result
+over HTTP — so it needs this written down rather than assumed. The table's shape is
+borrowed from the `agent-lockdown-challenge` common loop, whose central distinction applies
+directly here: **a prompt is guidance; a harness or sandbox is containment.** The same
+holds for a spec — a rule stated in prose is not a boundary until something enforces it.
+
+| Area | Answer |
+|---|---|
+| **Useful task** | Report the true state of a worktree fleet to one local human |
+| **Untrusted input** | Branch names, commit subjects, file paths, PR and issue titles, label and author names, tmux window names, and every hook state file |
+| **Valuable access** | The full git history and working trees of every watched repo; `gh` running under the operator's authenticated credentials; `~/.loom/state/`; the ability to spawn subprocesses |
+| **Exit paths** | The HTTP server; the CLI's stdout, which the skill pipes into a conversation transcript; the browser page |
+| **Boundary** | Enforced in code and listed below — not in prose |
+
+### Who controls the untrusted inputs
+
+Worth stating plainly, because it is easy to assume this data is ours:
+
+- **Anyone who can open a pull request or issue** controls PR titles, issue titles, labels
+  and author names. On a public repository that is anyone at all.
+- **Anyone who can push a branch** controls branch names, commit subjects and file paths.
+- **Any agent** controls its own hook state file, including the `cwd` it claims.
+
+### Boundaries that are enforced
+
+Each was verified rather than assumed, on 2026-08-03:
+
+| Boundary | Mechanism | How it was checked |
+|---|---|---|
+| No shell interpretation of any command | `subprocess.run` with an argv list; **no `shell=True` anywhere**, no `os.system` | grepped the whole package |
+| Untrusted strings never become markup | the page sets `textContent` only; **zero uses of `innerHTML`** | grepped the page source |
+| The server is not reachable off-host | bound to `127.0.0.1`, never `0.0.0.0` | stated in `serve`; verify with `ss -ltnp` |
+| No conversation content leaves a session | the hook records six fields; `transcript_path` is deliberately not among them | asserted by a test that passes a payload containing a prompt and a credentials path |
+| `gh` cannot act, only read | only `pr list` and `issue list` are ever invoked | no write subcommand exists in the code |
+| No third-party supply chain | standard library only | no dependency file exists |
+
+### Gaps, with honest severity
+
+| Gap | Severity | Why |
+|---|---|---|
+| **A sandboxed agent may be reported `stale`** | **Medium** | Staleness corroborates against `pane_current_command ∈ {claude, node}`. An agent in a sandboxed lane may present as `bwrap`, `docker` or a wrapper, so Loom would see no agent and mark a healthy one dead. Untested — needs a lane running to confirm |
+| A hook state file is trusted absolutely | Low | Any agent can claim any state, or a `cwd` belonging to another worktree, masking a real agent there. Writing the file already requires local access |
+| `origin_repo` accepts a leading `--` | Low | `git@github.com:--upload-pack=evil/x.git` yields `--upload-pack=evil/x`, which is then passed as a `-R` value. Requires write access to `.git/config` first. GitHub names cannot start with `-`, so the regex should reject it |
+| The snapshot contains `$HOME` paths | Low | The CLI's output names the operator's home directory and repository layout, and the skill pipes that into a conversation transcript |
+| The local server has no origin check or CSP | Low | Any process on the host can read the snapshot. Browsers block cross-origin reads without CORS headers, and none are set, but DNS rebinding against a loopback service is a known class |
+
+### The rule these gaps share
+
+Every one is an instance of the same principle this document already applies to error
+reporting: **a boundary that is true by accident is not a boundary.** The page is
+XSS-safe because of how it happened to be written, not because a rule requires it. That is
+now a stated requirement, and any future change that reaches for `innerHTML` is a defect.
+
+## Corrections made during execution
+
+Recorded rather than silently rewritten, because a spec that quietly matches whatever got
+built teaches nobody anything. Each was forced by evidence, and each is dated 2026-08-03.
+
+**1. Rank 2 asked for the impossible.** It read "PR with passing checks and no review".
+Observed on the watched repository: every open PR has `statusCheckRollup: []` because no CI
+is configured, so `checks` is `"none"` and a condition requiring `"passing"` could never
+fire once. The second-most-important alert in the product was unreachable. Corrected above
+to "no review, and checks not failing", where `"none"` counts as not failing.
+
+**2. One `gh` source became two.** The `sources` example below shows a single `gh` entry.
+PRs and issues are two independent `gh` calls that can fail independently — the shipped
+snapshot therefore carries `gh:prs` and `gh:issues` separately. A single entry meant a
+failed issue fetch could hide behind a successful PR fetch, which is this document's
+founding incident reproduced inside the mechanism written to prevent it.
+
+**3. `hooks` is never a failed source.** An empty state directory is the expected condition
+before hooks are installed, not a breakage. Reporting it as `ok: false` was the same
+empty-versus-broken confusion the `sources` list exists to prevent. How many agents
+actually have hook data is derivable from each worktree's `agent.source`.
+
+**4. The field is `review`, not `review_decision`.** The snapshot example below uses
+`review_decision`; the implementation and both its consumers use `review`. The shorter name
+won because it was already threaded through the code when the drift was noticed. Named here
+so the example is not read as authoritative.
+
+**5. Check states are whitelisted, not blacklisted.** Not in the original text, but it
+belongs with this document's other honesty rules: `checks` is reported as `"passing"` only
+for states known to be good — `SUCCESS`, `NEUTRAL`, `SKIPPED`. Anything unrecognised,
+including states GitHub has not invented yet, degrades to `"pending"`. A blacklist fails
+open, and a dashboard that calls an unknown state green is lying in the one direction that
+matters.
+
+**6. Task 0 needed a second mechanism.** Silencing the tooling artefacts took both a
+committed `.gitignore` and the shared `.git/info/exclude`. A `.gitignore` on `main` reaches
+no other branch's checkout, so on its own it changed nothing across six worktrees.
 
 ## Grounding
 

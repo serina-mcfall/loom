@@ -1,0 +1,127 @@
+# Phase 1 of the PR gate: the deterministic checks only.
+#
+# No API key, no secrets, no LLM, no per-run cost. Everything here either passes
+# or fails for a reason a human can reproduce locally with one command.
+#
+# Why this exists before any Claude review: a green status check that GitHub's
+# branch protection can require, without needing an approving human review.
+# Required approving reviews deadlock a solo repository — the author cannot
+# approve their own PR — and the escape used previously was a commit status,
+# which has no UI at all. A workflow run has one.
+#
+# Phase 2 (a Claude review behind a label trigger) is deliberately NOT here.
+# See research/claude-pr-review-automation.md in serina-learning for why: auth
+# and cost were settled first, and one open question about subscription auth in
+# CI is still unresolved.
+
+name: checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same branch makes the older run irrelevant. Cancel it
+# rather than paying for a verdict on superseded code.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests and constraints
+    runs-on: ubuntu-latest
+    # A hung job otherwise burns minutes until the 6-hour default. Nothing here
+    # legitimately takes more than a minute.
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # No install step, and that is the point: if this workflow ever needs
+      # `pip install`, the zero-dependency constraint has already been broken.
+      - name: Confirm the interpreter
+        run: python3 --version
+
+      - name: Every import is stdlib or first-party
+        run: python3 scripts/check_stdlib_only.py
+
+      - name: Test suite
+        run: python3 -m unittest discover -s tests -v
+
+      # The suite includes a test asserting the server binds 127.0.0.1 and never
+      # 0.0.0.0. This step is a second, independent guard on the same constraint,
+      # because it is the one failure in this project that would be invisible in
+      # normal use and unrecoverable if shipped: it reads the source directly
+      # rather than trusting the test to still exist.
+      - name: No server binds to all interfaces
+        run: |
+          if grep -rn '0\.0\.0\.0' loom/ loom_cli.py bin/ 2>/dev/null; then
+            echo "FAIL: a bind address of 0.0.0.0 appears in the source." >&2
+            echo "Loom serves git history, PR data and session state. It must" >&2
+            echo "never be reachable off this machine." >&2
+            exit 1
+          fi
+          echo "OK: no 0.0.0.0 in loom/, loom_cli.py or bin/"
+
+      # A smoke test that exercises the real collection path end to end, in an
+      # environment where `gh` is present but NOT authenticated. That is hard to
+      # arrange locally and it is exactly the degradation this project cares
+      # about: the gh sources must come back `ok: false` with a reason, while the
+      # snapshot as a whole stays valid and the git sources stay `ok: true`.
+      #
+      # Note what is deliberately NOT asserted: that gh succeeds. Asserting that
+      # would fail here for the right reason and teach us to weaken the check.
+      - name: Collect a real snapshot, and degrade honestly without gh auth
+        run: |
+          chmod +x bin/loom
+          # Written outside the working tree on purpose: a snapshot dropped in the
+          # repo root would dirty it, and Loom reports dirty counts about itself.
+          ./bin/loom snapshot --json > "${RUNNER_TEMP:-/tmp}/snapshot.json"
+          python3 - <<'PY'
+          import json, os, sys
+
+          snap = json.load(open(os.path.join(os.environ.get("RUNNER_TEMP", "/tmp"),
+                                             "snapshot.json")))
+          assert snap["schema"] == 1, f"schema is {snap['schema']!r}, expected 1"
+          assert snap["repos"], "no repos in snapshot — collection found nothing at all"
+
+          repo = snap["repos"][0]
+          sources = {s["name"]: s for s in repo["sources"]}
+          print("sources:")
+          for name, s in sorted(sources.items()):
+              print(f"  {name:22} ok={s['ok']!s:5} {s.get('error') or ''}")
+
+          # `git` (the worktree list) must work: it is the one source with no
+          # external dependency at all.
+          #
+          # `git:default-branch` is deliberately NOT required to succeed. In a
+          # fresh clone or a CI checkout `origin/HEAD` is often unresolvable, and
+          # the source correctly reports ok=false with that reason rather than
+          # guessing silently. Requiring it here would fail the build for correct
+          # behaviour — which is how a check gets weakened until it means nothing.
+          assert "git" in sources, f"no `git` source present, only: {sorted(sources)}"
+          assert sources["git"]["ok"], f"the git worktree source failed: {sources['git']}"
+
+          # Every source must state ok either way — a source that reports
+          # neither success nor a reason is the failure mode this project
+          # exists to refuse.
+          for name, s in sources.items():
+              assert isinstance(s["ok"], bool), f"{name}: ok is not a bool"
+              if not s["ok"]:
+                  assert s.get("error"), f"{name}: not ok, but gave no reason"
+
+          degraded = sorted(n for n, s in sources.items() if not s["ok"])
+          print(f"\nOK: schema 1, {len(snap['repos'])} repo(s), "
+                f"git worktree source healthy, "
+                f"{len(degraded)} source(s) degraded with a stated reason"
+                + (f": {', '.join(degraded)}" if degraded else ""))
+          PY
