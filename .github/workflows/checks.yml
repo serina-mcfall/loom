@@ -18,6 +18,7 @@ name: checks
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
@@ -124,4 +125,122 @@ jobs:
                 f"git worktree source healthy, "
                 f"{len(degraded)} source(s) degraded with a stated reason"
                 + (f": {', '.join(degraded)}" if degraded else ""))
+          PY
+
+  # ---------------------------------------------------------------- the gate
+  # Separate job on purpose. `tests and constraints` answers "is the code sound?"
+  # This answers "did a human-run review vouch for THIS commit?" — a different
+  # question, and it should be possible to see at a glance which one failed.
+  #
+  # WHAT THIS CHECK CAN AND CANNOT PROVE
+  #
+  # It proves a READY verdict was recorded for this exact commit. It does NOT
+  # prove the review was any good — the verdict is a recorded judgement, and no
+  # workflow can re-derive judgement. Its value is narrower and still real:
+  # a review that never happened, or happened against earlier code, cannot
+  # satisfy it, and any new push invalidates it automatically.
+  #
+  # This is the half a local hook cannot do. `pr-gate.sh` stops the agent; it
+  # cannot see a merge performed in a browser. A required status check can.
+  # To make it binding, mark `verdict` as a required check in the ruleset for
+  # `main` — until then this reports and does not enforce.
+  verdict:
+    name: reviewed for this commit
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history. The step below diffs the reviewed commit against the
+          # head, and checkout is shallow (depth 1) by default — the diff would
+          # fail for lack of history, which looks identical to the gate working.
+          fetch-depth: 0
+
+      - name: A READY verdict exists for the head commit
+        env:
+          # THE TRAP THIS AVOIDS: on a pull_request event, `github.sha` is the
+          # ephemeral MERGE commit GitHub creates, not the commit the author has
+          # checked out. verdict.sh records the author's HEAD. Comparing against
+          # github.sha would fail every single time, for a reason that looks like
+          # the gate working. Always the PR head.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+
+          path = ".superpowers/verdict.json"
+          want = os.environ["HEAD_SHA"]
+
+          def block(msg):
+              print(f"BLOCKED  {msg}")
+              print()
+              print("This branch has no review recorded for its current state.")
+              print("  1. Run the review-final skill.")
+              print("  2. .claude/skills/review-final/verdict.sh record ready <PLAN_FILE>")
+              print("  3. Commit .superpowers/verdict.json and push.")
+              sys.exit(1)
+
+          # Absence blocks. A review killed by turn exhaustion writes nothing, and
+          # nothing must never read as approval.
+          if not os.path.exists(path):
+              block(f"no {path} in this branch.")
+
+          try:
+              v = json.load(open(path))
+          except Exception as exc:
+              block(f"{path} is not readable JSON ({exc}).")
+
+          state, sha = v.get("state"), v.get("sha")
+
+          if state != "READY":
+              reason = v.get("reason")
+              block(f"verdict state is {state!r}" + (f": {reason}" if reason else ""))
+
+          # THE CHICKEN-AND-EGG, and why an exact match alone cannot work.
+          #
+          # verdict.sh stamps the sha of the commit it reviewed. Committing the
+          # verdict file then creates a NEW head — so an exact-match rule can
+          # never be satisfied by anyone, ever. The first green run is impossible.
+          #
+          # The fix is not to loosen the comparison but to make it precise: the
+          # head may differ from the reviewed sha ONLY if the sole change between
+          # them is the verdict file itself. Any other file touched after the
+          # review means the review does not cover the code, and it blocks.
+          if sha != want:
+              import subprocess
+              try:
+                  changed = subprocess.run(
+                      ["git", "diff", "--name-only", f"{sha}..{want}"],
+                      capture_output=True, text=True, timeout=30,
+                  )
+              except Exception as exc:
+                  block(f"could not diff {str(sha)[:8]}..{want[:8]} ({exc}).")
+
+              if changed.returncode != 0:
+                  # An unknown sha lands here. Refusing is correct: a verdict
+                  # naming a commit this branch does not contain proves nothing.
+                  block(
+                      f"verdict names {str(sha)[:8]}, which is not reachable from "
+                      f"this PR's head {want[:8]}.\n"
+                      f"         git said: {changed.stderr.strip()[:120]}"
+                  )
+
+              files = [f for f in changed.stdout.split("\n") if f.strip()]
+              if files != [".superpowers/verdict.json"]:
+                  block(
+                      f"verdict is for {str(sha)[:8]} but head is {want[:8]}, and "
+                      f"{len(files)} file(s) changed since:\n"
+                      + "\n".join(f"           {f}" for f in files[:10])
+                      + "\n         The review does not cover this code."
+                  )
+              print(f"OPEN  verdict is for {str(sha)[:8]}; the only change since is "
+                    "the verdict file itself")
+          else:
+              print(f"OPEN  READY verdict matches head {want[:8]}")
+          print(f"      recorded {v.get('recorded_at', 'at an unstated time')}"
+                f" against plan {v.get('plan', '(unnamed)')}")
+          checks = v.get("checks") or {}
+          if checks:
+              print(f"      checks at record time: {checks}")
           PY

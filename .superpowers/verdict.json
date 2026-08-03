@@ -1,0 +1,10 @@
+{
+  "state": "READY",
+  "sha": "31106e3b220d3c57e973c4d286632257ceb5c346",
+  "plan": "(none — CI-only change, hand-recorded)",
+  "recorded_at": "2026-08-03T16:25:59+12:00",
+  "checks": {
+    "ledger": "not-run: this branch has no SDD plan",
+    "test_cmd": "not-run"
+  }
+}
