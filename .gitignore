@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .venv/
+
+# Verification stamp written by verify-gate.sh — local state, never shared.
+.claude/.verified
