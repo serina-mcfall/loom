@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from .runner import Runner
@@ -11,6 +12,21 @@ from .runner import Runner
 TMUX_FORMAT = "#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{window_name}"
 ACTIVE_STATES = {"working", "waiting", "idle"}
 AGENT_COMMANDS = {"claude", "node"}
+
+# How long an uncorroborated claim survives before it is called stale.
+#
+# `working` gets 15 minutes. The hook rewrites `since` on every tool call, so a
+# working agent's timestamp advances constantly. This is safe against a long
+# single tool call because the harness caps one Bash call at 600s, so 15 minutes
+# sits above the longest gap a live agent can produce.
+WORKING_STALE_SECONDS = 15 * 60
+
+# `waiting` and `idle` get 12 hours, because they are legitimately parked — a
+# `waiting` agent is blocked on a human BY DEFINITION and does not refresh its
+# timestamp while it waits. But it cannot wait forever: a day-old `waiting` file
+# would pin rank 1 permanently, and a strip that is never empty is a strip nobody
+# reads. This bound is what keeps the alert meaningful.
+PARKED_STALE_SECONDS = 12 * 60 * 60
 
 DEFAULT_STATE_DIR = os.path.expanduser("~/.loom/state")
 
@@ -59,7 +75,36 @@ def _pane_in_worktree(pane_path: str, norm_path: str) -> bool:
     return p == norm_path or p.startswith(norm_path + os.sep)
 
 
-def agent_for(path: str, sessions: list[dict], panes: list[dict]) -> AgentState:
+def _age_seconds(since: str | None, now: datetime) -> float | None:
+    """Seconds between `since` and `now`, or None if it cannot be determined.
+
+    None is a real answer and callers must treat it as "cannot tell", never as
+    zero and never as infinite. A missing or malformed timestamp is exactly the
+    case where guessing produces the confident wrong answer this module exists
+    to prevent.
+    """
+    if not since:
+        return None
+    try:
+        stamp = datetime.fromisoformat(since)
+    except (TypeError, ValueError):
+        return None
+    if stamp.tzinfo is None:
+        # A naive stamp cannot be subtracted from an aware `now` — that raises
+        # TypeError, which previously took out the whole of collect(). Adopt
+        # now's zone rather than assuming one.
+        stamp = stamp.replace(tzinfo=now.tzinfo)
+    return (now - stamp).total_seconds()
+
+
+def agent_for(path: str, sessions: list[dict], panes: list[dict],
+              now: datetime) -> AgentState:
+    """Resolve one worktree's agent state.
+
+    `now` is required rather than defaulted. A default would make staleness
+    depend on an invisible clock, and the one thing this function must not do is
+    decide an agent is dead for an unstated reason.
+    """
     window = next((p["window"] for p in panes if p["path"] == path), None)
 
     norm_path = os.path.realpath(path)
@@ -73,34 +118,44 @@ def agent_for(path: str, sessions: list[dict], panes: list[dict]) -> AgentState:
             matching_sessions.append(s)
 
     if matching_sessions:
-        # Corroboration is counting, not ranking. Recency tells us *which*
-        # session is still alive; it must never be used to decide *which state
-        # matters most* — that is priority's job, below, and priority alone.
-        panes_here = sum(
-            1 for p in panes
-            if _pane_in_worktree(p["path"], norm_path) and p["command"] in AGENT_COMMANDS
-        )
-        active_sessions = [s for s in matching_sessions if s.get("state") in ACTIVE_STATES]
-        active = len(active_sessions)
-
+        # STALENESS IS DECIDED BY TIMESTAMP FRESHNESS, NOT BY COUNTING PANES.
+        #
+        # It used to be counting, and that made Loom lie about live agents. The old
+        # rule read: tmux has panes somewhere but none in this worktree, therefore
+        # the agent here is gone. That inference does not hold — tmux running proves
+        # nothing about where agents live. An agent in a plain terminal, a VS Code
+        # terminal, or a pane whose cwd differs has zero panes "here" while being
+        # entirely alive. On 2026-08-03 this reported the very session that was
+        # reading the snapshot as `stale`.
+        #
+        # Counting cannot work in principle either: pane count cannot bound how many
+        # agents are alive when agents need no pane at all. So the surplus rule
+        # (`panes_here < active` -> stale the rest) was unsound for the same reason
+        # and is gone with it.
+        #
+        # The signal that DOES work is already in the data. The hook rewrites
+        # `since` on every event, so a live session's timestamp keeps advancing and
+        # a dead one's freezes. A dead process cannot update a clock.
+        #
+        # Panes take NO part in staleness now, in either direction. A first attempt
+        # let a pane in the worktree exempt sessions from ageing, but a pane cannot
+        # be attributed to a particular session — the recorded pid is the hook's own
+        # transient process — so one pane exempted every session there, and a dead
+        # session beside a live one would keep reporting `working`. That is the
+        # forbidden direction: a false `stale` says "look at this" and costs a
+        # glance, a false `working` says "all is well" and is the lie this module
+        # exists to prevent.
         stale_ids: set[int] = set()
-        if not panes:
-            # No tmux visibility at all: nothing can be corroborated either way,
-            # so trust every hook state as-is rather than declare everything
-            # dead just because tmux isn't running.
-            pass
-        elif panes_here == 0:
-            # tmux has visibility, but none of it is in this worktree: the
-            # agent is gone. Every active claim here is stale.
-            stale_ids = {id(s) for s in active_sessions}
-        elif panes_here < active:
-            # Fewer corroborating panes than active claims: the surplus must be
-            # dead. Keep the `panes_here` freshest by `since` as live — a live
-            # session keeps updating its timestamp, a crashed one doesn't — and
-            # stale the rest, regardless of their raw priority.
-            ranked = sorted(active_sessions, key=lambda s: s.get("since", ""), reverse=True)
-            stale_ids = {id(s) for s in ranked[panes_here:]}
-        # else panes_here >= active: every active claim could be live; stale nothing.
+        for s in matching_sessions:
+            if s.get("state") not in ACTIVE_STATES:
+                continue                    # stopped/unknown are already terminal
+            age = _age_seconds(s.get("since"), now)
+            if age is None:
+                continue                    # cannot tell: never conclude death
+            limit = (WORKING_STALE_SECONDS if s.get("state") == "working"
+                     else PARKED_STALE_SECONDS)
+            if age > limit:
+                stale_ids.add(id(s))
 
         # Compute the effective (post-staleness) state for every candidate
         # *before* ranking by priority, so a live session always wins on its own

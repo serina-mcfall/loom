@@ -138,8 +138,12 @@ def collect(runner: Runner, root: str,
     by_branch = {p.branch: p.number for p in prs}
     tree_by_branch = {t.branch: t.dir for t in trees if t.branch}
     tree_dicts = []
+    now = datetime.now(timezone.utc).astimezone()
     for t in trees:
-        a = agents_mod.agent_for(t.path, sessions, panes)
+        # One clock for the whole snapshot: two worktrees must never be aged
+        # against different instants, or the same session could read live in
+        # one row and stale in the next.
+        a = agents_mod.agent_for(t.path, sessions, panes, now)
         tree_dicts.append({
             "dir": t.dir, "path": t.path, "branch": t.branch, "head": t.head,
             "ahead": t.ahead, "behind": t.behind, "dirty": asdict(t.dirty),
