@@ -70,6 +70,74 @@ class TestNeedsYou(unittest.TestCase):
         self.assertEqual([i["rank"] for i in items], sorted(i["rank"] for i in items))
         self.assertEqual(items[0]["rank"], 1)
 
+    def test_draft_pr_with_failing_checks_is_silent(self):
+        # A draft is exempt from both rank 2 (awaiting review) and rank 4 (failing checks).
+        # Failing checks in a draft are expected (work in progress), so ranking them
+        # would create noise and train users to ignore the strip.
+        d = pr(10, "feature", checks="failing")
+        d["draft"] = True
+        self.assertEqual(needs_you(repo(prs=[d])), [])
+
+    def test_pr_numbers_sort_numerically_not_lexicographically(self):
+        # PR #9 should come before #10, not PR #10 before #9 (which is lexicographic order).
+        items = needs_you(repo(prs=[
+            pr(10, "x", review=None),
+            pr(9, "x", review=None),
+            pr(11, "x", review=None),
+        ]))
+        subjects = [i["subject"] for i in items]
+        self.assertEqual(subjects, ["PR #9", "PR #10", "PR #11"])
+
+    def test_missing_worktree_dir_does_not_raise(self):
+        # If a worktree dict is missing "dir", the entry should use a placeholder,
+        # not raise KeyError and lose the entire strip.
+        items = needs_you(repo(worktrees=[
+            {"agent": {"state": "waiting", "source": "hook"}, "branch": "x",
+             "dirty": {"staged": 0, "unstaged": 0, "untracked": 0}},
+        ]))
+        self.assertEqual(items[0]["subject"], "<unnamed worktree>")
+
+    def test_missing_pr_number_does_not_raise(self):
+        # If a PR dict is missing "number", the entry should use a placeholder,
+        # not raise KeyError and lose the entire strip.
+        items = needs_you(repo(prs=[
+            {"branch": "x", "review": None, "checks": "none", "draft": False},
+        ]))
+        self.assertEqual(items[0]["subject"], "PR #?")
+
+    def test_collision_with_single_branch_is_silent(self):
+        # A collision requires at least two branches; one branch is not a collision.
+        items = needs_you(repo(collisions=[
+            {"file": "src/a.ts", "branches": ["one"]},
+        ]))
+        self.assertEqual(items, [])
+
+    def test_missing_collision_file_does_not_raise(self):
+        # If a collision dict is missing "file", the entry should use a placeholder.
+        items = needs_you(repo(collisions=[
+            {"branches": ["one", "two"]},
+        ]))
+        self.assertEqual(items[0]["subject"], "<unknown file>")
+
+    def test_multiple_items_at_different_ranks_all_appear(self):
+        # A fixture creating entries at two different ranks should return both.
+        items = needs_you(repo(
+            worktrees=[tree("a", "feature", "waiting")],
+            prs=[pr(1, "feature", review=None)],
+        ))
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]["rank"], 1)
+        self.assertEqual(items[1]["rank"], 2)
+
+    def test_quiet_fleet_remains_empty(self):
+        # Negative control: a healthy fleet with working agents produces an empty strip.
+        # This is the most important test in the file.
+        result = needs_you(repo(
+            worktrees=[tree("a", "feature-a", "working")],
+            prs=[pr(1, "feature-a", review="APPROVED")],
+        ))
+        self.assertEqual(result, [])
+
 
 if __name__ == "__main__":
     unittest.main()
