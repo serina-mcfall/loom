@@ -231,7 +231,7 @@ Everything else stays out of the strip and lives in the lower panels.
 
 | Hook event | Writes |
 |---|---|
-| `SessionStart` | session id, cwd, `state: idle`, pid |
+| `SessionStart` | session id, cwd, `state: idle`, pid (a debugging aid only) |
 | `UserPromptSubmit` | `state: working` |
 | `PreToolUse` | `state: working`, current tool name |
 | `Notification` | `state: waiting` — this powers rank #1 |
@@ -244,6 +244,17 @@ Written to `~/.loom/state/<session-id>.json`.
 report an agent that stopped and left uncommitted work behind. `collect` removes state
 files that have been `stopped` for more than 24 hours, so the directory does not grow
 without bound.
+
+**The pid is not a liveness signal.** A command hook runs under `sh -c`, so
+`os.getppid()` is a shell wrapper that exits within milliseconds — verified by execution
+2026-08-03. Using it for staleness would mark every hooked agent `stale` immediately,
+defeating the authoritative source entirely.
+
+**Staleness comes from corroboration.** Hooks say WHAT an agent is doing; the process list
+says WHETHER it exists. An active hook state is downgraded to `stale` only when the process
+source can see agents but none for that worktree. When it can see nothing at all — no tmux
+server — nothing is corroborated and the hook state stands, because declaring every agent
+dead on no evidence is the worse lie.
 
 **Privacy boundary.** The state file contains only: session id, working directory, state,
 tool name, timestamp, pid. No prompts, no model output, no file contents, no environment.
