@@ -23,8 +23,7 @@ LAUNCHPAD = os.path.expanduser("~/Launchpad")
 
 
 def discover_repos(base: str,
-                   listdir: Callable[[str], list[str]] = os.listdir,
-                   isdir: Callable[[str], bool] = os.path.isdir) -> list[str]:
+                   listdir: Callable[[str], list[str]] = os.listdir) -> list[str]:
     found = []
     try:
         entries = sorted(listdir(base))
@@ -32,13 +31,15 @@ def discover_repos(base: str,
         return []
     for name in entries:
         path = os.path.join(base, name)
-        # A repo is a child directory whose own ".git" entry is present. Checked via
-        # the injected isdir on the ".git" path itself, not by listing the child —
-        # discover_repos only walks ~/Launchpad's immediate children (plain clones),
-        # never the linked worktrees nested a level below, so the ".git is a file"
-        # trap documented in Task 6's find_flags does not apply here.
-        if isdir(os.path.join(path, ".git")):
-            found.append(path)
+        # Test for the ENTRY, never its type: a linked worktree's .git is a file, not
+        # a directory, so isdir(child/.git) would silently skip it. This matches
+        # find_flags in loom/collect.py, which tests presence for the same reason —
+        # two functions answering "is this a git checkout?" must agree on the rule.
+        try:
+            if ".git" in listdir(path):
+                found.append(path)
+        except OSError:
+            continue
     return found
 
 

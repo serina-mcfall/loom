@@ -8,14 +8,41 @@ from loom_cli import main, discover_repos
 
 
 class TestDiscoverRepos(unittest.TestCase):
-    def test_finds_children_containing_a_git_entry(self):
-        tree = {"/base": ["a", "b", "notarepo"]}
-        isdir = lambda p: p in ("/base/a/.git", "/base/b/.git")
-        self.assertEqual(discover_repos("/base", lambda d: tree[d], isdir),
-                         ["/base/a", "/base/b"])
+    def test_a_linked_worktree_whose_git_is_a_file_is_included(self):
+        # The regression this fix round exists for: a linked worktree's .git is a
+        # file, not a directory. Testing isdir(child/.git) silently skips it.
+        tree = {"/base": ["linked-wt"], "/base/linked-wt": [".git", "README.md"]}
+        self.assertEqual(discover_repos("/base", lambda d: tree[d]), ["/base/linked-wt"])
+
+    def test_a_plain_clone_whose_git_is_a_directory_is_still_included(self):
+        tree = {"/base": ["main-repo"], "/base/main-repo": [".git", "README.md"]}
+        self.assertEqual(discover_repos("/base", lambda d: tree[d]), ["/base/main-repo"])
+
+    def test_a_child_with_no_git_and_a_plain_file_are_both_excluded(self):
+        tree = {"/base": ["notarepo", "loosefile.txt"], "/base/notarepo": ["README.md"]}
+
+        def listdir(d):
+            if d == "/base/loosefile.txt":
+                raise NotADirectoryError(d)  # a file, not a directory
+            return tree[d]
+
+        self.assertEqual(discover_repos("/base", listdir), [])
 
     def test_a_base_with_no_repos_returns_nothing(self):
-        self.assertEqual(discover_repos("/base", lambda d: ["x"], lambda p: False), [])
+        tree = {"/base": ["x"], "/base/x": ["notes.txt"]}
+        self.assertEqual(discover_repos("/base", lambda d: tree[d]), [])
+
+    def test_only_the_injected_listdir_is_consulted_never_the_real_filesystem(self):
+        calls = []
+        tree = {"/base": ["repo"], "/base/repo": [".git"]}
+
+        def listdir(d):
+            calls.append(d)
+            return tree[d]
+
+        result = discover_repos("/base", listdir)
+        self.assertEqual(result, ["/base/repo"])
+        self.assertEqual(sorted(calls), ["/base", "/base/repo"])
 
 
 class TestCli(unittest.TestCase):
