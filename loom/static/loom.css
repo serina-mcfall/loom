@@ -1,0 +1,45 @@
+:root {
+  --bg: #0d1117; --panel: #161b22; --line: #30363d;
+  --text: #e6edf3;      /* 16.0:1 on --bg (computed, WCAG 2.1 relative luminance) */
+  --dim: #9fb0c0;       /* 8.5:1 on --bg  */
+  --warn: #ffb86b;      /* 11.1:1 on --bg */
+  --bad: #ff8f8f;       /* 8.6:1 on --bg  */
+  --good: #7ee2a8;      /* 12.0:1 on --bg */
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 14px/1.5 ui-monospace, "Cascadia Code", Menlo, monospace; }
+h1 { font-size: 1rem; margin: 0; letter-spacing: .14em; text-transform: uppercase; }
+h2 { font-size: .8rem; margin: 0 0 .6rem; color: var(--dim);
+     letter-spacing: .12em; text-transform: uppercase; }
+.bar { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;
+       padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
+footer.bar { border: 0; border-top: 1px solid var(--line); }
+main { display: grid; gap: 1rem; padding: 1rem;
+       grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); }
+.panel { background: var(--panel); border: 1px solid var(--line);
+         border-radius: 6px; padding: .9rem; min-width: 0; }
+.panel--needs { grid-column: 1 / -1; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: .3rem .6rem; border-bottom: 1px solid var(--line);
+         white-space: nowrap; }
+th { color: var(--dim); font-weight: 400; }
+ul, ol { margin: 0; padding: 0; list-style: none; }
+.needs-item { padding: .35rem 0; border-bottom: 1px solid var(--line); }
+.rank { display: inline-block; min-width: 2.4rem; color: var(--dim); }
+.state--waiting { color: var(--warn); }
+.state--stale, .state--stopped { color: var(--bad); }
+.state--working { color: var(--good); }
+.state--unknown, .state--none { color: var(--dim); }
+.src--bad { color: var(--bad); }
+.src--ok  { color: var(--good); }
+.sources { display: flex; gap: 1.2rem; flex-wrap: wrap; }
+.summary { margin: 0; color: var(--dim); }
+.conn { margin-left: auto; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden;
+                   clip-path: inset(50%); white-space: nowrap; }
+:focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

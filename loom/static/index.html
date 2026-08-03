@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loom</title>
+<link rel="stylesheet" href="/static/loom.css">
+</head>
+<body>
+<header class="bar">
+  <h1>Loom</h1>
+  <p id="summary" class="summary">connecting…</p>
+  <p id="conn" class="conn" role="status">●&nbsp;connecting</p>
+</header>
+
+<main>
+  <section aria-labelledby="needs-h" class="panel panel--needs">
+    <h2 id="needs-h">Needs you</h2>
+    <ul id="needs" aria-live="polite" aria-relevant="additions text"></ul>
+  </section>
+
+  <section aria-labelledby="trees-h" class="panel">
+    <h2 id="trees-h">Worktrees</h2>
+    <div class="scroll"><table id="trees">
+      <thead><tr><th scope="col">Tree</th><th scope="col">Branch</th>
+      <th scope="col">Agent</th><th scope="col">Ahead</th>
+      <th scope="col">Behind</th><th scope="col">Dirty</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section aria-labelledby="coll-h" class="panel">
+    <h2 id="coll-h">Collisions</h2>
+    <div class="scroll"><table id="collisions">
+      <caption class="visually-hidden">Files changed by more than one worktree</caption>
+      <thead><tr><th scope="col">File</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section aria-labelledby="prs-h" class="panel">
+    <h2 id="prs-h">Pull requests &amp; issues</h2>
+    <div id="prs"></div>
+  </section>
+
+  <section aria-labelledby="ticker-h" class="panel">
+    <h2 id="ticker-h">Commits</h2>
+    <ol id="ticker" class="ticker"></ol>
+  </section>
+</main>
+
+<footer class="bar" aria-labelledby="src-h">
+  <h2 id="src-h" class="visually-hidden">Data sources</h2>
+  <ul id="sources" class="sources"></ul>
+</footer>
+
+<script src="/static/loom.js"></script>
+</body>
+</html>
