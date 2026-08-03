@@ -103,6 +103,21 @@ class TestFetchPrs(unittest.TestCase):
         self.assertTrue(status.ok)
         self.assertIsNone(status.error)
 
+    def test_a_malformed_record_is_skipped_and_degrades_the_source_not_the_snapshot(self):
+        # One bad record from a future `gh` schema/version change must not crash
+        # collect() entirely, and the good record next to it must not be dropped
+        # silently under a still-green status.
+        payload = json.dumps([
+            {"number": 67, "title": "Good one", "headRefName": "fix/x", "isDraft": False,
+             "reviewDecision": "", "statusCheckRollup": [], "updatedAt": "2026-08-02T20:49:00Z"},
+            {"title": "Missing its number", "headRefName": "fix/y"},
+        ])
+        runner = ReplayRunner({PR_ARGS: {"returncode": 0, "stdout": payload, "stderr": ""}})
+        prs, status = fetch_prs(runner, "/repo", "you/example")
+        self.assertEqual([p.number for p in prs], [67])
+        self.assertFalse(status.ok)
+        self.assertIsNotNone(status.error)
+
 
 class TestFetchIssues(unittest.TestCase):
     def test_labels_are_flattened_to_names(self):
@@ -113,6 +128,17 @@ class TestFetchIssues(unittest.TestCase):
         runner = ReplayRunner({ISSUE_ARGS: {"returncode": 0, "stdout": payload, "stderr": ""}})
         issues, status = fetch_issues(runner, "/repo", "you/example")
         self.assertEqual(issues[0].labels, ["bug", "client"])
+
+    def test_a_malformed_record_is_skipped_and_degrades_the_source_not_the_snapshot(self):
+        payload = json.dumps([
+            {"number": 55, "title": "Good one", "labels": [], "assignees": []},
+            {"number": 56, "title": "Bad label", "labels": [{"not_name": "x"}], "assignees": []},
+        ])
+        runner = ReplayRunner({ISSUE_ARGS: {"returncode": 0, "stdout": payload, "stderr": ""}})
+        issues, status = fetch_issues(runner, "/repo", "you/example")
+        self.assertEqual([i.number for i in issues], [55])
+        self.assertFalse(status.ok)
+        self.assertIsNotNone(status.error)
 
 
 if __name__ == "__main__":

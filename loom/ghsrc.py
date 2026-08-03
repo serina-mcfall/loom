@@ -87,19 +87,35 @@ def _fetch_json(runner: Runner, root: str, argv: list[str], name: str):
         return None, SourceStatus(name, False, f"unparseable JSON: {exc}")
 
 
+def _degrade(name: str, bad_records: list[str]) -> SourceStatus:
+    """One SourceStatus for however many records this source failed to parse."""
+    detail = bad_records[0] if len(bad_records) == 1 else (
+        f"{bad_records[0]} ({len(bad_records)} records affected)")
+    return SourceStatus(name, False, detail)
+
+
 def fetch_prs(runner: Runner, root: str, repo: str) -> tuple[list[PullRequest], SourceStatus]:
     data, status = _fetch_json(runner, root, [
         "gh", "pr", "list", "-R", repo, "--state", "open", "--limit", "50",
         "--json", PR_FIELDS], "gh")
     if data is None:
         return [], status
-    return [PullRequest(
-        number=p["number"], title=p["title"], branch=p["headRefName"],
-        draft=bool(p.get("isDraft")),
-        review=(p.get("reviewDecision") or None),
-        checks=derive_checks(p.get("statusCheckRollup") or []),
-        updated_at=p.get("updatedAt", ""),
-    ) for p in data], status
+    prs: list[PullRequest] = []
+    bad: list[str] = []
+    for p in data:
+        try:
+            prs.append(PullRequest(
+                number=p["number"], title=p["title"], branch=p["headRefName"],
+                draft=bool(p.get("isDraft")),
+                review=(p.get("reviewDecision") or None),
+                checks=derive_checks(p.get("statusCheckRollup") or []),
+                updated_at=p.get("updatedAt", ""),
+            ))
+        except (KeyError, TypeError) as exc:
+            bad.append(f"malformed PR record: missing {exc}")
+    if bad:
+        return prs, _degrade("gh", bad)
+    return prs, status
 
 
 def fetch_issues(runner: Runner, root: str, repo: str) -> tuple[list[Issue], SourceStatus]:
@@ -108,8 +124,17 @@ def fetch_issues(runner: Runner, root: str, repo: str) -> tuple[list[Issue], Sou
         "--json", ISSUE_FIELDS], "gh")
     if data is None:
         return [], status
-    return [Issue(
-        number=i["number"], title=i["title"],
-        labels=[l["name"] for l in i.get("labels") or []],
-        assignees=[a["login"] for a in i.get("assignees") or []],
-    ) for i in data], status
+    issues: list[Issue] = []
+    bad: list[str] = []
+    for i in data:
+        try:
+            issues.append(Issue(
+                number=i["number"], title=i["title"],
+                labels=[l["name"] for l in i.get("labels") or []],
+                assignees=[a["login"] for a in i.get("assignees") or []],
+            ))
+        except (KeyError, TypeError) as exc:
+            bad.append(f"malformed issue record: missing {exc}")
+    if bad:
+        return issues, _degrade("gh", bad)
+    return issues, status
