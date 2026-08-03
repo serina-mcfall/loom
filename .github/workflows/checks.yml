@@ -151,6 +151,11 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history. The step below diffs the reviewed commit against the
+          # head, and checkout is shallow (depth 1) by default — the diff would
+          # fail for lack of history, which looks identical to the gate working.
+          fetch-depth: 0
 
       - name: A READY verdict exists for the head commit
         env:
@@ -192,13 +197,47 @@ jobs:
               reason = v.get("reason")
               block(f"verdict state is {state!r}" + (f": {reason}" if reason else ""))
 
+          # THE CHICKEN-AND-EGG, and why an exact match alone cannot work.
+          #
+          # verdict.sh stamps the sha of the commit it reviewed. Committing the
+          # verdict file then creates a NEW head — so an exact-match rule can
+          # never be satisfied by anyone, ever. The first green run is impossible.
+          #
+          # The fix is not to loosen the comparison but to make it precise: the
+          # head may differ from the reviewed sha ONLY if the sole change between
+          # them is the verdict file itself. Any other file touched after the
+          # review means the review does not cover the code, and it blocks.
           if sha != want:
-              block(
-                  f"verdict is for {str(sha)[:8]} but this PR's head is {want[:8]}.\n"
-                  "         Commits landed after the review, so it does not vouch for this code."
-              )
+              import subprocess
+              try:
+                  changed = subprocess.run(
+                      ["git", "diff", "--name-only", f"{sha}..{want}"],
+                      capture_output=True, text=True, timeout=30,
+                  )
+              except Exception as exc:
+                  block(f"could not diff {str(sha)[:8]}..{want[:8]} ({exc}).")
 
-          print(f"OPEN  READY verdict matches head {want[:8]}")
+              if changed.returncode != 0:
+                  # An unknown sha lands here. Refusing is correct: a verdict
+                  # naming a commit this branch does not contain proves nothing.
+                  block(
+                      f"verdict names {str(sha)[:8]}, which is not reachable from "
+                      f"this PR's head {want[:8]}.\n"
+                      f"         git said: {changed.stderr.strip()[:120]}"
+                  )
+
+              files = [f for f in changed.stdout.split("\n") if f.strip()]
+              if files != [".superpowers/verdict.json"]:
+                  block(
+                      f"verdict is for {str(sha)[:8]} but head is {want[:8]}, and "
+                      f"{len(files)} file(s) changed since:\n"
+                      + "\n".join(f"           {f}" for f in files[:10])
+                      + "\n         The review does not cover this code."
+                  )
+              print(f"OPEN  verdict is for {str(sha)[:8]}; the only change since is "
+                    "the verdict file itself")
+          else:
+              print(f"OPEN  READY verdict matches head {want[:8]}")
           print(f"      recorded {v.get('recorded_at', 'at an unstated time')}"
                 f" against plan {v.get('plan', '(unnamed)')}")
           checks = v.get("checks") or {}
