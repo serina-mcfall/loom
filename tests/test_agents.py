@@ -59,7 +59,9 @@ class TestTmuxPanes(unittest.TestCase):
 
 
 class TestAgentFor(unittest.TestCase):
-    # --- staleness: counting, not ranking. Each test names its branch. ---
+    # --- staleness: timestamp freshness, not pane counting. Pane counting was
+    # removed in the #9 fix because it cannot bound how many agents are alive
+    # when agents need no pane at all. Test names below say what they pin. ---
 
     def test_branch_panes_empty_entirely_preserves_every_hook_state(self):
         # Branch: panes == [] -> no tmux visibility at all, nothing to
@@ -182,16 +184,20 @@ class TestAgentFor(unittest.TestCase):
         self.assertIsNone(_age_seconds(future, NOW))
         self.assertEqual(a.state, "working")
 
-    def test_branch_panes_here_equals_active_count_nothing_staled_waiting_wins(self):
-        # Branch: panes_here (2) >= active (2) -> nothing is staled. This is the
-        # regression guard: two genuinely live sessions (one blocked on a
-        # prompt, one busy) must both survive so priority alone decides the
-        # winner. A "most recently updated wins" rule would wrongly hide the
-        # blocked `waiting` session behind the busier `working` one — this must
-        # not come back silently.
+    def test_two_live_sessions_are_decided_by_priority_not_recency(self):
+        # Renamed and REFIXTURED. It previously used naive stamps three hours
+        # before NOW, so the `working` record was staled at 175 minutes and the
+        # scenario its comment described — two live sessions, priority deciding —
+        # never ran. It stayed load-bearing for a different mechanism than the one
+        # it documented, which is this project's signature defect.
+        #
+        # The guarantee itself is unchanged and matters: a "most recently updated
+        # wins" rule would hide a blocked `waiting` session behind a busier
+        # `working` one, and rank 1 would go quiet exactly when it should not.
+        # Both records are now genuinely fresh, so priority is what is tested.
         sessions = [
-            {"cwd": "/t/one", "state": "waiting", "pid": 1, "since": "2026-08-03T09:00:00"},
-            {"cwd": "/t/one", "state": "working", "pid": 2, "since": "2026-08-03T09:05:00"},
+            {"cwd": "/t/one", "state": "waiting", "pid": 1, "since": ago(20)},
+            {"cwd": "/t/one", "state": "working", "pid": 2, "since": ago(2)},
         ]
         panes = [
             {"path": "/t/one", "command": "claude", "pid": 1, "window": "wm-a"},
@@ -227,18 +233,26 @@ class TestAgentFor(unittest.TestCase):
         ]
         self.assertEqual(agent_for("/t/one", sessions, panes, NOW).state, "working")
 
-    def test_stopped_never_becomes_stale_regardless_of_panes(self):
-        # `stopped` is never counted as active and never staled, in the three
-        # branches where a lone `stopped` session is even a coherent scenario
-        # (active == 0, so "panes_here < active" cannot apply to it alone).
+    def test_stopped_never_becomes_stale_however_old_it_is(self):
+        # THIS TEST USED TO PROVE NOTHING. It passed `since: "T"`, which
+        # `_age_seconds` cannot parse, so the ageing loop skipped the record for
+        # that reason rather than because of the terminal-state guard. Deleting
+        # `if s.get("state") not in ACTIVE_STATES: continue` left all 200 tests
+        # green, so a refactor could have turned every cleanly-ended session into
+        # a red `✕ stale` with the suite reporting OK.
+        #
+        # A parseable, genuinely ancient timestamp is what makes the guard
+        # load-bearing: without it, this record ages out and reports `stale`.
+        ancient = ago(PARKED_STALE_SECONDS * 30)
         cases = [
-            [],  # branch: no visibility at all
-            [{"path": "/t/other", "command": "claude", "pid": 7, "window": "wm"}],  # elsewhere only
-            [{"path": "/t/one", "command": "claude", "pid": 7, "window": "wm"}],  # panes_here >= active (0)
+            [],
+            [{"path": "/t/other", "command": "claude", "pid": 7, "window": "wm"}],
+            [{"path": "/t/one", "command": "claude", "pid": 7, "window": "wm"}],
         ]
         for panes in cases:
-            sessions = [{"cwd": "/t/one", "state": "stopped", "pid": 1, "since": "T"}]
-            self.assertEqual(agent_for("/t/one", sessions, panes, NOW).state, "stopped")
+            sessions = [{"cwd": "/t/one", "state": "stopped", "pid": 1, "since": ancient}]
+            self.assertEqual(agent_for("/t/one", sessions, panes, NOW).state, "stopped",
+                             "a cleanly stopped session must never be relabelled stale")
 
     def test_stopped_is_inert_alongside_active_sessions(self):
         # A `stopped` session next to active ones must never change the outcome:
@@ -319,12 +333,17 @@ class TestAgentFor(unittest.TestCase):
         self.assertEqual(a.state, "waiting")
 
     def test_newer_working_wins_over_older_working(self):
+        # Refixtured: both records were 100+ minutes old, so the winner's state was
+        # `stale`, and the test passed only because it asserts `pid` and never
+        # looked at the state. There was no test that two LIVE `working` records
+        # tie-break by recency. Now there is, and it says so.
         sessions = [
-            {"cwd": "/t/one", "state": "working", "pid": 42, "since": "2026-08-03T10:19:00"},
-            {"cwd": "/t/one", "state": "working", "pid": 43, "since": "2026-08-03T10:20:00"},
+            {"cwd": "/t/one", "state": "working", "pid": 42, "since": ago(60)},
+            {"cwd": "/t/one", "state": "working", "pid": 43, "since": ago(2)},
         ]
         a = agent_for("/t/one", sessions, [], NOW)
         self.assertEqual(a.pid, 43)
+        self.assertEqual(a.state, "working", "both records are live; neither should be staled")
 
 
 if __name__ == "__main__":

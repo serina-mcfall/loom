@@ -16,9 +16,15 @@ AGENT_COMMANDS = {"claude", "node"}
 # How long an uncorroborated claim survives before it is called stale.
 #
 # `working` gets 15 minutes. The hook rewrites `since` on every tool call, so a
-# working agent's timestamp advances constantly. This is safe against a long
-# single tool call because the harness caps one Bash call at 600s, so 15 minutes
-# sits above the longest gap a live agent can produce.
+# working agent's timestamp advances constantly.
+#
+# 15 min clears the one gap the harness DOES bound: a single Bash call is capped
+# at 600s. It does NOT bound everything, and an earlier version of this comment
+# wrongly claimed it did. An MCP tool call carries no such cap, and neither does a
+# long unbroken generation with no tool call at all — so a live agent CAN read
+# `stale` here. That is the acceptable direction (a false `stale` costs a glance)
+# but it is a real false-positive source, and anyone tuning this number should
+# know the bound is partial rather than total.
 WORKING_STALE_SECONDS = 15 * 60
 
 # `waiting` and `idle` get 12 hours, because they are legitimately parked — a
