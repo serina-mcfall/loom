@@ -15,7 +15,11 @@ FAST_SECONDS = 2
 SLOW_SECONDS = 60
 
 _lock = threading.Lock()
-_snapshot: dict = {"schema": 1, "repos": []}
+# "collected": False marks the window before the first refresh finishes. Without
+# it, {"repos": []} is ambiguous between "nothing has been collected yet" and
+# "collection ran and there are genuinely no repos" — exactly the failure mode
+# the whole `sources` mechanism in loom.collect exists to prevent elsewhere.
+_snapshot: dict = {"schema": 1, "repos": [], "collected": False}
 
 
 def should_include_gh(now: float, last_slow: float, have_cache: bool) -> bool:
@@ -78,10 +82,18 @@ def _tick(all_repos: bool, include_gh: bool, cached_gh: dict[str, dict],
     `runner` defaults to None so production use gets the real `SubprocessRunner`
     (via `build_snapshot`'s own default); tests inject a `ReplayRunner` here to
     prove no `gh` command is ever issued when `include_gh=False`.
+
+    `snap["collected"]` is set True here, on every real tick — the module-level
+    default (see `_snapshot` above) starts False and is the only value ever seen
+    before the first tick completes. A consumer must be able to tell "nothing
+    collected yet" apart from "collection ran and found zero repos"; conflating
+    them is exactly the failure mode `loom.collect`'s `sources` mechanism exists
+    to prevent for `gh`, just one layer up, at the server boundary.
     """
     from loom_cli import build_snapshot
     snap = build_snapshot(all_repos, include_gh=include_gh, runner=runner)
     apply_gh_cache(snap, cached_gh, include_gh)
+    snap["collected"] = True
     return snap
 
 
@@ -136,8 +148,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(target, f"{ctype}; charset=utf-8")
         elif self.path == "/snapshot.json":
             with _lock:
-                body = json.dumps(_snapshot).encode()
-            self._send(200, body, "application/json")
+                snap = _snapshot
+                body = json.dumps(snap).encode()
+            # 503, not 200 with an empty list: a programmatic consumer (Task 12's
+            # skill included) must be able to tell "not collected yet" from "zero
+            # repos" without parsing the body — a status code is unmissable.
+            code = 200 if snap.get("collected") else 503
+            self._send(code, body, "application/json")
         elif self.path == "/events":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")

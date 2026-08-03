@@ -187,6 +187,42 @@ class TestTickSkipsGhOnFastTick(unittest.TestCase):
         self.assertTrue(all(call[0] == "git" or call[0] == "tmux" for call in runner.calls))
 
 
+class TestCollectedMarker(unittest.TestCase):
+    """The Medium finding from the fix-round-1 review: `{"repos": []}` alone
+    cannot distinguish "nothing collected yet" from "collection ran and found
+    zero repos". `collected` makes the two states tell the truth about which
+    one happened.
+    """
+
+    def test_the_module_level_default_snapshot_starts_uncollected(self):
+        # A fresh subprocess, not this file's shared `loom.serve` module — every
+        # other test class in this file mutates `serve._snapshot`, so importing
+        # fresh (or reload()-ing) in-process risks reading state some earlier
+        # test left behind rather than the real starting value.
+        import json as _json
+        import subprocess
+        import sys
+        out = subprocess.run(
+            [sys.executable, "-c", "import json; from loom import serve; "
+             "print(json.dumps(serve._snapshot))"],
+            capture_output=True, text=True, timeout=10, check=True,
+        )
+        self.assertEqual(_json.loads(out.stdout), {"schema": 1, "repos": [], "collected": False})
+
+    def test_a_tick_marks_its_snapshot_collected(self):
+        runner = TestTickSkipsGhOnFastTick()._replay_runner()
+        snap = _tick(all_repos=False, include_gh=False, cached_gh={}, runner=runner)
+        self.assertTrue(snap["collected"])
+
+    def test_not_yet_collected_and_genuinely_empty_are_never_equal(self):
+        # The whole point of the fix: these two states must be distinguishable
+        # by any consumer that just compares/serializes the snapshot dict.
+        not_yet = {"schema": 1, "repos": [], "collected": False}
+        genuinely_empty = {"schema": 1, "repos": [], "collected": True}
+        self.assertNotEqual(not_yet, genuinely_empty)
+        self.assertNotEqual(json.dumps(not_yet), json.dumps(genuinely_empty))
+
+
 class TestHandlerRoutes(unittest.TestCase):
     """The HTTP layer, against a real but ephemeral (port-0) socket.
 
@@ -194,7 +230,7 @@ class TestHandlerRoutes(unittest.TestCase):
     """
 
     def setUp(self):
-        serve._snapshot = {"schema": 1, "repos": [{"name": "example"}]}
+        serve._snapshot = {"schema": 1, "repos": [{"name": "example"}], "collected": True}
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -210,8 +246,29 @@ class TestHandlerRoutes(unittest.TestCase):
 
     def test_snapshot_json_returns_the_current_snapshot(self):
         with self._get("/snapshot.json") as r:
+            self.assertEqual(r.status, 200)
             data = json.loads(r.read())
         self.assertEqual(data["repos"][0]["name"], "example")
+
+    def test_snapshot_json_is_503_before_the_first_collection_completes(self):
+        serve._snapshot = {"schema": 1, "repos": [], "collected": False}
+        try:
+            self._get("/snapshot.json")
+            self.fail("expected an HTTPError for the not-yet-collected state")
+        except urllib.error.HTTPError as exc:
+            self.assertEqual(exc.code, 503)
+            body = json.loads(exc.read())
+        self.assertFalse(body["collected"])
+        self.assertEqual(body["repos"], [])
+
+    def test_snapshot_json_is_200_once_collected_is_true_even_with_zero_repos(self):
+        # The genuinely-empty-fleet case must not also 503 — only "not yet".
+        serve._snapshot = {"schema": 1, "repos": [], "collected": True}
+        with self._get("/snapshot.json") as r:
+            self.assertEqual(r.status, 200)
+            data = json.loads(r.read())
+        self.assertEqual(data["repos"], [])
+        self.assertTrue(data["collected"])
 
     def test_an_unknown_path_is_404_not_a_crash(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:
