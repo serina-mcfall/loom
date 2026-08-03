@@ -103,7 +103,7 @@ def collect(runner: Runner, root: str,
             state_dir: str = agents_mod.DEFAULT_STATE_DIR) -> dict:
     started = time.monotonic()
     reap(state_dir)
-    base = gitsrc.default_branch(runner, root)
+    base, base_resolved = gitsrc.default_branch(runner, root)
     trees = gitsrc.list_worktrees(runner, root)
 
     sessions = agents_mod.read_state_dir(state_dir)
@@ -161,6 +161,10 @@ def collect(runner: Runner, root: str,
             "flags": find_flags(trees, prs, parent),
             "sources": [
                 asdict(ghsrc.SourceStatus("git", True)),
+                asdict(ghsrc.SourceStatus(
+                    "git:default-branch", base_resolved,
+                    None if base_resolved else
+                    f"could not resolve origin/HEAD; falling back to a {base!r} guess")),
                 asdict(pr_status),
                 asdict(issue_status),
                 asdict(ghsrc.SourceStatus("hooks", True)),

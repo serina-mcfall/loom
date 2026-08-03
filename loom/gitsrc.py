@@ -50,11 +50,18 @@ def list_worktrees(runner: Runner, root: str) -> list[Worktree]:
     return trees
 
 
-def default_branch(runner: Runner, root: str) -> str:
+def default_branch(runner: Runner, root: str) -> tuple[str, bool]:
+    """The repo's default branch, and whether it was actually resolved.
+
+    On failure (e.g. `origin/HEAD` was never set) this falls back to a
+    `"main"` guess so the rest of the tool still has something to work with,
+    but the second element tells the caller the guess is unverified so it can
+    be surfaced instead of silently corrupting every downstream comparison.
+    """
     r = runner.run(["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd=root)
     if r.ok and "/" in r.stdout:
-        return r.stdout.strip().split("/", 1)[1]
-    return "main"
+        return r.stdout.strip().split("/", 1)[1], True
+    return "main", False
 
 
 def ahead_behind(runner: Runner, path: str, base: str) -> tuple[int, int]:

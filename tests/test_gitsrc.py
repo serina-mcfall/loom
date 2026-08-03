@@ -1,6 +1,7 @@
 import unittest
 from loom.runner import ReplayRunner
-from loom.gitsrc import list_worktrees, ahead_behind, dirty_counts, Dirty, recent_commits, touched_files, collisions, Worktree
+from loom.gitsrc import (list_worktrees, ahead_behind, dirty_counts, Dirty, recent_commits,
+                          touched_files, collisions, Worktree, default_branch)
 
 PORCELAIN = (
     "worktree /repo\n"
@@ -40,6 +41,22 @@ class TestListWorktrees(unittest.TestCase):
             "git worktree list --porcelain": {"returncode": 128, "stdout": "", "stderr": "not a repo"},
         })
         self.assertEqual(list_worktrees(runner, "/repo"), [])
+
+
+class TestDefaultBranch(unittest.TestCase):
+    def test_resolves_the_branch_from_origin_head(self):
+        runner = ReplayRunner({
+            "git symbolic-ref --short refs/remotes/origin/HEAD":
+                {"returncode": 0, "stdout": "origin/develop\n", "stderr": ""},
+        })
+        self.assertEqual(default_branch(runner, "/repo"), ("develop", True))
+
+    def test_failure_falls_back_to_main_and_reports_unresolved(self):
+        runner = ReplayRunner({
+            "git symbolic-ref --short refs/remotes/origin/HEAD":
+                {"returncode": 128, "stdout": "", "stderr": "ref not set"},
+        })
+        self.assertEqual(default_branch(runner, "/repo"), ("main", False))
 
 
 class TestAheadBehind(unittest.TestCase):

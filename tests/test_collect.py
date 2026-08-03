@@ -180,6 +180,24 @@ class TestCollectSources(unittest.TestCase):
         sources = {s["name"]: s for s in snapshot["repos"][0]["sources"]}
         self.assertTrue(sources["hooks"]["ok"])
 
+    def test_guessed_default_branch_is_reported_not_swallowed(self):
+        # The regression guard for Finding 2: a failed origin/HEAD lookup must not
+        # silently masquerade as a resolved "main" with every source reporting ok.
+        recordings = self._recordings(
+            pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+            issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+        )
+        recordings["git symbolic-ref --short refs/remotes/origin/HEAD"] = {
+            "returncode": 128, "stdout": "", "stderr": "ref not set",
+        }
+        runner = ReplayRunner(recordings)
+        snapshot = collect(runner, "/repo", tempfile.mkdtemp())
+        repo = snapshot["repos"][0]
+        self.assertEqual(repo["default_branch"], "main")
+        sources = {s["name"]: s for s in repo["sources"]}
+        self.assertFalse(sources["git:default-branch"]["ok"])
+        self.assertIsNotNone(sources["git:default-branch"]["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
