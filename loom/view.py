@@ -77,25 +77,28 @@ def badge(snap: dict, now: datetime | None = None) -> dict:
     """
     now = now or datetime.now().astimezone()
 
+    def out(state: str, detail: str) -> dict:
+        # `stale_after_seconds` travels with the badge so the page can apply the SAME
+        # threshold to detect silence -- frames are a heartbeat now that /events no
+        # longer suppresses them (M10), and a hardcoded number in loom.js would be a
+        # second copy of a policy that lives here.
+        return {"state": state, "label": _LABEL[state], "detail": detail,
+                "stale_after_seconds": STALE_AFTER_SECONDS}
+
     if snap.get("refresh_error"):
-        return {"state": "error", "label": _LABEL["error"],
-                "detail": f"collection is failing: {snap['refresh_error']}"}
+        return out("error", f"collection is failing: {snap['refresh_error']}")
 
     if not snap.get("collected"):
-        return {"state": "connecting", "label": _LABEL["connecting"],
-                "detail": "waiting for the first collection"}
+        return out("connecting", "waiting for the first collection")
 
     age = _age_seconds(snap.get("generated_at"), now)
     if age is None:
         # Missing, naive, unparseable or future. Cannot tell how old it is, so it
         # does not get to claim freshness.
-        return {"state": "stale", "label": _LABEL["stale"],
-                "detail": "cannot tell how old this data is"}
+        return out("stale", "cannot tell how old this data is")
     if age > STALE_AFTER_SECONDS:
-        return {"state": "stale", "label": _LABEL["stale"],
-                "detail": f"last collected {int(age)}s ago"}
-    return {"state": "live", "label": _LABEL["live"],
-            "detail": f"collected {int(age)}s ago"}
+        return out("stale", f"last collected {int(age)}s ago")
+    return out("live", f"collected {int(age)}s ago")
 
 
 def aggregate_needs(snap: dict) -> list[dict]:

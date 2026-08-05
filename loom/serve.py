@@ -201,12 +201,23 @@ def _refresh_step(prev_snapshot: dict, all_repos: bool, include_gh: bool,
         return finalise(stale)
 
 
-def _refresh_loop(all_repos: bool) -> None:
-    """git and hooks every FAST_SECONDS; gh at most once every SLOW_SECONDS."""
+def _refresh_loop(all_repos: bool, stop: threading.Event | None = None) -> None:
+    """git and hooks every FAST_SECONDS; gh at most once every SLOW_SECONDS.
+
+    `stop` makes the loop finishable. It was `while True` with no exit condition on
+    a daemon thread, so the only way out was process death -- which meant no clean
+    shutdown, and no way to test the loop's own timing without really sleeping.
+    Audit 2026-08-05, finding M11.
+
+    The wait is `Event.wait`, not `time.sleep`, so a stop is honoured immediately
+    instead of after up to FAST_SECONDS. Checked BEFORE the first pass too: a caller
+    that has already asked it to stop must not get one more round of git subprocesses.
+    """
     global _snapshot
+    stop = stop or threading.Event()
     last_slow = 0.0
     cached_gh: dict[str, dict] = {}
-    while True:
+    while not stop.is_set():
         now = time.monotonic()
         include_gh = should_include_gh(now, last_slow, bool(cached_gh))
         with _lock:
@@ -216,7 +227,7 @@ def _refresh_loop(all_repos: bool) -> None:
             last_slow = now
         with _lock:
             _snapshot = snap
-        time.sleep(FAST_SECONDS)
+        stop.wait(FAST_SECONDS)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -285,15 +296,26 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.connection.settimeout(SSE_IDLE_TIMEOUT)
-            last = None
             try:
                 while True:
                     with _lock:
                         body = json.dumps(_snapshot)
-                    if body != last:
-                        self.wfile.write(f"data: {body}\n\n".encode())
-                        self.wfile.flush()
-                        last = body
+                    # EVERY TICK IS A FRAME, DELIBERATELY.
+                    #
+                    # This used to compare `body` against the previous one and send
+                    # only on a difference -- an optimisation that could never fire
+                    # once, because `_refresh_step` re-stamps `generated_at` with
+                    # wall-clock time on every successful tick, so the body always
+                    # differed. Dead code that read as live. Audit finding M10.
+                    #
+                    # It is not worth repairing with a timestamp-excluding digest,
+                    # because the steady frame rate is what lets the page treat
+                    # frames as a HEARTBEAT: silence means the server stopped
+                    # collecting, and a page that suppressed identical frames could
+                    # not tell that apart from "nothing changed". On loopback, at one
+                    # snapshot every two seconds, there is nothing to save.
+                    self.wfile.write(f"data: {body}\n\n".encode())
+                    self.wfile.flush()
                     time.sleep(FAST_SECONDS)
             except (BrokenPipeError, ConnectionResetError, TimeoutError, socket.timeout):
                 return
@@ -302,11 +324,35 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run_server(port: int = 8787, all_repos: bool = False, host: str = "127.0.0.1") -> int:
-    threading.Thread(target=_refresh_loop, args=(all_repos,), daemon=True).start()
-    server = ThreadingHTTPServer((host, port), Handler)
+    # BIND BEFORE STARTING ANYTHING. The default port is fixed, so the most likely
+    # reason it is taken is a Loom already running -- the single most probable user
+    # error. That used to surface as a raw traceback, while `parse_port` went to real
+    # trouble to give a clean message for a bad --port value. Audit finding M9.
+    #
+    # Binding first also means a failed start leaves no refresh thread behind
+    # spawning git subprocesses every 2 seconds for the life of the process.
+    try:
+        server = ThreadingHTTPServer((host, port), Handler)
+    except OSError as exc:
+        print(f"cannot serve on {host}:{port} — {exc.strerror or exc}.")
+        print(f"Port {port} is already in use; a Loom may already be running there.")
+        print(f"Try `loom serve --port {port + 1}`, or stop the other one.")
+        return 2
+
+    stop = threading.Event()
+    refresher = threading.Thread(target=_refresh_loop, args=(all_repos, stop),
+                                 daemon=True)
+    refresher.start()
     print(f"Loom on http://{host}:{port}  (ctrl-c to stop)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped")
+    finally:
+        # Ask the refresh loop to finish rather than relying on process death, and
+        # release the socket so an immediate restart is not refused. `finally` so
+        # this holds however serve_forever ends.
+        stop.set()
+        server.server_close()
+        refresher.join(timeout=FAST_SECONDS + 1)
     return 0

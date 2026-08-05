@@ -19,6 +19,7 @@ import io
 import json
 import socket
 import threading
+import time
 import unittest
 import unittest.mock
 import urllib.error
@@ -499,6 +500,13 @@ class TestServerBindsLoopbackOnly(unittest.TestCase):
                 # this ends the call without ever opening a real socket.
                 raise KeyboardInterrupt
 
+            def server_close(self):
+                # run_server closes the socket in a `finally` so an immediate
+                # restart is not refused (M11). A fake standing in for the real
+                # server has to model the whole interface it is asked for, or the
+                # test fails on the stub rather than on the behaviour.
+                recorded["closed"] = True
+
         with unittest.mock.patch.object(serve, "ThreadingHTTPServer", FakeServer), \
              unittest.mock.patch("threading.Thread") as fake_thread_cls:
             # The refresh loop calls the real, subprocess-invoking build_snapshot;
@@ -510,6 +518,81 @@ class TestServerBindsLoopbackOnly(unittest.TestCase):
         self.assertEqual(result, 0)
         fake_thread_cls.return_value.start.assert_called_once()
         self.assertEqual(recorded["address"], ("127.0.0.1", 0))
+        self.assertTrue(recorded.get("closed"),
+                        "the listening socket must be released on the way out")
+
+
+class TestPortAlreadyInUse(unittest.TestCase):
+    """Audit 2026-08-05, finding M9.
+
+    The default port is fixed at 8787, and the most likely reason it is taken is a
+    Loom already running -- so the single most probable user error produced a raw
+    Python traceback. `parse_port` goes to real trouble to avoid exactly that for a
+    bad `--port` value; the socket path was simply missed.
+    """
+
+    def test_a_taken_port_exits_cleanly_instead_of_raising(self):
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = run_server(port=port)
+            self.assertEqual(code, 2)
+            out = buf.getvalue().lower()
+            self.assertIn(str(port), out)
+            self.assertIn("already", out)
+        finally:
+            holder.close()
+
+    def test_a_failed_bind_does_not_leave_a_refresh_thread_running(self):
+        # Otherwise a process that failed to start still spawns git subprocesses
+        # every 2 seconds for as long as it lives.
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        before = threading.active_count()
+        try:
+            with redirect_stdout(io.StringIO()):
+                run_server(port=port)
+            self.assertEqual(threading.active_count(), before,
+                             "a refresh thread was started despite the bind failing")
+        finally:
+            holder.close()
+
+
+class TestRefreshLoopIsStoppable(unittest.TestCase):
+    """Audit 2026-08-05, finding M11.
+
+    `_refresh_loop` was `while True` with no exit condition, started as a daemon
+    thread, so `serve`'s only way out was process death -- and the loop's timing was
+    untestable without really sleeping.
+    """
+
+    def test_an_already_set_stop_event_means_the_loop_never_runs(self):
+        stop = threading.Event()
+        stop.set()
+        with unittest.mock.patch("loom.serve._refresh_step") as step:
+            serve._refresh_loop(all_repos=False, stop=stop)
+        step.assert_not_called()
+
+    def test_the_loop_exits_when_the_event_is_set(self):
+        stop = threading.Event()
+        calls = []
+
+        def one_then_stop(*a, **k):
+            calls.append(1)
+            stop.set()          # ask it to stop after the first pass
+            return {"schema": 1, "repos": [], "collected": True}
+
+        with unittest.mock.patch("loom.serve._refresh_step", side_effect=one_then_stop):
+            # If the loop cannot be stopped, this call never returns and the test
+            # hangs -- which is itself the failure signal.
+            serve._refresh_loop(all_repos=False, stop=stop)
+        self.assertEqual(len(calls), 1)
 
 
 class TestHandlerRoutes(unittest.TestCase):
@@ -624,6 +707,38 @@ class TestHandlerRoutes(unittest.TestCase):
         headers, _, body = data.partition(b"\r\n\r\n")
         self.assertIn(b"text/event-stream", headers)
         self.assertTrue(body.startswith(b'data: {"schema": 1'), body)
+
+    def test_events_keeps_sending_frames_when_the_snapshot_has_not_changed(self):
+        """Audit 2026-08-05, finding M10.
+
+        `/events` compared each serialised body to the previous one and only sent on
+        a difference -- an optimisation that could never once fire, because
+        `_refresh_step` re-stamps `generated_at` with wall-clock time on every
+        successful tick, so the body always differed. Dead code that read as live.
+
+        The comparison is gone, and every tick is now deliberately a frame. That is
+        also what lets the page treat frames as a heartbeat: silence means the server
+        stopped collecting, which is the hole a suppressed-frame design would open.
+
+        FAST_SECONDS is patched down so this costs milliseconds rather than seconds.
+        """
+        with unittest.mock.patch.object(serve, "FAST_SECONDS", 0.02):
+            sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+            try:
+                sock.sendall(b"GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                data = b""
+                deadline = time.monotonic() + 3
+                # The snapshot is never touched during this loop, so any frame after
+                # the first proves suppression is not happening.
+                while data.count(b"data: ") < 3 and time.monotonic() < deadline:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+            finally:
+                sock.close()
+        self.assertGreaterEqual(data.count(b"data: "), 3,
+                                "an unchanged snapshot stopped producing frames")
 
     def test_events_sets_an_idle_socket_timeout_so_an_unread_stream_cannot_hang_forever(self):
         # Fix round 2, FIX 3: a client that opens /events and never reads would

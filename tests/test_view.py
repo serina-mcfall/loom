@@ -80,6 +80,21 @@ class TestBadge(unittest.TestCase):
         b = badge({"collected": True, "generated_at": iso(3600), "refresh_error": None})
         self.assertNotEqual(b["state"], "live")
 
+    def test_every_state_carries_the_staleness_threshold_for_the_page(self):
+        """Audit 2026-08-05, M10's other half.
+
+        `/events` no longer suppresses identical frames, so frames ARE the heartbeat:
+        silence means the server stopped collecting. The page needs the same
+        threshold to notice that silence, and hardcoding it in loom.js would be a
+        second copy of a policy that belongs here.
+        """
+        for snap in ({"collected": False},
+                     {"collected": True, "generated_at": iso()},
+                     {"collected": True, "generated_at": iso(), "refresh_error": "x"}):
+            with self.subTest(snap=snap):
+                self.assertEqual(badge(snap)["stale_after_seconds"],
+                                 STALE_AFTER_SECONDS)
+
     def test_every_state_carries_a_label_a_glyph_and_a_word(self):
         """Colour is never the only carrier of meaning.
 

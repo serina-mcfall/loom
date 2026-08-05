@@ -374,8 +374,37 @@ function render(snapshot) {
   syncRepos(repos);
 }
 
+// SILENCE IS A SIGNAL now that /events sends a frame every tick (M10).
+//
+// An EventSource whose server has stopped collecting -- a wedged refresh loop, a
+// killed thread -- stays OPEN and simply goes quiet, so `onerror` never fires and
+// the last badge would sit there reading "live" forever. This is the same hole H6
+// closed from the server side, approached from the other end: the server can only
+// tell the page what it knew when it last spoke.
+//
+// The threshold comes from the snapshot, not from a constant here, so it cannot
+// drift from loom/view.py's STALE_AFTER_SECONDS.
+let lastFrameAt = Date.now();
+let staleAfterMs = 10000;
+
+function checkForSilence() {
+  if (Date.now() - lastFrameAt > staleAfterMs) {
+    renderBadge("stale", "⚠ no update");
+    el("summary").textContent =
+      `no update for ${Math.round((Date.now() - lastFrameAt) / 1000)}s — ` +
+      "the server may have stopped collecting";
+  }
+}
+setInterval(checkForSilence, 1000);
+
 const source = new EventSource("/events");
-source.onmessage = (e) => render(JSON.parse(e.data));
+source.onmessage = (e) => {
+  lastFrameAt = Date.now();
+  const snapshot = JSON.parse(e.data);
+  const after = snapshot.badge && snapshot.badge.stale_after_seconds;
+  if (after) staleAfterMs = after * 1000;
+  render(snapshot);
+};
 source.onerror = () => {
   // CONNECTION health, which is genuinely the page's to know -- distinct from
   // whether the data itself is fresh.
