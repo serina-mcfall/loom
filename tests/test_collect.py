@@ -20,28 +20,63 @@ def pr(number, branch):
 class TestFindFlags(unittest.TestCase):
     def test_pr_whose_branch_has_no_worktree_is_an_orphan(self):
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
-        flags = find_flags(trees, [pr(56, "fix/other")], "/t", lambda d: ["a"])
+        flags = find_flags(trees, [pr(56, "fix/other")], ["/t"], lambda d: ["a"])
         self.assertEqual([f["kind"] for f in flags], ["orphan_pr"])
         self.assertIn("56", flags[0]["subject"])
 
     def test_pr_with_a_worktree_is_not_flagged(self):
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
-        self.assertEqual(find_flags(trees, [pr(1, "feature-a")], "/t", lambda d: ["a"]), [])
+        self.assertEqual(find_flags(trees, [pr(1, "feature-a")], ["/t"], lambda d: ["a"]), [])
 
     def test_directory_that_is_not_a_worktree_is_stale(self):
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
-        flags = find_flags(trees, [], "/t", lambda d: ["a", "leftover"], lambda p: True)
+        flags = find_flags(trees, [], ["/t"], lambda d: ["a", "leftover"], lambda p: True)
         self.assertEqual([f["kind"] for f in flags], ["stale_dir"])
         self.assertIn("leftover", flags[0]["subject"])
+
+    # ------------------------------------------------- audit 2026-08-05, M3
+    def test_worktrees_spanning_two_parents_are_both_scanned(self):
+        """`_worktree_parent` returned None unless EXACTLY one parent was found, and
+        `find_flags` skipped the whole stale-directory scan when it was None.
+
+        So a fleet whose worktrees live in two sibling directories -- or one worktree
+        placed somewhere else -- lost stale-directory detection entirely, with no
+        flag and no entry in `sources`. Absence of a warning reads as absence of a
+        problem. The design doc's own grounding observations list "1 directory left
+        behind that was no longer a git worktree" as a motivating fact.
+        """
+        trees = [Worktree("/t/one/a", "a", "fa", "h"),
+                 Worktree("/t/two/b", "b", "fb", "h")]
+
+        def listdir(d):
+            return {"/t/one": ["a", "leftover-one"],
+                    "/t/two": ["b", "leftover-two"]}.get(d, [])
+
+        flags = find_flags(trees, [], ["/t/one", "/t/two"], listdir, lambda p: True)
+        self.assertEqual(sorted(f["subject"] for f in flags),
+                         ["leftover-one", "leftover-two"])
+
+    def test_every_parent_directory_of_a_worktree_is_discovered(self):
+        from loom.collect import _worktree_parents
+        trees = [Worktree("/t/one/a", "a", "fa", "h"),
+                 Worktree("/t/two/b", "b", "fb", "h")]
+        self.assertEqual(_worktree_parents(trees, "/repo/root"), ["/t/one", "/t/two"])
+
+    def test_the_repos_own_parent_is_not_scanned_as_a_worktree_parent(self):
+        # The main checkout sits beside its siblings under ~/Launchpad; scanning
+        # there would flag every unrelated project as a stale directory.
+        from loom.collect import _worktree_parents
+        trees = [Worktree("/home/x/Launchpad/loom", "loom", "main", "h")]
+        self.assertEqual(_worktree_parents(trees, "/home/x/Launchpad/loom"), [])
 
     def test_a_tidy_fleet_produces_no_flags(self):
         # The negative control: this must be able to return nothing.
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
-        self.assertEqual(find_flags(trees, [pr(1, "feature-a")], "/t", lambda d: ["a"]), [])
+        self.assertEqual(find_flags(trees, [pr(1, "feature-a")], ["/t"], lambda d: ["a"]), [])
 
     def test_hidden_directories_are_ignored(self):
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
-        self.assertEqual(find_flags(trees, [], "/t", lambda d: ["a", ".workmux_trash_x"]), [])
+        self.assertEqual(find_flags(trees, [], ["/t"], lambda d: ["a", ".workmux_trash_x"]), [])
 
     def test_a_plain_file_is_not_flagged(self):
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
@@ -52,7 +87,7 @@ class TestFindFlags(unittest.TestCase):
         def isdir(p):
             return p == "/t/a"  # notes.txt is a file, not a directory
 
-        self.assertEqual(find_flags(trees, [], "/t", listdir, isdir), [])
+        self.assertEqual(find_flags(trees, [], ["/t"], listdir, isdir), [])
 
     def test_a_directory_containing_dot_git_is_someone_elses_checkout_not_stale(self):
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
@@ -64,7 +99,7 @@ class TestFindFlags(unittest.TestCase):
                 return [".git", "README.md"]
             return []
 
-        self.assertEqual(find_flags(trees, [], "/t", listdir, lambda p: True), [])
+        self.assertEqual(find_flags(trees, [], ["/t"], listdir, lambda p: True), [])
 
     def test_a_directory_with_no_dot_git_is_still_flagged(self):
         # Positive control: the isdir/.git guard must not disable detection entirely.
@@ -77,7 +112,7 @@ class TestFindFlags(unittest.TestCase):
                 return ["README.md"]
             return []
 
-        flags = find_flags(trees, [], "/t", listdir, lambda p: True)
+        flags = find_flags(trees, [], ["/t"], listdir, lambda p: True)
         self.assertEqual([f["kind"] for f in flags], ["stale_dir"])
         self.assertIn("leftover", flags[0]["subject"])
 

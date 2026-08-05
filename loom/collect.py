@@ -22,9 +22,32 @@ def _now_iso() -> str:
 
 
 def find_flags(trees: list[gitsrc.Worktree], prs: list[ghsrc.PullRequest],
-               worktree_parent: str | None,
+               worktree_parents: list[str] | None,
                listdir: Callable[[str], list[str]] = os.listdir,
                isdir: Callable[[str], bool] = os.path.isdir) -> list[dict]:
+    """Loose ends: PRs with no worktree, and directories that are no longer one.
+
+    `worktree_parents` is a LIST because a fleet's worktrees need not share one
+    parent. It used to be a single value that `_worktree_parent` returned only when
+    exactly one candidate existed, which silently disabled the stale-directory scan
+    for any fleet spread across two directories. Audit 2026-08-05, finding M3.
+    """
+    # A BARE STRING HERE FAILS SILENTLY AND MUST NOT BE TOLERATED.
+    #
+    # `str` is iterable, so passing the old single-parent value would loop over its
+    # CHARACTERS -- listdir("/"), listdir("t") -- and produce a plausible empty
+    # result instead of an error. When this parameter changed from `str` to
+    # `list[str]`, seven existing tests kept passing for exactly that reason: they
+    # assert an empty list, and character-iteration happened to produce one. Only
+    # the single test expecting a flag caught it.
+    #
+    # A wrong answer that looks like a right one is the failure mode this whole
+    # project refuses, so this converts it into a loud one.
+    if isinstance(worktree_parents, str):
+        raise TypeError(
+            "worktree_parents must be a list of paths, not a string: "
+            f"{worktree_parents!r} would be iterated character by character")
+
     flags: list[dict] = []
     branches = {t.branch for t in trees if t.branch}
 
@@ -34,16 +57,17 @@ def find_flags(trees: list[gitsrc.Worktree], prs: list[ghsrc.PullRequest],
                           "subject": f"PR #{p.number}",
                           "detail": f"branch {p.branch} has no worktree"})
 
-    if worktree_parent:
-        known = {t.dir for t in trees}
+    known = {t.dir for t in trees}
+    seen: set[str] = set()
+    for parent in worktree_parents or []:
         try:
-            entries = listdir(worktree_parent)
+            entries = listdir(parent)
         except OSError:
             entries = []
         for name in sorted(entries):
-            if name.startswith(".") or name in known:
+            if name.startswith(".") or name in known or name in seen:
                 continue
-            full = os.path.join(worktree_parent, name)
+            full = os.path.join(parent, name)
             if not isdir(full):
                 continue
             try:
@@ -52,15 +76,22 @@ def find_flags(trees: list[gitsrc.Worktree], prs: list[ghsrc.PullRequest],
                 inner = []
             if ".git" in inner:
                 continue
+            seen.add(name)
             flags.append({"kind": "stale_dir", "severity": "warn", "subject": name,
                           "detail": f"{name} is not a git worktree"})
     return flags
 
 
-def _worktree_parent(trees: list[gitsrc.Worktree], root: str) -> str | None:
-    parents = {os.path.dirname(t.path.rstrip("/")) for t in trees
-               if os.path.dirname(t.path.rstrip("/")) != os.path.dirname(root.rstrip("/"))}
-    return sorted(parents)[0] if len(parents) == 1 else None
+def _worktree_parents(trees: list[gitsrc.Worktree], root: str) -> list[str]:
+    """Every distinct directory that holds a worktree, except the repo's own.
+
+    The repo's own parent is excluded because the main checkout sits beside
+    unrelated sibling projects (all of ~/Launchpad, for this fleet), and scanning
+    there would flag every one of them as a stale directory.
+    """
+    own = os.path.dirname(root.rstrip("/"))
+    return sorted({os.path.dirname(t.path.rstrip("/")) for t in trees
+                   if os.path.dirname(t.path.rstrip("/")) != own})
 
 
 def reap(state_dir: str, older_than_hours: int = 24,
@@ -165,7 +196,7 @@ def collect(runner: Runner, root: str,
         d["worktree"] = tree_by_branch.get(p.branch)
         pr_dicts.append(d)
 
-    parent = _worktree_parent(trees, root)
+    parents = _worktree_parents(trees, root)
     found_collisions, undetermined = gitsrc.collisions(runner, trees, base)
     return {
         "schema": SCHEMA_VERSION,
@@ -181,7 +212,7 @@ def collect(runner: Runner, root: str,
             "issues": [asdict(i) for i in issues],
             "collisions": found_collisions,
             "commits": [asdict(c) for c in gitsrc.recent_commits(runner, root)],
-            "flags": find_flags(trees, prs, parent),
+            "flags": find_flags(trees, prs, parents),
             "sources": [
                 asdict(ghsrc.SourceStatus("git", True)),
                 asdict(ghsrc.SourceStatus(

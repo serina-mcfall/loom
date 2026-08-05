@@ -28,6 +28,39 @@ class TestOriginRepo(unittest.TestCase):
     def test_unrecognised_remote_is_none_not_a_guess(self):
         self.assertIsNone(self._repo("ssh://someone@gitlab.internal/x/y.git"))
 
+    # ------------------------------------------------- audit 2026-08-05, M2
+    # The extracted value is passed straight to `gh` as the argument of `-R`, so a
+    # value beginning with `-` becomes another OPTION rather than a repository. The
+    # design doc flagged this in its own threat-model gap table and said "the regex
+    # should reject it" -- a stated intention that nothing enforced.
+    #
+    # GitHub owner and repository names cannot begin with a hyphen, so rejecting it
+    # loses nothing legitimate. Requires write access to .git/config first, which is
+    # why it is Medium and not High -- but a repo cloned from an untrusted source is
+    # not an exotic scenario for a tool that watches whole fleets.
+
+    def test_an_owner_beginning_with_a_hyphen_is_rejected(self):
+        self.assertIsNone(self._repo("git@github.com:--upload-pack=evil/x.git"))
+
+    def test_an_https_owner_beginning_with_a_hyphen_is_rejected(self):
+        self.assertIsNone(self._repo("https://github.com/-x/y.git"))
+
+    def test_a_repo_name_beginning_with_a_hyphen_is_rejected(self):
+        self.assertIsNone(self._repo("git@github.com:owner/-oProxyCommand=evil.git"))
+
+    def test_legitimate_names_with_inner_hyphens_and_dots_still_parse(self):
+        # The guard must reject a LEADING hyphen only. Real repositories are full of
+        # inner hyphens, dots and underscores, and breaking those would be worse
+        # than the hole being closed.
+        for url, want in [
+            ("git@github.com:serina-mcfall/loom.git", "serina-mcfall/loom"),
+            ("git@github.com:launchpad-26/skills.git", "launchpad-26/skills"),
+            ("https://github.com/some_org/my.dotted-repo", "some_org/my.dotted-repo"),
+            ("git@github.com:a/b.git", "a/b"),
+        ]:
+            with self.subTest(url=url):
+                self.assertEqual(self._repo(url), want)
+
 
 class TestDeriveChecks(unittest.TestCase):
     def test_no_checks_configured_is_none_not_passing(self):
