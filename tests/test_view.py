@@ -210,6 +210,69 @@ class TestAggregateNeeds(unittest.TestCase):
         self.assertEqual(len(snap["repos"][0]["needs_you"]), 1)
 
 
+class TestAnnouncement(unittest.TestCase):
+    """Audit 2026-08-05, finding M8.
+
+    The strip's 15-second debounce was implemented by flipping `aria-live` between
+    "off" and "polite" on every render. Screen readers register live regions when
+    they enter the accessibility tree and do not uniformly re-read a changed
+    `aria-live` value, so that mechanism may silence the region permanently for some
+    readers and not at all for others. The intent was right; the mechanism was the
+    fragile way to express it.
+
+    The reliable shape is to stop making the visible list a live region at all: the
+    list updates every tick for the eye, and a separate, permanently-polite hidden
+    region receives a short summary at most every 15 seconds. What that summary SAYS
+    is a decision, so it lives here where it can be asserted -- not in loom.js.
+    """
+
+    def _snap(self, *items: dict) -> dict:
+        return {"needs_you": list(items)}
+
+    def _item(self, rank: int, label: str, detail: str) -> dict:
+        return {"rank": rank, "kind": "k", "subject": label, "label": label,
+                "repo": "r", "show_repo": False, "detail": detail}
+
+    def test_a_quiet_fleet_announces_that_it_is_quiet(self):
+        from loom.view import announcement
+        self.assertEqual(announcement(self._snap()), "Nothing needs you.")
+
+    def test_one_item_is_announced_singularly_with_its_reason(self):
+        from loom.view import announcement
+        text = announcement(self._snap(self._item(2, "PR #7", "no review yet")))
+        self.assertIn("1 item", text)
+        self.assertIn("PR #7", text)
+        self.assertIn("no review yet", text)
+
+    def test_several_items_are_counted_and_only_the_top_one_is_read_out(self):
+        """A screen reader must not be handed the whole strip every 15 seconds.
+
+        The count tells you the size of the problem, the top-ranked item tells you
+        where to start, and the visible list is there for everything else.
+        """
+        from loom.view import announcement
+        text = announcement(self._snap(
+            self._item(1, "wt-a", "agent is blocked on a prompt"),
+            self._item(2, "PR #7", "no review yet"),
+            self._item(6, "leftover", "not a git worktree"),
+        ))
+        self.assertIn("3 items", text)
+        self.assertIn("wt-a", text)
+        self.assertNotIn("PR #7", text)
+        self.assertNotIn("leftover", text)
+
+    def test_the_plural_is_correct(self):
+        from loom.view import announcement
+        self.assertIn("1 item needs", announcement(
+            self._snap(self._item(2, "a", "d"))))
+        self.assertIn("2 items need", announcement(
+            self._snap(self._item(2, "a", "d"), self._item(3, "b", "d"))))
+
+    def test_finalise_attaches_the_announcement(self):
+        snap = finalise({"schema": 1, "collected": True, "repos": []})
+        self.assertEqual(snap["announcement"], "Nothing needs you.")
+
+
 class TestFinalise(unittest.TestCase):
     """`finalise` is the single boundary both consumers call, so the CLI's JSON and
     the server's SSE frames cannot drift into different shapes -- which is exactly

@@ -26,7 +26,17 @@
        its repo when there is more than one. Audit finding H5. -->
   <section aria-labelledby="needs-h" class="panel panel--needs">
     <h2 id="needs-h">Needs you</h2>
-    <ul id="needs" aria-live="polite" aria-relevant="additions text"></ul>
+    <!-- The VISIBLE list is deliberately NOT a live region. It re-renders every 2
+         seconds for the eye, and a live region firing that often makes a screen
+         reader unusable. The debounce used to be implemented by flipping this
+         element's aria-live between "off" and "polite" on every render, which
+         readers do not reliably honour -- they register live regions on entry to the
+         accessibility tree. Audit finding M8. -->
+    <ul id="needs"></ul>
+    <!-- Permanently polite, never toggled, and updated at most every 15 seconds with
+         one short sentence from loom.view.announcement. This is what a screen reader
+         actually hears. -->
+    <p id="needs-announce" class="visually-hidden" role="status" aria-live="polite"></p>
   </section>
 
   <!-- One <section> per repo, built by loom.js. The skeleton is rebuilt only

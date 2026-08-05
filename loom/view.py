@@ -129,6 +129,36 @@ def aggregate_needs(snap: dict) -> list[dict]:
     return sorted(items, key=lambda i: (i["rank"], i["repo"], i.get("subject", "")))
 
 
+def announcement(snap: dict) -> str:
+    """What a screen reader should hear about the strip, in one short sentence.
+
+    WHY THIS IS NOT JUST "READ THE LIST OUT". The strip re-renders every 2 seconds,
+    and a live region that fires that often makes a screen reader unusable -- the
+    spec says so explicitly. So the visible list is NOT a live region at all: it
+    updates for the eye, and a separate permanently-polite hidden region receives
+    this sentence at most every 15 seconds.
+
+    That replaces flipping `aria-live` between "off" and "polite" on every render,
+    which was the previous debounce. Readers register live regions when they enter
+    the accessibility tree and do not uniformly re-read a changed `aria-live`, so the
+    old mechanism could silence the region permanently for some and not at all for
+    others. Right intent, fragile mechanism. Audit 2026-08-05, finding M8.
+
+    The count sizes the problem and the top-ranked item says where to start. The rest
+    stays in the visible list rather than being read aloud every 15 seconds.
+    """
+    items = snap.get("needs_you") or []
+    if not items:
+        return "Nothing needs you."
+    n = len(items)
+    top = items[0]
+    subject = top.get("label") or top.get("subject") or "something"
+    verb = "needs" if n == 1 else "need"
+    noun = "item" if n == 1 else "items"
+    return (f"{n} {noun} {verb} your attention. "
+            f"Top: {subject}, {top.get('detail', '')}".rstrip().rstrip(",") + ".")
+
+
 def finalise(snap: dict, now: datetime | None = None) -> dict:
     """Rank the snapshot and attach its display decisions. Mutates and returns it.
 
@@ -144,5 +174,6 @@ def finalise(snap: dict, now: datetime | None = None) -> dict:
     # Top-level `needs_you` is the fleet-wide strip; each repo keeps its own list
     # because each repo panel still shows it. Same key at two levels, two scopes.
     snap["needs_you"] = aggregate_needs(snap)
+    snap["announcement"] = announcement(snap)
     snap["badge"] = badge(snap, now)
     return snap

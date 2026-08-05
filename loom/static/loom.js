@@ -54,17 +54,28 @@ const CHECK_CLASS = {
   passing: "st--good", failing: "st--bad", pending: "st--warn", none: "st--dim",
 };
 
-// The live region is debounced: a 2s region makes a screen reader unusable.
+// The announcement is debounced: a region firing every 2s makes a screen reader
+// unusable. It is a SEPARATE hidden region that stays permanently polite -- the
+// visible list is no longer a live region at all, because toggling `aria-live` is
+// not reliably honoured by readers. Audit finding M8.
 let lastAnnounce = 0;
+let lastAnnounced = "";
 const ANNOUNCE_EVERY_MS = 15000;
+
+/** Write the summary sentence only when it has changed AND enough time has passed.
+ *  Both conditions matter: unchanged text should not be repeated at all, and text
+ *  that changes every tick still must not be read out every tick. */
+function announce(sentence) {
+  if (!sentence || sentence === lastAnnounced) return;
+  const now = Date.now();
+  if (now - lastAnnounce < ANNOUNCE_EVERY_MS) return;
+  lastAnnounce = now;
+  lastAnnounced = sentence;
+  el("needs-announce").textContent = sentence;
+}
 
 function renderNeeds(items) {
   const list = el("needs");
-  const now = Date.now();
-  const quiet = now - lastAnnounce < ANNOUNCE_EVERY_MS;
-  list.setAttribute("aria-live", quiet ? "off" : "polite");
-  if (!quiet) lastAnnounce = now;
-
   list.replaceChildren();
   if (items.length === 0) {
     list.append(text("li", "Nothing needs you.", "needs-item"));
@@ -371,6 +382,9 @@ function render(snapshot) {
   el("summary").textContent = parts.join(" · ");
 
   renderNeeds(snapshot.needs_you || []);
+  // The sentence is decided in loom.view.announcement; the page only decides WHEN,
+  // which is a timing concern it genuinely owns.
+  announce(snapshot.announcement);
   syncRepos(repos);
 }
 
