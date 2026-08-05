@@ -79,6 +79,52 @@ class TestNeedsYou(unittest.TestCase):
     def test_an_approved_pr_is_not_awaiting_review(self):
         self.assertEqual(needs_you(repo(prs=[pr(58, "x", review="APPROVED")])), [])
 
+    # ------------------------------------------------- audit 2026-08-05, H2
+    # `reviewDecision` is a FOUR-VALUED ENUM, and rank 2 tested it for
+    # truthiness. `REVIEW_REQUIRED` -- the exact state rank 2 exists to catch --
+    # is a truthy string, so it read as "already reviewed" and rank 2 fired only
+    # on `null`, i.e. only on repos with NO review requirement at all. On any
+    # repo configured the way this one is, the second-most-important alert in the
+    # product was unreachable.
+    #
+    # One test per value, so no value can regress unobserved again.
+
+    def test_a_review_required_pr_ranks_as_awaiting_review(self):
+        # THE REGRESSION GUARD. gh reports reviewDecision="REVIEW_REQUIRED" on
+        # any repo with required reviews -- including this one.
+        items = needs_you(repo(prs=[pr(58, "x", review="REVIEW_REQUIRED")]))
+        self.assertEqual([i["kind"] for i in items], ["pr_awaiting_review"])
+
+    def test_a_review_required_pr_with_failing_checks_ranks_as_failing_not_awaiting(self):
+        # Rank 4 still wins over rank 2: the spec's rank 2 is "no review, and
+        # checks NOT failing".
+        items = needs_you(repo(prs=[pr(58, "x", review="REVIEW_REQUIRED",
+                                       checks="failing")]))
+        self.assertEqual([i["kind"] for i in items], ["pr_failing"])
+
+    def test_a_changes_requested_pr_is_not_awaiting_review(self):
+        # Deliberately NOT rank 2. `CHANGES_REQUESTED` is blocked on the AUTHOR,
+        # and rank 2's stated rationale is "only a human moves it". An agent can
+        # act on requested changes, so promoting it here would dilute the alert.
+        #
+        # It is also invisible at every other rank, which is a real gap -- but
+        # closing it means adding a rank to the spec's ranking table, a design
+        # decision rather than a bug fix. Recorded in the remediation log instead
+        # of decided here.
+        self.assertEqual(
+            needs_you(repo(prs=[pr(58, "x", review="CHANGES_REQUESTED")])), [])
+
+    def test_a_draft_pr_is_exempt_even_when_a_review_is_required(self):
+        d = pr(58, "x", review="REVIEW_REQUIRED")
+        d["draft"] = True
+        self.assertEqual(needs_you(repo(prs=[d])), [])
+
+    def test_an_unrecognised_review_decision_does_not_rank(self):
+        # A value GitHub has not invented yet must not be guessed into an alert.
+        # Silence is the safe direction: a false rank 2 cries wolf on the strip.
+        self.assertEqual(
+            needs_you(repo(prs=[pr(58, "x", review="SOME_FUTURE_STATE")])), [])
+
     def test_a_draft_pr_is_not_awaiting_review(self):
         d = pr(58, "x")
         d["draft"] = True

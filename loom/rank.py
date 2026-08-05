@@ -9,6 +9,28 @@ import re
 # shouting. Tunable — this is a judgement about attention, not a fact.
 RANK1_MAX_AGE_SECONDS = 30 * 60
 
+# `reviewDecision` values that mean "no human has reviewed this yet".
+#
+# A WHITELIST, matching derive_checks in loom/ghsrc.py, and for the same reason:
+# an unrecognised value must NOT become an alert. A blacklist's unknown case
+# fires rank 2 on a state GitHub invented after this was written, and a strip
+# that cries wolf is a strip nobody reads.
+#
+# This used to be `not p.get("review")`, testing a four-valued enum for
+# truthiness. `REVIEW_REQUIRED` -- the exact state rank 2 exists to catch -- is a
+# truthy string, so it read as "already reviewed" and rank 2 fired only on
+# `null`, meaning only on repos with NO review requirement at all. Audit
+# 2026-08-05, finding H2.
+#
+# Deliberately EXCLUDED:
+#   APPROVED           reviewed; wanting a merge is a different condition
+#   CHANGES_REQUESTED  blocked on the AUTHOR, and an agent can act on it, so it
+#                      fails rank 2's rationale of "only a human moves it"
+#
+# "" is included alongside None because ghsrc normalises empty to None, but a
+# hand-written or older snapshot may carry the empty string.
+AWAITING_REVIEW = {None, "", "REVIEW_REQUIRED"}
+
 def _natural_sort_key(s: str) -> tuple:
     """Sort key that treats embedded numbers numerically, not lexicographically.
 
@@ -54,7 +76,7 @@ def needs_you(repo: dict) -> list[dict]:
             pr_number = p.get("number", "?")
             items.append({"rank": 4, "kind": "pr_failing", "subject": f"PR #{pr_number}",
                           "detail": "checks are failing"})
-        elif not p.get("review"):
+        elif p.get("review") in AWAITING_REVIEW:
             # "none" (no CI configured) counts as not failing, or this never fires.
             pr_number = p.get("number", "?")
             items.append({"rank": 2, "kind": "pr_awaiting_review",
