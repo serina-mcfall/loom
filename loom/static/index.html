@@ -9,51 +9,31 @@
 <body>
 <header class="bar">
   <h1>Loom</h1>
+  <!-- Not a live region: rewritten every tick, and it carries the badge detail
+       ("collected 3s ago") so #conn itself can stay quiet. -->
   <p id="summary" class="summary">connecting…</p>
+  <!-- role="status" is an implicit polite live region, so this is written ONLY
+       when the state word actually changes. It used to be reassigned on every
+       SSE message, i.e. every 2 seconds, which queues an endless announcement
+       and makes the page unusable with a screen reader. Audit finding M7. -->
   <p id="conn" class="conn" role="status">●&nbsp;connecting</p>
 </header>
 
 <main>
+  <!-- ONE strip for the whole fleet, deliberately. With `--all` there may be
+       several repos, and N independent polite live regions is how a screen
+       reader becomes unusable. loom.view.aggregate_needs labels each item with
+       its repo when there is more than one. Audit finding H5. -->
   <section aria-labelledby="needs-h" class="panel panel--needs">
     <h2 id="needs-h">Needs you</h2>
     <ul id="needs" aria-live="polite" aria-relevant="additions text"></ul>
   </section>
 
-  <section aria-labelledby="trees-h" class="panel">
-    <h2 id="trees-h">Worktrees</h2>
-    <div class="scroll" tabindex="0" role="group" aria-labelledby="trees-h"><table id="trees">
-      <thead><tr><th scope="col">Tree</th><th scope="col">Branch</th>
-      <th scope="col">Agent</th><th scope="col">Ahead</th>
-      <th scope="col">Behind</th><th scope="col">Dirty</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-  </section>
-
-  <section aria-labelledby="coll-h" class="panel">
-    <h2 id="coll-h">Collisions</h2>
-    <div class="scroll" tabindex="0" role="group" aria-labelledby="coll-h"><table id="collisions">
-      <caption class="visually-hidden">Files changed by more than one worktree</caption>
-      <thead><tr><th scope="col">File</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-  </section>
-
-  <section aria-labelledby="prs-h" class="panel">
-    <h2 id="prs-h">Pull requests &amp; issues</h2>
-    <div id="prs"></div>
-  </section>
-
-  <section aria-labelledby="ticker-h" class="panel">
-    <h2 id="ticker-h">Commits</h2>
-    <ol id="ticker" class="ticker"></ol>
-  </section>
+  <!-- One <section> per repo, built by loom.js. The skeleton is rebuilt only
+       when the set of repo names changes, so focus inside a scroll container
+       survives the 2-second refresh. -->
+  <div id="repos"></div>
 </main>
-
-<footer class="bar" aria-labelledby="src-h">
-  <h2 id="src-h" class="visually-hidden">Data sources</h2>
-  <ul id="sources" class="sources"></ul>
-</footer>
-
 <script src="/static/loom.js"></script>
 </body>
 </html>

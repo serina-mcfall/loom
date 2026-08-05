@@ -146,16 +146,16 @@ def _tick(all_repos: bool, include_gh: bool, cached_gh: dict[str, dict],
     them is exactly the failure mode `loom.collect`'s `sources` mechanism exists
     to prevent for `gh`, just one layer up, at the server boundary.
     """
-    from loom.rank import rank_snapshot
+    from loom.view import finalise
     from loom_cli import build_snapshot
     snap = build_snapshot(all_repos, include_gh=include_gh, runner=runner)
     apply_gh_cache(snap, cached_gh, include_gh)
-    # RANK AFTER THE SPLICE, NEVER BEFORE. `apply_gh_cache` has just rewritten
-    # `repo["prs"]`; ranking earlier would score a PR list this snapshot does
-    # not contain, which is precisely audit finding H1.
-    rank_snapshot(snap)
     snap["collected"] = True
-    return snap
+    # FINALISE AFTER THE SPLICE, NEVER BEFORE. `apply_gh_cache` has just rewritten
+    # `repo["prs"]`; ranking earlier would score a PR list this snapshot does not
+    # contain, which is precisely audit finding H1. `collected` is set first
+    # because the badge reads it.
+    return finalise(snap)
 
 
 def _refresh_step(prev_snapshot: dict, all_repos: bool, include_gh: bool,
@@ -181,15 +181,24 @@ def _refresh_step(prev_snapshot: dict, all_repos: bool, include_gh: bool,
     `/snapshot.json` would serve `collected: true` and a frozen snapshot
     forever with no visible sign anything had gone wrong.
     """
+    from loom.view import finalise
     try:
         snap = _tick(all_repos, include_gh, cached_gh, runner=runner)
         snap["generated_at"] = _now_iso()
         snap["refresh_error"] = None
-        return snap
+        # Re-finalise once the final timestamp is in place, so the badge is
+        # computed against the stamp this snapshot actually carries rather than
+        # the builder's. `finalise` is idempotent, so this cannot double-count.
+        return finalise(snap)
     except Exception as exc:
         stale = dict(prev_snapshot)
         stale["refresh_error"] = f"{type(exc).__name__}: {exc}"
-        return stale
+        # The badge MUST be recomputed here. This is the H6 fix: the page used to
+        # infer "live" from the mere arrival of an SSE message, and this path is
+        # exactly what triggers one -- adding `refresh_error` changes the
+        # serialised body, so a send fires. Without re-finalising, the frozen
+        # snapshot would travel with its old, green badge still attached.
+        return finalise(stale)
 
 
 def _refresh_loop(all_repos: bool) -> None:

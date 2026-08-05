@@ -33,6 +33,7 @@ from loom.serve import (
     apply_gh_cache,
     run_server,
     should_include_gh,
+    _now_iso,
     _refresh_step,
     _tick,
 )
@@ -375,7 +376,34 @@ class TestRefreshStepSurvivesFailures(unittest.TestCase):
         with unittest.mock.patch("loom.serve._tick", return_value=good):
             snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
         self.assertIsNone(snap["refresh_error"])
-        self.assertEqual(snap["repos"], [{"name": "example"}])
+        # By name, not by whole-dict equality: `_refresh_step` now finalises, which
+        # attaches `needs_you` and a badge. The assertion's intent is that the good
+        # data replaced the stale data, not that the dict is byte-identical.
+        self.assertEqual([r["name"] for r in snap["repos"]], ["example"])
+        # The badge must stop reporting an error too. Not asserted as "live": this
+        # stub `good` snapshot never sets `collected`, so "connecting" is the
+        # correct reading of it, and pinning "live" here would be asserting the
+        # fixture rather than the behaviour.
+        self.assertNotEqual(snap["badge"]["state"], "error")
+
+    def test_a_failed_step_travels_with_an_error_badge_not_a_green_one(self):
+        """Audit 2026-08-05, finding H6, at the integration level.
+
+        This is the path that PRODUCES an SSE message on failure: adding
+        `refresh_error` changes the serialised body, so `/events` sends a frame.
+        The page used to conclude "live" from the mere arrival of a frame, so the
+        one moment the dashboard was lying was the moment it most confidently
+        claimed to be live.
+
+        The frozen snapshot must therefore not carry its old green badge onward.
+        """
+        prev = {"schema": 1, "repos": [{"name": "example"}], "collected": True,
+                "generated_at": _now_iso(), "refresh_error": None,
+                "badge": {"state": "live", "label": "● live", "detail": ""}}
+        with unittest.mock.patch("loom.serve._tick", side_effect=RuntimeError("boom")):
+            snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
+        self.assertEqual(snap["badge"]["state"], "error")
+        self.assertIn("boom", snap["badge"]["detail"])
 
     def test_a_successful_step_stamps_generated_at(self):
         prev = {"schema": 1, "repos": [], "collected": False}

@@ -11,7 +11,7 @@ from typing import Callable
 
 from loom.agents import DEFAULT_STATE_DIR
 from loom.collect import collect
-from loom.rank import rank_snapshot
+from loom.view import finalise
 from loom.runner import Runner, SubprocessRunner
 
 USAGE = """usage: loom <command> [options]
@@ -149,8 +149,9 @@ def main(argv: list[str]) -> int:
         return 2
     command, *rest = argv
     if command == "snapshot":
-        # rank last, on the finished snapshot -- see rank_snapshot's docstring.
-        snapshot = rank_snapshot(build_snapshot("--all" in rest))
+        # finalise last, on the finished snapshot: one boundary for both consumers,
+        # so the CLI's JSON and the server's frames cannot drift apart (H7).
+        snapshot = finalise(build_snapshot("--all" in rest))
         print(json.dumps(snapshot, indent=2) if "--json" in rest else render_text(snapshot))
         return 0
     if command == "serve":

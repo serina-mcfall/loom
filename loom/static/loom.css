@@ -15,11 +15,19 @@ h2 { font-size: .8rem; margin: 0 0 .6rem; color: var(--dim);
 .bar { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;
        padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
 footer.bar { border: 0; border-top: 1px solid var(--line); }
-main { display: grid; gap: 1rem; padding: 1rem;
-       grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); }
+main { display: flex; flex-direction: column; gap: 1rem; padding: 1rem; }
+/* One grid per repo, so each repo's panels wrap independently. */
+.panels { display: grid; gap: 1rem;
+          grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); }
 .panel { background: var(--panel); border: 1px solid var(--line);
          border-radius: 6px; padding: .9rem; min-width: 0; }
-.panel--needs { grid-column: 1 / -1; }
+/* A repo section is a labelled group of panels, with its name as the h2. */
+.repo { display: flex; flex-direction: column; gap: .6rem; }
+.repo + .repo { margin-top: .4rem; padding-top: 1rem;
+                border-top: 1px solid var(--line); }
+.repo > h2 { font-size: .9rem; color: var(--text); margin: 0; }
+h3 { font-size: .8rem; margin: 0 0 .6rem; color: var(--dim);
+     letter-spacing: .12em; text-transform: uppercase; }
 .scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: .3rem .6rem; border-bottom: 1px solid var(--line);
@@ -32,8 +40,9 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .state--stale, .state--stopped { color: var(--bad); }
 .state--working { color: var(--good); }
 .state--unknown, .state--none { color: var(--dim); }
-.src--bad { color: var(--bad); }
-.src--ok  { color: var(--good); }
+.src--bad  { color: var(--bad); }
+.src--ok   { color: var(--good); }
+.src--warn { color: var(--warn); }
 .sources { display: flex; gap: 1.2rem; flex-wrap: wrap; }
 .summary { margin: 0; color: var(--dim); }
 .conn { margin-left: auto; }
