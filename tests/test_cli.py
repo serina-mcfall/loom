@@ -156,8 +156,14 @@ class TestRenderText(unittest.TestCase):
 
 
 class TestBuildSnapshot(unittest.TestCase):
-    def test_attaches_needs_you_to_every_repo(self):
-        recordings = {
+    def _recordings(self) -> dict:
+        """Every git command `collect()` issues for one worktree, include_gh=False.
+
+        One fixture for the whole class. `tests/test_serve.py::_fast_tick_runner`
+        holds a near-identical copy for the same scenario -- see N1 in the
+        remediation log; consolidating them is deferred, not forgotten.
+        """
+        return {
             "git rev-parse --path-format=absolute --git-common-dir":
                 {"returncode": 0, "stdout": "/repo/.git\n", "stderr": ""},
             "git symbolic-ref --short refs/remotes/origin/HEAD":
@@ -188,7 +194,9 @@ class TestBuildSnapshot(unittest.TestCase):
             "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat":
                 {"returncode": 0, "stdout": "", "stderr": ""},
         }
-        runner = ReplayRunner(recordings)
+
+    def test_attaches_needs_you_to_every_repo(self):
+        runner = ReplayRunner(self._recordings())
         snapshot = build_snapshot(False, include_gh=False, runner=runner)
         self.assertEqual(len(snapshot["repos"]), 1)
 
@@ -209,6 +217,44 @@ class TestBuildSnapshot(unittest.TestCase):
         ranked = rank_snapshot(snapshot)
         self.assertIn("needs_you", ranked["repos"][0])
         self.assertIsInstance(ranked["repos"][0]["needs_you"], list)
+
+    # ------------------------------------------------- audit 2026-08-05, H7
+    def test_the_snapshot_states_when_it_was_generated(self):
+        """The loom skill is instructed: "If the snapshot is older than 5 minutes,
+        say so." It could not, ever.
+
+        `collect()` computes `generated_at` and `duration_ms`, and
+        `build_snapshot` discarded both when merging repos, so the CLI's JSON --
+        the skill's only input -- carried no timestamp at all. The skill asserted
+        a freshness it had no way to check, and an agent could confidently report
+        a fleet state minutes out of date.
+
+        `serve` re-stamps its own, so the page had one and the CLI did not: two
+        consumers of a schema versioned specifically to stop them drifting.
+        """
+        runner = ReplayRunner(self._recordings())
+        snapshot = build_snapshot(False, include_gh=False, runner=runner)
+        self.assertIn("generated_at", snapshot)
+        self.assertIn("duration_ms", snapshot)
+
+    def test_generated_at_carries_a_timezone_so_ages_are_computable(self):
+        # A naive timestamp is unanswerable, not assumable -- the rule
+        # loom/agents.py's `_age_seconds` already enforces. A consumer comparing a
+        # naive stamp against its own clock gets a zone-dependent answer, which is
+        # how a stale snapshot reads fresh in one timezone and not another.
+        from datetime import datetime
+        runner = ReplayRunner(self._recordings())
+        snapshot = build_snapshot(False, include_gh=False, runner=runner)
+        parsed = datetime.fromisoformat(snapshot["generated_at"])
+        self.assertIsNotNone(parsed.tzinfo,
+                             "generated_at must carry an offset or its age cannot "
+                             "be computed reliably")
+
+    def test_duration_ms_is_a_non_negative_integer(self):
+        runner = ReplayRunner(self._recordings())
+        snapshot = build_snapshot(False, include_gh=False, runner=runner)
+        self.assertIsInstance(snapshot["duration_ms"], int)
+        self.assertGreaterEqual(snapshot["duration_ms"], 0)
 
 
 if __name__ == "__main__":

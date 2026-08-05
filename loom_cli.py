@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from typing import Callable
 
 from loom.agents import DEFAULT_STATE_DIR
@@ -101,12 +103,28 @@ def build_snapshot(all_repos: bool, include_gh: bool = True,
     unranked on purpose; `needs_you` is absent rather than empty, so a consumer
     that forgot to rank fails loudly instead of showing a quiet fleet.
     """
+    started = time.monotonic()
     runner = runner or SubprocessRunner()
     repos = []
     for root in repo_roots(all_repos, runner):
         snap = collect(runner, root, DEFAULT_STATE_DIR, include_gh=include_gh)
         repos.extend(snap["repos"])
-    return {"schema": 1, "repos": repos}
+    # `generated_at` and `duration_ms` describe the WHOLE build, not one root.
+    #
+    # `collect()` computes its own pair per root and they were discarded here, so
+    # the CLI's JSON -- the loom skill's only input -- carried no timestamp at all,
+    # while `serve` re-stamped its own. The skill is instructed "if the snapshot is
+    # older than 5 minutes, say so" and could never do it. Two consumers of a
+    # schema versioned specifically to stop them drifting. Audit 2026-08-05, H7.
+    #
+    # Timezone-aware on purpose: a naive stamp gives a zone-dependent age, the
+    # same trap loom/agents.py's `_age_seconds` refuses.
+    return {
+        "schema": 1,
+        "generated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "repos": repos,
+    }
 
 
 def render_text(snapshot: dict) -> str:
