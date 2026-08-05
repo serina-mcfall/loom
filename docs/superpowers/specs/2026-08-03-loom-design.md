@@ -94,7 +94,15 @@ into telling different stories.
 
 ## The snapshot contract
 
-The interface between every unit. Versioned, because two consumers parse it.
+The interface between every unit. Versioned, because **three** consumers parse it: the
+page, the skill, and `.github/workflows/checks.yml`'s end-to-end smoke test.
+
+> This said "two consumers" until 2026-08-05, and the undercount had a consequence. The
+> schema-2 bump updated the code and this document and missed the workflow, which
+> asserted `snap["schema"] == 1` against a literal — CI went red on all four Python
+> versions. The workflow now imports `SCHEMA_VERSION` rather than hardcoding it, so a
+> future bump cannot leave it behind. Counting the consumers wrong is not a documentation
+> nit when the count is the reason a consumer gets forgotten.
 
 Updated 2026-08-05 for **schema 2**. Every field below is now either rendered by the
 page, validated, or explicitly marked skill-facing — see finding L2.

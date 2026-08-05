@@ -850,6 +850,36 @@ because widening H1's diff into a second test module is how a focused fix become
 unreviewable one. H7 did extract `test_cli.py`'s copy into a `_recordings()` helper, so
 there are now two named fixtures instead of one named and one inline — still two.
 
+### N5 · The contract has THREE consumers, and the spec said two
+
+*Medium · found by CI going red on the first push, after all 32 findings were "done"*
+
+**Evidence** — all four Python legs failed on PR #13:
+
+```
+AssertionError: schema is 2, expected 1
+  .github/workflows/checks.yml — "Collect a real snapshot, and degrade honestly
+                                  without gh auth"
+```
+
+**Consequence** The schema-2 bump (L2) updated the code and the design document and
+missed the workflow, which asserted against the literal `1`. The spec says the snapshot
+is *"versioned, because two consumers parse it"* — the page and the skill — and I worked
+from that count. There are **three**: the CI smoke test parses it too.
+
+This is the L2 defect recurring one level up. A version field exists to stop consumers
+drifting; miscounting the consumers is not a documentation nit when the count is the
+reason one of them gets forgotten.
+
+**Fixed** The workflow now does `from loom.collect import SCHEMA_VERSION` instead of
+hardcoding, so a future bump cannot leave it behind. The spec's count is corrected to
+three, with the incident recorded beside it.
+
+**Worth noting about the process:** every local gate was green — 285 tests, stdlib check,
+mypy — and the tree was clean. The thing that caught this was pushing. A gate that only
+runs in CI is a gate you cannot fully rehearse, and the honest response is to reproduce
+its steps locally, which is now done for this one.
+
 ### N2 · `/favicon.ico` 404s on every page load
 
 *Low · found in the browser console while verifying H5*

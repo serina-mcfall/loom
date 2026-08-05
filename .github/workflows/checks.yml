@@ -123,7 +123,19 @@ jobs:
 
           snap = json.load(open(os.path.join(os.environ.get("RUNNER_TEMP", "/tmp"),
                                              "snapshot.json")))
-          assert snap["schema"] == 1, f"schema is {snap['schema']!r}, expected 1"
+
+          # IMPORTED, NEVER HARDCODED.
+          #
+          # This assertion read `== 1` and broke the moment the schema became 2, which
+          # is how it was discovered that THIS WORKFLOW IS A THIRD CONSUMER of the
+          # contract. The design doc says the snapshot is "versioned, because two
+          # consumers parse it" -- the page and the skill -- and that undercount is
+          # exactly why the bump missed this file. Reading the constant means a future
+          # bump cannot leave this behind again.
+          sys.path.insert(0, os.getcwd())
+          from loom.collect import SCHEMA_VERSION
+          assert snap["schema"] == SCHEMA_VERSION, \
+              f"schema is {snap['schema']!r}, expected {SCHEMA_VERSION}"
           assert snap["repos"], "no repos in snapshot — collection found nothing at all"
 
           repo = snap["repos"][0]
@@ -152,7 +164,7 @@ jobs:
                   assert s.get("error"), f"{name}: not ok, but gave no reason"
 
           degraded = sorted(n for n, s in sources.items() if not s["ok"])
-          print(f"\nOK: schema 1, {len(snap['repos'])} repo(s), "
+          print(f"\nOK: schema {SCHEMA_VERSION}, {len(snap['repos'])} repo(s), "
                 f"git worktree source healthy, "
                 f"{len(degraded)} source(s) degraded with a stated reason"
                 + (f": {', '.join(degraded)}" if degraded else ""))
