@@ -432,6 +432,21 @@ function renderBadge(state, label) {
   conn.className = `conn ${BADGE_CLASS[state] || ""}`;
 }
 
+let lastConfigWarning = null;
+
+function renderConfigWarning(config) {
+  const missing = (config && config.missing) || [];
+  const text = missing.length
+    ? `${missing.join(", ")} named in ${config.source} but no such repo was found — ` +
+      "check the spelling"
+    : "";
+  if (text === lastConfigWarning) return;
+  lastConfigWarning = text;
+  const el_ = el("config-warning");
+  el_.textContent = text;
+  el_.hidden = !text;
+}
+
 function render(snapshot) {
   // DATA health comes from the snapshot's own badge, decided in loom/view.py.
   // It is NOT inferred from the arrival of a message: a failed refresh is exactly
@@ -451,6 +466,11 @@ function render(snapshot) {
     parts.push(`${snapshot.duration_ms}ms`);
   }
   el("summary").textContent = parts.join(" · ");
+
+  // config.missing -- a repo named in the allow list that does not exist. Written only
+  // when it changes: role="alert" is assertive, and rewriting it every 2s would talk
+  // over a screen reader continuously, the same defect M7 fixed on #conn.
+  renderConfigWarning(snapshot.config);
 
   renderNeeds(snapshot.needs_you || []);
   // The sentence is decided in loom.view.announcement; the page only decides WHEN,

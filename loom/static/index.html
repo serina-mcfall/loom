@@ -19,6 +19,12 @@
   <p id="conn" class="conn" role="status">●&nbsp;connecting</p>
 </header>
 
+<!-- A repo named in ~/.loom/repos that does not exist. Hidden unless it happens, so a
+     healthy config shows nothing. role="alert" because a board missing a repo the
+     operator asked for is worth interrupting for -- unlike the 2-second data badge,
+     this changes only when the config file changes. -->
+<p id="config-warning" class="config-warning" role="alert" hidden></p>
+
 <main>
   <!-- ONE strip for the whole fleet, deliberately. With `--all` there may be
        several repos, and N independent polite live regions is how a screen

@@ -125,6 +125,10 @@ tbody tr:nth-child(even) { background: #1b212a; }
 .cached-at { margin: .4rem 0 0; color: var(--dim); font-size: .75rem; }
 .c-sha { color: var(--dim); }
 .conn { margin-left: auto; }
+/* Only rendered when a named repo is missing, so it never occupies space
+   on a healthy board. */
+.config-warning { margin: 0; padding: .5rem 1rem; color: var(--bad);
+                  border-bottom: 1px solid var(--line); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden;
                    clip-path: inset(50%); white-space: nowrap; }
 :focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }

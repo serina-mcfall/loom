@@ -7,6 +7,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from loom.agents import DEFAULT_STATE_DIR
@@ -23,9 +24,51 @@ USAGE = """usage: loom <command> [options]
 
 LAUNCHPAD = os.path.expanduser("~/Launchpad")
 
+# Which repositories `--all` shows. Beside the ~/.loom/state directory Loom already owns.
+# Spec: docs/superpowers/specs/2026-08-06-allow-list-design.md
+ALLOW_FILE = os.path.expanduser("~/.loom/repos")
+
+
+def read_allow_list(path: str = ALLOW_FILE,
+                    reader: Callable[[str], str] | None = None) -> list[str] | None:
+    """Repository names from `path`, or None when the file cannot be read.
+
+    `None` and `[]` both end up showing every repository, but they are different FACTS
+    and `config.source` reports them differently: None means no file exists, `[]` means
+    a file exists and names nothing.
+
+    `reader` is injectable so ABSENCE can be tested. The v1 design's rule: a hardcoded
+    path cannot be negative-tested.
+
+    Never raises. An unreadable file must not take down a dashboard whose whole job is
+    to keep reporting; it degrades to "no list", which shows everything.
+    """
+    reader = reader or (lambda p: Path(p).read_text(encoding="utf-8"))
+    try:
+        text = reader(path)
+    except OSError:
+        return None
+    names = []
+    for line in text.splitlines():
+        name = line.split("#", 1)[0].strip()
+        if name:
+            names.append(name)
+    return names
+
 
 def discover_repos(base: str,
-                   listdir: Callable[[str], list[str]] = os.listdir) -> list[str]:
+                   listdir: Callable[[str], list[str]] = os.listdir,
+                   allow: list[str] | None = None) -> list[str]:
+    """Every `.git` child of `base`, narrowed to `allow` when one is given.
+
+    `allow=None` or an EMPTY list both mean every repository. A config that silently
+    empties the board is the empty-versus-broken confusion the `sources` mechanism
+    exists to refuse, and an empty file is likelier a truncated write than a request
+    for a blank board.
+
+    The allow list narrows the RESULT; it never bypasses the `.git` test, so naming a
+    directory that is not a checkout cannot conjure one.
+    """
     found = []
     try:
         entries = sorted(listdir(base))
@@ -42,12 +85,32 @@ def discover_repos(base: str,
                 found.append(path)
         except OSError:
             continue
+    if allow:
+        wanted = set(allow)
+        found = [p for p in found if os.path.basename(p) in wanted]
     return found
+
+
+def allow_list_config(source: str | None, allow: list[str] | None, base: str,
+                      listdir: Callable[[str], list[str]] = os.listdir) -> dict:
+    """The `config` field: where the list came from, and any name that matched nothing.
+
+    A NAME THAT MATCHES NO REPOSITORY IS REPORTED, NEVER DROPPED. Silently ignoring a
+    typo would remove a repository the operator asked for and give no reason -- the same
+    failure as `gh` returning empty with exit code 0, which is this project's founding
+    incident.
+
+    `source` is None when no file exists and the path when one does, so an EMPTY file
+    stays distinguishable from an absent one even though both show every repository.
+    """
+    present = {os.path.basename(p) for p in discover_repos(base, listdir)}
+    missing = sorted(n for n in (allow or []) if n not in present)
+    return {"source": source, "listed": len(allow or []), "missing": missing}
 
 
 def repo_roots(all_repos: bool, runner: Runner | None = None) -> list[str]:
     if all_repos:
-        return discover_repos(LAUNCHPAD)
+        return discover_repos(LAUNCHPAD, allow=read_allow_list())
     runner = runner or SubprocessRunner()
     r = runner.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
                    cwd=os.getcwd())
@@ -105,8 +168,13 @@ def build_snapshot(all_repos: bool, include_gh: bool = True,
     """
     started = time.monotonic()
     runner = runner or SubprocessRunner()
+    # Read once, so the roots and the report cannot disagree about what the file said.
+    # Single-repo mode never consults it: `--all`'s scope is what the list narrows.
+    allow = read_allow_list() if all_repos else None
+    source = ALLOW_FILE if allow is not None else None
     repos = []
-    for root in repo_roots(all_repos, runner):
+    for root in (discover_repos(LAUNCHPAD, allow=allow) if all_repos
+                 else repo_roots(False, runner)):
         snap = collect(runner, root, DEFAULT_STATE_DIR, include_gh=include_gh)
         repos.extend(snap["repos"])
     # `generated_at` and `duration_ms` describe the WHOLE build, not one root.
@@ -123,12 +191,20 @@ def build_snapshot(all_repos: bool, include_gh: bool = True,
         "schema": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         "duration_ms": int((time.monotonic() - started) * 1000),
+        # Present on EVERY snapshot, including single-repo runs where source is null.
+        # A field that appears and disappears is a field consumers get wrong.
+        "config": allow_list_config(source, allow, LAUNCHPAD),
         "repos": repos,
     }
 
 
 def render_text(snapshot: dict) -> str:
     lines = []
+    cfg = snapshot.get("config") or {}
+    for name in cfg.get("missing") or []:
+        # Loud, and first: a repo the operator asked for is not on this board.
+        lines.append(f"  ! {name} is named in {cfg.get('source')} but no such repo "
+                     f"was found — check the spelling")
     for repo in snapshot["repos"]:
         lines.append(f"{repo['name']} — {len(repo['worktrees'])} trees, "
                      f"{len(repo['prs'])} PRs, {len(repo['issues'])} issues")
