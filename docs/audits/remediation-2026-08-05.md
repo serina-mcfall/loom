@@ -42,19 +42,19 @@ test is how a suite stops being evidence.
 | M9 | `serve` on a taken port raises a traceback | Medium | **fixed** | `d29a075` |
 | M10 | SSE change-suppression can never suppress | Medium | **fixed** | `d29a075` |
 | M11 | Refresh thread cannot be stopped | Medium | **fixed** | `d29a075` |
-| L1 | Three dead declarations | Low | pending | — |
-| L2 | ~15 snapshot fields read by nothing | Low | pending | — |
-| L3 | Spec status stale | Low | pending | — |
-| L4 | Spec says `del`, code emits `dele` | Low | pending | — |
-| L5 | Collapse-control a11y requirement is vacuous | Low | pending | — |
-| L6 | "Loose ends" panel never built | Low | pending | — |
-| L7 | Cached gh age promised, never displayed | Low | pending | — |
-| L8 | Issues #5 and #7 fixed but open | Low | pending | — |
-| L9 | No LICENSE | Low | **blocked — decision** | — |
-| L10 | `--help` exits 2 | Low | pending | — |
-| L11 | No declared Python floor | Low | **blocked — decision** | — |
-| L12 | Completed plan is the largest file | Low | pending | — |
-| L13 | No index of decision records | Low | pending | — |
+| L1 | Three dead declarations (**two**, corrected) | Low | **fixed** | `4a5f9de` |
+| L2 | 15 snapshot fields read by nothing | Low | **fixed** | `5b32be6` |
+| L3 | Spec status stale | Low | **fixed** | `ff56ba4` |
+| L4 | Spec says `del`, code emits `dele` | Low | **fixed** | `ff56ba4` |
+| L5 | Collapse-control a11y requirement is vacuous | Low | **fixed** | `ff56ba4` |
+| L6 | "Loose ends" panel never built | Low | **fixed (built)** | `ff56ba4` |
+| L7 | Cached gh age promised, never displayed | Low | **fixed** | `5b32be6` |
+| L8 | Issues #5 and #7 fixed but open | Low | **awaiting Serina** | — |
+| L9 | No LICENSE | Low | **awaiting Serina** | — |
+| L10 | `--help` exits 2 | Low | **fixed** | `4a5f9de` |
+| L11 | No declared Python floor | Low | **fixed (measured, 3.10)** | `ff56ba4` |
+| L12 | Completed plan is the largest file | Low | **fixed (archived)** | `ff56ba4` |
+| L13 | No index of decision records | Low | **fixed** | `ff56ba4` |
 
 | — | Colour coding + compactness (requested live) | extra | **done** | `8d98887` |
 | N4 | Static assets were cacheable | new | **fixed** | `8d98887` |
@@ -671,6 +671,135 @@ fleet:
 A budget test now pins the spawn count with its breakdown written down, so adding a
 per-worktree git call means justifying a raise rather than quietly costing every user
 another 30 spawns a minute.
+
+---
+
+## The Low tier
+
+Eleven of thirteen fixed. Two need a human and are listed at the end.
+
+### L1 + L10 · `4a5f9de`
+
+**L10 RED** — all three help forms exited 2:
+
+```
+FAIL: test_asking_for_help_succeeds (argv=['--help'])   AssertionError: 2 != 0
+FAIL: test_asking_for_help_succeeds (argv=['-h'])       AssertionError: 2 != 0
+FAIL: test_asking_for_help_succeeds (argv=['help'])     AssertionError: 2 != 0
+```
+
+Negative controls kept: bare `loom` and an unknown command still exit 2, because only
+one of those three is an error.
+
+**L1 — a correction to the audit.** It listed *three* dead declarations. Only two were
+still dead by the time the Low tier began:
+
+- `_pane_in_worktree` — dead. The last trace of the pane-corroboration rule PR #12
+  removed as unsound, so it read as live code implementing an abandoned rule.
+- `Dirty.total` — dead. Rank 5 sums the fields itself, because it must distinguish
+  `None` from zero first.
+- `SourceStatus.last_good` — **no longer dead.** H4 assigns it, and the page renders it
+  in the banner. The audit was right when written and wrong by the time it was actioned.
+
+### L2 + L7 · `5b32be6` — the fifteen unread fields
+
+**A correction to my own measurement, twice.** The first pass counted 14 by substring
+match, which is wrong in both directions: `head` matched `tHead` in the JS. The second
+pass used property-access patterns and still counted 14, because **`os.path.join` in
+`loom_cli.py` matched `\.path\b`** and hid `worktrees[].path`. Only after stripping
+Python's own `os.path` did the count land on **15 — exactly what the audit claimed.**
+
+That is the third time in this remediation that a grep matched my own tooling rather
+than the thing I was measuring.
+
+Each field was then resolved rather than counted:
+
+| Resolution | Fields |
+|---|---|
+| **Rendered** | `duration_ms`, `issue_repo`, `default_branch`, `gh_cached_at` (L7), `worktree.pr`, `pr.updated_at`, commit `sha`/`files`/`add`/`dele` |
+| **Validated** | `schema` |
+| **Dropped** | worktree `head`, PR `worktree`, issue `assignees` |
+| **Kept, documented as skill-facing** | `root`, `worktrees[].path` |
+
+**The `schema` one matters most.** The spec's stated reason for versioning is that "two
+consumers parse it and would otherwise drift silently" — and neither consumer ever read
+the number. A version field nothing validates is decoration. A mismatch now outranks
+every other badge state *including a refresh error*, because if the shape cannot be
+trusted then no field read out of it can be either.
+
+`root` and `path` were **kept**, against the audit's "render or drop" framing. Both are
+unrendered, but an agent reporting "worktree X needs you" has to be able to say where X
+is. The defect was never that they existed — it was that nothing recorded which consumer
+they were for.
+
+**SCHEMA_VERSION bumped to 2.** No consumer read the removed fields, so nothing broke —
+but "probably nobody noticed" is how a version field becomes decoration.
+`test_version_is_pinned` exists to make a bump deliberate, and it did exactly that.
+
+**An accessibility improvement fell out of it.** Each repo section's `h2` carried the
+tree/PR/issue counts, so the section's *accessible name changed every 2 seconds*. A
+moving landmark label is disorienting to navigate by. The heading is now the bare repo
+name and the counts moved to a plain paragraph.
+
+### L11 · the Python floor, measured rather than guessed
+
+`uv` made it possible to test real interpreters instead of reasoning about them:
+
+```
+  python3.9   PASS  (Ran 285 tests)      but check_stdlib_only.py FAILS
+  python3.10  PASS  (Ran 285 tests)      everything works  <- declared floor
+  python3.11  PASS  (Ran 285 tests)
+  python3.13  PASS  (Ran 285 tests)
+  ./bin/loom snapshot on python3.9  PASS (real end-to-end run)
+```
+
+So Loom's *runtime* reaches 3.9, and the project's floor is **3.10** — the lowest version
+at which everything works, including its own checks. The checker's docstring claim of
+3.12 was a guess and is corrected.
+
+#### The matrix nearly broke the binding gate
+
+Adding `strategy.matrix` to the `tests` job would have renamed its check run from
+`tests and constraints` to `tests and constraints (3.10)`. The ruleset for `main`
+requires the **bare** context, which would then never be published again — an
+unsatisfiable gate, indistinguishable from a slow one.
+
+Caught before committing. The matrix legs are named `py3.x`, and a separate aggregate
+job carries the stable required name, with `if: always()` so a failed leg makes it
+**fail** rather than skip — a skipped required check is not a failing one, and GitHub
+would have read the gate as still-running forever.
+
+Verified against the live ruleset afterwards: both required contexts
+(`tests and constraints`, `reviewed for this commit`) are still published.
+
+### L6 · the panel that was specified and never built
+
+Built. Verified in the browser against the real fleet:
+
+```
+  panelsPerRepo: [Worktrees, Collisions, Pull requests & issues, Commits,
+                  Loose ends, Data sources]
+  looseEndsItems: ["stale dir wave1-apiclient — wave1-apiclient is not a git worktree"]
+```
+
+The spec's third flag kind, "branches with no issue", is produced by **no code path at
+all** — removed from the description rather than left as a phantom feature.
+
+### L3 · L4 · L5 · L12 · L13 · the documents
+
+L5 is the interesting one. *"Every collapse control is a real `<button>`…"* sat in a list
+headed **"Requirements, not aspirations. Each is verifiable."** The page has no
+interactive controls, so it was trivially satisfied and verified nothing, while reading
+as a passed check. It is now conditional, and the requirement the page *actually* has —
+focusable, named scroll regions — is stated beside it.
+
+L13's index is not cosmetic: nothing enumerated what the documents claimed, which is the
+mechanism by which L3 through L7 all went unnoticed.
+
+**One piece of drift was created and then fixed inside this tier:** the spec's contract
+example still showed schema 1 with `head`, `last_commit`, PR `worktree` and `assignees`
+after `5b32be6` removed them. Updating the code and leaving the document behind is the
+exact failure the audit was about, so it was caught and corrected in `ff56ba4`.
 
 ---
 
