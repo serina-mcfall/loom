@@ -533,6 +533,25 @@ class TestHandlerRoutes(unittest.TestCase):
     def _get(self, path: str):
         return urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=2)
 
+    def test_nothing_is_cacheable(self):
+        """A restyled page must not come back looking unchanged.
+
+        There is no build step and no fingerprinted asset names, so loom.css and
+        loom.js keep their URLs forever. A browser heuristically caching them
+        serves the old file after a reload -- which is indistinguishable, from the
+        outside, from the edit having silently failed. Observed exactly that during
+        remediation, which is why this is now pinned rather than remembered.
+
+        The snapshot is live data, so it must not be cached either; one header
+        covers both, and this server is loopback-only with a 2-second refresh, so
+        there is no bandwidth cost on the other side.
+        """
+        for path in ("/", "/static/loom.css", "/static/loom.js", "/snapshot.json"):
+            with self.subTest(path=path):
+                with self._get(path) as r:
+                    self.assertIn("no-store", r.headers.get("Cache-Control", ""),
+                                  f"{path} is cacheable")
+
     def test_snapshot_json_returns_the_current_snapshot(self):
         with self._get("/snapshot.json") as r:
             self.assertEqual(r.status, 200)

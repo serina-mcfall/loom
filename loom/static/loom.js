@@ -37,6 +37,23 @@ const dirtyTotal = (d) =>
     ? "?"
     : String((d.staged || 0) + (d.unstaged || 0) + (d.untracked || 0));
 
+/** A numeric table cell: colour reinforces the printed number, never replaces it.
+ *  `value === null` means unmeasurable, and gets "?" in dim italic -- a rendering
+ *  no actual count could be confused with, even in greyscale. */
+function cell(display, value, classWhenNonZero) {
+  if (value === null || value === undefined) return text("td", display, "n--unknown");
+  return text("td", display, value ? classWhenNonZero : "n--zero");
+}
+
+// Which colour a PR's review or check state earns. A lookup, not a decision about
+// what matters -- the state word itself is always printed next to it.
+const REVIEW_CLASS = {
+  APPROVED: "st--good", CHANGES_REQUESTED: "st--bad", REVIEW_REQUIRED: "st--warn",
+};
+const CHECK_CLASS = {
+  passing: "st--good", failing: "st--bad", pending: "st--warn", none: "st--dim",
+};
+
 // The live region is debounced: a 2s region makes a screen reader unusable.
 let lastAnnounce = 0;
 const ANNOUNCE_EVERY_MS = 15000;
@@ -54,12 +71,15 @@ function renderNeeds(items) {
     return;
   }
   for (const item of items) {
-    const li = text("li", "", "needs-item");
+    // The rank class only colours what the text already says. `[3]` is printed in
+    // the chip and the reason is spelled out in `detail`, so a viewer who cannot
+    // distinguish the ramp loses nothing.
+    const li = text("li", "", `needs-item rank--${item.rank}`);
     li.append(text("span", `[${item.rank}]`, "rank"));
-    // `label` is decided in loom.view.aggregate_needs: the subject alone for one
-    // repo, "repo · subject" when several, so two repos each holding a "PR #7"
-    // do not read as a duplicate.
-    li.append(text("strong", ` ${item.label || item.subject} `));
+    // `show_repo` is decided in loom.view.aggregate_needs -- the page does not
+    // work out whether the repo name is worth the clutter.
+    if (item.show_repo) li.append(text("span", `${item.repo} · `, "repo-tag"));
+    li.append(text("strong", `${item.subject} `));
     li.append(text("span", `— ${item.detail}`));
     list.append(li);
   }
@@ -74,8 +94,12 @@ function renderTrees(body, trees) {
     tr.append(th, text("td", t.branch || "detached"));
     const state = (t.agent && t.agent.state) || "none";
     tr.append(text("td", STATE_LABEL[state] || state, `state--${state}`));
-    tr.append(text("td", num(t.ahead)), text("td", num(t.behind)));
-    tr.append(text("td", dirtyTotal(t.dirty)));
+    // Colour only reinforces the number that is already printed. An unmeasurable
+    // fact reads "?" in italic dim, which no number could be mistaken for.
+    tr.append(cell(num(t.ahead), t.ahead, "n--ahead"));
+    tr.append(cell(num(t.behind), t.behind, "n--behind"));
+    const dt = dirtyTotal(t.dirty);
+    tr.append(cell(dt, dt === "?" ? null : Number(dt), "n--dirty"));
     body.append(tr);
   }
 }
@@ -104,7 +128,9 @@ function renderCollisions(table, collisions, trees) {
     tr.append(th);
     for (const label of labels) {
       // Text, not a dot — a screen reader must hear the same thing an eye sees.
-      tr.append(text("td", c.branches.includes(label) ? "collides" : "—"));
+      // The colour is layered on top of the word, never instead of it.
+      const hit = c.branches.includes(label);
+      tr.append(text("td", hit ? "collides" : "—", hit ? "collide" : "collide--no"));
     }
     body.append(tr);
   }
@@ -127,10 +153,24 @@ function renderPrs(box, repo) {
   }
   const list = document.createElement("ul");
   for (const p of repo.prs) {
-    list.append(text("li", `#${p.number} ${p.branch} — ${p.review || "no review"}, checks ${p.checks}`));
+    const li = document.createElement("li");
+    li.append(text("span", `#${p.number} `, "pr-num"));
+    li.append(text("span", p.branch, "pr-branch"));
+    li.append(text("span", " — "));
+    const review = p.review || "no review";
+    li.append(text("span", review, REVIEW_CLASS[p.review] || "st--warn"));
+    li.append(text("span", ", checks "));
+    li.append(text("span", p.checks, CHECK_CLASS[p.checks] || "st--dim"));
+    list.append(li);
   }
   for (const i of repo.issues) {
-    list.append(text("li", `issue #${i.number} ${i.title}`));
+    const li = document.createElement("li");
+    li.append(text("span", `#${i.number} `, "issue-num"));
+    li.append(text("span", i.title));
+    if (i.labels && i.labels.length) {
+      li.append(text("span", ` [${i.labels.join(", ")}]`, "issue-label"));
+    }
+    list.append(li);
   }
   if (repo.prs.length === 0 && repo.issues.length === 0) {
     list.append(text("li", "No open pull requests or issues."));
@@ -147,9 +187,16 @@ function renderSources(list, sources) {
 }
 
 function renderTicker(ol, commits) {
-  ol.replaceChildren(
-    ...(commits || []).slice(0, 12).map((c) =>
-      text("li", `${c.when.slice(11, 16)} ${c.branch} ${c.subject}`)));
+  ol.replaceChildren();
+  for (const c of (commits || []).slice(0, 12)) {
+    const li = document.createElement("li");
+    // Time first and tinted, so the eye can walk the column vertically instead of
+    // re-reading each line to find where it starts.
+    li.append(text("span", c.when.slice(11, 16) + " ", "c-time"));
+    if (c.branch) li.append(text("span", c.branch + " ", "c-branch"));
+    li.append(text("span", c.subject));
+    ol.append(li);
+  }
 }
 
 // ---------------------------------------------------------------- repo sections
@@ -159,6 +206,19 @@ function renderTicker(ol, commits) {
 function scrollBox(labelledBy, child) {
   const div = document.createElement("div");
   div.className = "scroll";
+  div.tabIndex = 0;
+  div.setAttribute("role", "group");
+  div.setAttribute("aria-labelledby", labelledBy);
+  div.append(child);
+  return div;
+}
+
+/** A height-capped, vertically scrollable region. Focusable and named for the same
+ *  reason `scrollBox` is: if it scrolls, a keyboard user must be able to reach and
+ *  scroll it, and a screen reader must not announce an unlabelled group. */
+function capBox(labelledBy, child) {
+  const div = document.createElement("div");
+  div.className = "capped";
   div.tabIndex = 0;
   div.setAttribute("role", "group");
   div.setAttribute("aria-labelledby", labelledBy);
@@ -207,20 +267,31 @@ function buildRepoSection(repo, i) {
   const panels = document.createElement("div");
   panels.className = "panels";
 
+  // Both tables get double width: six columns, and one column per branch, do not
+  // fit a 20rem cell. Widening beats abbreviating the headers to glyphs.
   const treesTable = tableWith(["Tree", "Branch", "Agent", "Ahead", "Behind", "Dirty"]);
-  panels.append(panel(`repo-${i}-trees-h`, "Worktrees", "h3",
-                      scrollBox(`repo-${i}-trees-h`, treesTable)));
+  const treesPanel = panel(`repo-${i}-trees-h`, "Worktrees", "h3",
+                           scrollBox(`repo-${i}-trees-h`, treesTable));
+  treesPanel.classList.add("panel--wide");
+  panels.append(treesPanel);
 
   const collTable = tableWith(["File"], "Files changed by more than one worktree");
-  panels.append(panel(`repo-${i}-coll-h`, "Collisions", "h3",
-                      scrollBox(`repo-${i}-coll-h`, collTable)));
+  const collPanel = panel(`repo-${i}-coll-h`, "Collisions", "h3",
+                          scrollBox(`repo-${i}-coll-h`, collTable));
+  collPanel.classList.add("panel--wide");
+  panels.append(collPanel);
 
+  // Capped and scrollable: a repo with 34 open issues would otherwise stretch its
+  // panel far past everything beside it. `capBox` makes the scroll region
+  // focusable, because a region that scrolls must be operable without a mouse.
   const prsBox = document.createElement("div");
-  panels.append(panel(`repo-${i}-prs-h`, "Pull requests & issues", "h3", prsBox));
+  panels.append(panel(`repo-${i}-prs-h`, "Pull requests & issues", "h3",
+                      capBox(`repo-${i}-prs-h`, prsBox)));
 
   const ticker = document.createElement("ol");
   ticker.className = "ticker";
-  panels.append(panel(`repo-${i}-ticker-h`, "Commits", "h3", ticker));
+  panels.append(panel(`repo-${i}-ticker-h`, "Commits", "h3",
+                      capBox(`repo-${i}-ticker-h`, ticker)));
 
   const sources = document.createElement("ul");
   sources.className = "sources";

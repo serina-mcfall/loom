@@ -121,7 +121,7 @@ def aggregate_needs(snap: dict) -> list[dict]:
         name = repo.get("name", "<unnamed repo>")
         for item in repo.get("needs_you", []):
             subject = item.get("subject", "")
-            items.append({**item, "repo": name,
+            items.append({**item, "repo": name, "show_repo": many,
                           "label": f"{name} · {subject}" if many else subject})
     return sorted(items, key=lambda i: (i["rank"], i["repo"], i.get("subject", "")))
 

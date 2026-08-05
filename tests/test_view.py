@@ -167,6 +167,22 @@ class TestAggregateNeeds(unittest.TestCase):
         # the first, or the strip stops being a triage order.
         self.assertEqual([i["rank"] for i in items], [2, 4])
 
+    def test_show_repo_states_whether_the_page_should_print_the_repo_name(self):
+        """The page must not have to infer this by comparing label to subject.
+
+        Whether a repo name is worth the clutter is a DECISION, so it is decided
+        here and asserted here, per finding H8. The page reads the flag.
+        """
+        from loom.view import aggregate_needs
+        one = finalise(self._snap(self._repo("one", prs=[self._failing_pr(7)])))
+        self.assertEqual([i["show_repo"] for i in aggregate_needs(one)], [False])
+
+        two = finalise(self._snap(
+            self._repo("one", prs=[self._failing_pr(7)]),
+            self._repo("two", prs=[self._failing_pr(8)]),
+        ))
+        self.assertEqual([i["show_repo"] for i in aggregate_needs(two)], [True, True])
+
     def test_an_empty_fleet_aggregates_to_nothing(self):
         from loom.view import aggregate_needs
         snap = finalise(self._snap(self._repo("one"), self._repo("two")))

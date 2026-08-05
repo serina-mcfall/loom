@@ -229,6 +229,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # NOTHING THIS SERVER SENDS IS EVER WORTH CACHING.
+        #
+        # There are no fingerprinted asset names and no build step, so an edited
+        # loom.css or loom.js keeps its URL -- and a browser heuristically caching
+        # it will happily serve the old file after a reload. Observed: a restyled
+        # page came back looking entirely unchanged, which reads exactly like the
+        # edit having failed rather than like a cache hit.
+        #
+        # The snapshot is live data by definition, so it must not be cached either.
+        # One header covers both, and this server is loopback-only with a 2-second
+        # refresh -- there is no bandwidth argument on the other side.
+        self.send_header("Cache-Control", "no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(body)
 
