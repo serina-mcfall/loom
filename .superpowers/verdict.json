@@ -1,9 +1,9 @@
 {
   "state": "READY",
-  "sha": "ec650924d7e32dde667fba8a4e1fa5d338efc444",
-  "issue": "3",
+  "sha": "7df30c29e3e4160b55239c68877008ed1cc70551",
+  "issue": "14",
   "plan": null,
-  "recorded_at": "2026-08-06T09:44:36+12:00",
+  "recorded_at": "2026-08-06T10:16:28+12:00",
   "checks": {
     "ledger": "not-applicable: issue-driven, no SDD plan exists for this branch",
     "test_cmd": "python3 -m unittest discover -s tests"
