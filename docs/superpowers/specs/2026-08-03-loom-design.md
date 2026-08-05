@@ -1,7 +1,8 @@
 # Loom — design
 
 - **Date:** 2026-08-03
-- **Status:** approved, not yet planned
+- **Status:** built and merged (PR #2, 2026-08-03). Audited 2026-08-05; see
+  `docs/audits/` for findings and the corrections list at the end of this file
 - **Author:** Serina McFall, with Claude
 - **Supersedes:** nothing
 
@@ -95,61 +96,96 @@ into telling different stories.
 
 The interface between every unit. Versioned, because two consumers parse it.
 
+Updated 2026-08-05 for **schema 2**. Every field below is now either rendered by the
+page, validated, or explicitly marked skill-facing — see finding L2.
+
 ```jsonc
 {
-  "schema": 1,
+  "schema": 2,
   "generated_at": "2026-08-03T07:45:00+12:00",
   "duration_ms": 340,
   "repos": [{
     "name": "example-repo",
-    "root": "/home/you/Projects/example-repo",
+    "root": "/home/you/Projects/example-repo",   // SKILL-FACING: unrendered, but an
+                                                 // agent saying "worktree X needs you"
+                                                 // has to be able to say where X is
     "issue_repo": "you/example-repo",
     "default_branch": "main",
 
     "worktrees": [{
       "dir": "feature-b",
-      "path": "/home/you/Projects/example-worktrees/feature-b",
+      "path": "/home/you/Projects/example-worktrees/feature-b",  // SKILL-FACING, as above
       "branch": "fix/feature-b-silent-load",
-      "head": "3f0d19c",
-      "ahead": 3,
-      "behind": 1,
-      "dirty": { "staged": 0, "unstaged": 7, "untracked": 2 },
-      "last_commit": { "sha": "3f0d19c", "when": "…", "subject": "…" },
+      "ahead": 3,           // null means COULD NOT BE DETERMINED, never 0 (finding H3)
+      "behind": 1,          // the page renders null as "?"
+      "dirty": { "staged": 0, "unstaged": 7, "untracked": 2 },   // or null, same rule
       "agent": {
         "state": "waiting",
         "source": "hook",
         "since": "2026-08-03T07:41:00+12:00",
-        "pid": 2176024,
-        "tmux_window": "wm-feature-b"
+        "pid": 2176024,       // a debugging aid, NEVER a liveness signal
+        "tmux_window": "wm-feature-b",
+        "age_seconds": 42.0   // null means cannot tell; rank 1 needs the difference
       },
       "pr": 58
     }],
+    // REMOVED in schema 2: `head` (the ticker shows shas) and `last_commit` (one
+    // `git log` per worktree per tick for a field nothing read — finding M4).
 
     "prs": [{
       "number": 58, "title": "…", "branch": "fix/feature-b-silent-load",
       "draft": false, "review": null, "checks": "passing",
-      "worktree": "feature-b", "updated_at": "…"
+      "updated_at": "…"
     }],
+    // REMOVED in schema 2: the PR's `worktree` back-link. Each worktree already
+    // carries its `pr`, and two mappings for one relationship is a drift surface.
 
-    "issues": [{ "number": 55, "title": "…", "labels": ["bug","client"], "assignees": [] }],
+    "issues": [{ "number": 55, "title": "…", "labels": ["bug","client"] }],
+    // REMOVED in schema 2: `assignees`. No consumer read it, and a snapshot piped
+    // into a conversation transcript need not name people.
 
     "collisions": [{ "file": "src/board.ts", "branches": ["feature-a","feature-c"] }],
 
     "commits": [{ "when": "…", "branch": "feature-c", "sha": "161948b",
-                  "subject": "…", "files": 2, "add": 64, "del": 1 }],
+                  "subject": "…", "files": 2, "add": 64, "dele": 1 }],
+                  // `dele`, not `del`: `del` is a Python keyword. Corrected 2026-08-05.
 
     "flags": [{ "kind": "orphan_pr", "severity": "warn", "subject": "PR #56",
                 "detail": "branch fix/feature-a-null-case has no worktree" }],
 
     "sources": [{ "name": "git", "ok": true },
+                { "name": "git:default-branch", "ok": true },
+                // ADDED in schema 2 (finding H3): per-fact honesty. `sources` was
+                // per-SUBSYSTEM only, so a failed `git status` for one worktree
+                // showed up nowhere and rendered as a confident 0.
+                { "name": "git:worktree-facts", "ok": false,
+                  "error": "could not measure … for 1 worktree(s): feature-b" },
+                { "name": "git:collisions", "ok": true },
                 { "name": "gh:prs", "ok": true },
                 { "name": "gh:issues", "ok": false, "error": "HTTP 403 rate limited",
                   "last_good": "2026-08-03T07:41:00+12:00" },
                 { "name": "hooks", "ok": true },
-                { "name": "tmux", "ok": true }]
-  }]
+                { "name": "tmux", "ok": true }],
+
+    "gh_cached_at": "2026-08-03T07:41:00+12:00",  // present only when gh data is
+                                                  // being served from cache
+    "needs_you": [ /* per-repo ranked items; see Ranking */ ]
+  }],
+
+  // Attached by `loom.view.finalise`, the single boundary both consumers call:
+  "needs_you": [ /* the whole fleet's items, rank-ordered, each labelled with its
+                    repo when there is more than one */ ],
+  "announcement": "3 items need your attention. Top: …",   // one sentence for a
+                                                           // screen reader, debounced
+  "badge": { "state": "live", "label": "● live", "detail": "collected 0s ago",
+             "stale_after_seconds": 10 }
 }
 ```
+
+**`schema` is validated, not decorative.** The page refuses to render a snapshot whose
+version it does not recognise, and that refusal outranks every other badge state
+including a collection error: if the shape cannot be trusted, no field read out of it
+can be either. Before 2026-08-05 neither consumer looked at the number at all.
 
 ### `agent.state` values
 
@@ -219,7 +255,9 @@ original pane-corroboration rule was removed as unsound.
 | Collisions | File × branch matrix of uncommitted and unmerged changes against the merge-base |
 | Ticker | Recent commits across all worktrees, newest first |
 | PRs & issues | Open PRs with review and check state; open issues |
-| Loose ends | Orphan PRs, stale directories, branches with no issue |
+| Loose ends | Orphan PRs and stale directories. ("Branches with no issue" was
+  listed here and never implemented — no code path produces such a flag. Removed
+  from the description 2026-08-05 rather than left as a phantom feature) |
 | Sources | Which sources answered, which failed, how stale the cached ones are |
 
 The collisions panel compares **uncommitted and unmerged** changes against the
@@ -298,8 +336,14 @@ Requirements, not aspirations. Each is verifiable.
   carries text, so a screen reader hears "board.ts, feature-c, collides" rather than silence.
 - The "needs you" strip is `aria-live="polite"`, **debounced to ~15 seconds**. A 2-second
   live region would make a screen reader unusable.
-- Every collapse control is a real `<button>`, keyboard reachable, `:focus-visible`
-  styled, with an honest `aria-expanded`.
+- **If any collapse control is added**, it must be a real `<button>`, keyboard
+  reachable, `:focus-visible` styled, with an honest `aria-expanded`. Made
+  conditional 2026-08-05: the page has no interactive controls, so as an
+  unconditional requirement this was trivially satisfied and verified nothing,
+  while reading in a list of "requirements, not aspirations" as a passed check.
+- Every scrollable region is focusable (`tabindex=0`) and named, so a keyboard
+  user can reach and scroll it and a screen reader does not meet an unlabelled
+  group. Added 2026-08-05 — this is the requirement the page actually has.
 - `prefers-reduced-motion` disables every pulse and transition.
 - Dark theme, with all text verified at 4.5:1 contrast or better.
 

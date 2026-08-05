@@ -203,6 +203,27 @@ function renderPrs(box, repo) {
   }
 }
 
+/** L6: orphan PRs and directories that are no longer worktrees.
+ *
+ *  These were only ever visible as rank 6 in the triage strip, so the strip had to
+ *  explain them with no panel behind it. `severity` is carried in the data and
+ *  reinforced with colour, but the `kind` is always spelled out in words. */
+function renderLoose(list, flags) {
+  list.replaceChildren();
+  if (!flags || flags.length === 0) {
+    list.append(text("li", "No loose ends.", "st--dim"));
+    return;
+  }
+  for (const f of flags) {
+    const li = document.createElement("li");
+    li.append(text("span", f.kind.replace(/_/g, " ") + " ",
+                   f.severity === "warn" ? "st--warn" : "st--dim"));
+    li.append(text("strong", f.subject));
+    if (f.detail) li.append(text("span", ` — ${f.detail}`));
+    list.append(li);
+  }
+}
+
 function renderSources(list, sources) {
   list.replaceChildren();
   for (const s of sources) {
@@ -333,6 +354,10 @@ function buildRepoSection(repo, i) {
   panels.append(panel(`repo-${i}-ticker-h`, "Commits", "h3",
                       capBox(`repo-${i}-ticker-h`, ticker)));
 
+  const loose = document.createElement("ul");
+  panels.append(panel(`repo-${i}-loose-h`, "Loose ends", "h3",
+                      capBox(`repo-${i}-loose-h`, loose)));
+
   const sources = document.createElement("ul");
   sources.className = "sources";
   const srcPanel = panel(`repo-${i}-src-h`, "Data sources", "h3", sources);
@@ -343,7 +368,7 @@ function buildRepoSection(repo, i) {
   return {
     section,
     refs: { heading, meta, treesBody: treesTable.tBodies[0], collTable, prsBox,
-            ticker, sources },
+            ticker, loose, sources },
   };
 }
 
@@ -386,6 +411,7 @@ function syncRepos(repos) {
     renderCollisions(r.collTable, repo.collisions, repo.worktrees);
     renderPrs(r.prsBox, repo);
     renderTicker(r.ticker, repo.commits);
+    renderLoose(r.loose, repo.flags);
     renderSources(r.sources, repo.sources);
   }
 }

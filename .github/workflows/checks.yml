@@ -33,19 +33,50 @@ permissions:
 
 jobs:
   tests:
-    name: tests and constraints
+    # DELIBERATELY NOT NAMED "tests and constraints".
+    #
+    # A matrix job's check-run name gets its matrix values appended, so naming this
+    # "tests and constraints" would publish "tests and constraints (3.10)" and the
+    # bare context the ruleset for `main` REQUIRES would never appear again -- an
+    # unsatisfiable gate, which looks identical to a gate that is merely slow. The
+    # stable name lives on the aggregate job below, which is what the ruleset should
+    # keep pointing at.
+    name: py${{ matrix.python }}
     runs-on: ubuntu-latest
     # A hung job otherwise burns minutes until the 6-hour default. Nothing here
     # legitimately takes more than a minute.
     timeout-minutes: 10
 
+    # THE SUPPORTED FLOOR, ENFORCED RATHER THAN ASSERTED.
+    #
+    # Nothing declared a minimum Python version anywhere: CI pinned 3.12 as a
+    # choice, `check_stdlib_only.py`'s docstring asserted 3.12, and no manifest
+    # existed to carry `requires-python`. So a user on an older interpreter got a
+    # confusing failure from a project whose whole selling point is dropping in
+    # anywhere. Audit 2026-08-05, finding L11.
+    #
+    # The floor was MEASURED, not guessed, by running the suite and a real
+    # `loom snapshot` on each interpreter:
+    #   3.9   the runtime works, but `check_stdlib_only.py` does not --
+    #         `sys.stdlib_module_names` arrived in 3.10
+    #   3.10  everything works, including the project's own checks  <- the floor
+    #   3.11, 3.12, 3.13  all pass
+    #
+    # 3.10 is therefore the declared floor: the lowest version at which the WHOLE
+    # project works, not just the part users run. A matrix keeps that honest, since
+    # a floor nothing exercises is a floor that rots.
+    strategy:
+      fail-fast: false          # one version failing should not hide the others
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
+      - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
       # No install step, and that is the point: if this workflow ever needs
       # `pip install`, the zero-dependency constraint has already been broken.
@@ -126,6 +157,33 @@ jobs:
                 f"{len(degraded)} source(s) degraded with a stated reason"
                 + (f": {', '.join(degraded)}" if degraded else ""))
           PY
+
+  # ------------------------------------------------------- the stable gate name
+  # One check with a FIXED name that succeeds only if every matrix leg did.
+  #
+  # This exists so the ruleset for `main` has something stable to require. Without
+  # it, adding or removing a Python version would silently change the set of check
+  # names and leave the required context permanently absent.
+  #
+  # `always()` matters: without it this job is SKIPPED when a matrix leg fails, and
+  # a skipped required check is not a failing one -- GitHub would treat the gate as
+  # unsatisfied-but-not-failed, which reads as "still running" forever. With it, the
+  # job runs and fails loudly.
+  tests-and-constraints:
+    name: tests and constraints
+    runs-on: ubuntu-latest
+    needs: tests
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Every supported Python version passed
+        run: |
+          echo "matrix result: ${{ needs.tests.result }}"
+          if [ "${{ needs.tests.result }}" != "success" ]; then
+            echo "FAIL: at least one Python version did not pass." >&2
+            exit 1
+          fi
+          echo "OK: the suite and constraints passed on every supported version."
 
   # --------------------------------------------------------------- the types
   # A SEPARATE JOB ON PURPOSE, and this is the whole reason it is separate.

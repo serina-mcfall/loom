@@ -2,10 +2,15 @@
 """Fail if anything in the project imports a package outside the standard library.
 
 Loom's zero-dependency constraint is not a preference — it is the reason `loom`
-can be dropped into any repo with a Python 3.12 interpreter and just run. That
-constraint is invisible: nothing breaks the day someone adds `import requests`,
+can be dropped into any repo with a Python 3.10-or-newer interpreter and just run.
+That constraint is invisible: nothing breaks the day someone adds `import requests`,
 because the machine that added it already has requests installed. It breaks on
 a fresh checkout, weeks later, for someone else.
+
+(This docstring said "3.12" until 2026-08-05, which was a guess rather than a
+measurement — see README for the versions actually tested. THIS SCRIPT is the reason
+the floor is 3.10 rather than 3.9: `sys.stdlib_module_names` below only exists from
+3.10. Loom's own runtime is fine on 3.9.)
 
 So this checks it the only way that survives that: parse every import in the
 tree and compare the top-level module name against `sys.stdlib_module_names`.
