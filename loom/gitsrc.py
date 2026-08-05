@@ -155,14 +155,6 @@ def worktree_status(runner: Runner, path: str) -> Status | None:
     return Status(Dirty(staged, unstaged, untracked), frozenset(paths))
 
 
-def dirty_counts(runner: Runner, path: str) -> Dirty | None:
-    """Just the counts. A thin view over `worktree_status` for callers that only
-    need numbers; `collect` uses `worktree_status` directly so it pays for one call.
-    """
-    s = worktree_status(runner, path)
-    return s.dirty if s is not None else None
-
-
 LOG_FORMAT = "%x1e%h%x1f%aI%x1f%s%x1f%D"
 
 

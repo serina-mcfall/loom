@@ -57,6 +57,7 @@ test is how a suite stops being evidence.
 | L13 | No index of decision records | Low | **fixed** | `ff56ba4` |
 | N4 | Static assets were cacheable (found while fixing) | new | **fixed** | `8d98887` |
 | — | Colour coding + compactness (requested live) | extra | **done** | `8d98887` |
+| R1–R4 | Four findings from the `review-final` pass | review | **fixed** | see below |
 
 **All 32 audit findings are resolved**, plus one new finding raised during the work and
 the colour-coding pass Serina asked for mid-review.
@@ -65,7 +66,7 @@ M7 landed early, with H6, because it was the same lines of code. L9 and L8 were 
 calls: MIT, and close only the two issues verifiably fixed on `main` while the rest close
 on merge.
 
-Test count: **200 → 285.** Gates: suite, stdlib check, and a new pinned `mypy` job, all
+Test count: **200 → 283.** Gates: suite, stdlib check, and a new pinned `mypy` job, all
 green on Python 3.10 through 3.13.
 
 **Decisions taken during the High tier:**
@@ -826,6 +827,101 @@ Closed with that evidence in the comment. #3, #4, #6 and #8 are fixed on this br
 only, so they close on merge via the PR body — closing them now would claim `main` is
 fixed when it is not. #11 (a tokens-and-cost panel) is a legitimate deferred feature,
 matching the spec's own out-of-scope list.
+
+## The `review-final` pass — four findings, all drift
+
+Run on 2026-08-06 against `2fa34fd`, at Serina's request, before recording a verdict.
+**Not independent** — the reviewer wrote the code under review. Its value was the
+cross-commit view, which no per-diff review can have.
+
+All four findings were the same shape: **two commits each correct alone, mutually
+inconsistent.** That is question 2 of the review skill, and it is invisible per-diff by
+construction.
+
+### R1 · a badge assertion that could not fail for its stated reason
+
+`949c9da`-era work added `assertNotEqual(snap["badge"]["state"], "error")` to
+`test_a_successful_step_after_a_failure_clears_refresh_error`. Then `5b32be6` bumped the
+schema to 2 and put validation *above* the `refresh_error` branch. The fixture still
+seeded `"schema": 1`:
+
+```
+badge state it actually got : 'incompatible'
+detail : 'snapshot schema is 1, this page understands 2 — refusing to read it'
+assertion : assertNotEqual(state, 'error')     passes? True
+```
+
+It passed because the schema was stale, never reaching the branch it claimed to test. The
+H6 guard was checked and found **intact** — it seeds schema 2 and correctly reaches
+`error`, so the original protection survived.
+
+Fixed by seeding `SCHEMA_VERSION`. Then proven non-vacuous by removing badge
+recomputation from the success path:
+
+```
+ERROR: test_a_successful_step_after_a_failure_clears_refresh_error
+KeyError: 'badge'
+```
+
+### R2 · `dirty_counts` had no production caller
+
+`04cd99d` moved `collect` to `worktree_status` and kept `dirty_counts` as a wrapper "for
+callers that only need numbers". There were none — the only reference outside its own
+tests was prose in `loom/rank.py`.
+
+**This is the L1 defect class reintroduced by the branch that fixed L1**, and kept alive
+by four of its own tests. Deleted. Its one piece of unique coverage — `MM`, a file both
+staged and unstaged — was folded into `TestWorktreeStatus` first, because rank 5 sums the
+three columns and that case is the only one that exercises a file counting in two of them.
+
+### R3 · a docstring's load-bearing reasoning was refuted by a later commit
+
+`apply_gh_cache` justified its `now_iso` parameter by claiming `build_snapshot` "carries
+no top-level timestamp" and that reading `snap["generated_at"]` "would `KeyError`".
+`25974b0` (H7) added exactly that field.
+
+```
+build_snapshot top-level keys: ['duration_ms', 'generated_at', 'repos', 'schema']
+both claims -> FALSE
+```
+
+The danger was specific: a maintainer reading a refuted justification "corrects" it by
+reading `generated_at`, silently changing `cached_at` from *when the fetch succeeded* to
+*when the snapshot was assembled* — the two things H4 went to trouble to separate. The
+paragraph now says why not to, rather than a reason that no longer holds.
+
+### R4 · a wire-format assertion pinned a byte sequence production never sends
+
+`assertTrue(body.startswith(b'data: {"schema": 1'))`, against `SCHEMA_VERSION = 2`. It
+passed only because the test seeded `serve._snapshot` itself. Sixteen fixtures across two
+files pinned `"schema": 1`; all now derive from the constant, the same fix `2fa34fd`
+applied to the CI smoke test after it failed for this precise reason.
+
+### What the review looked for and did not find
+
+- All **16** new contract fields have a named consumer in `loom.js` — question 8, the
+  cluster that motivated the skill, came back clean
+- No badge state emitted by `view.py` lacks a class in `loom.js`
+- All three declared-open items verified still open; no `LEFT OUT` scope built
+- Commit messages match their diffs on the three spot-checked
+
+**A hole in the review, stated rather than hidden:** `Grep` misbehaved throughout — `grep
+-c` returned empty strings, and `--include='*.js'` silently dropped `loom/static/loom.js`,
+which made all 16 fields appear to have no consumer. That would have been a false Blocker.
+Every finding was re-derived in Python. There is also no plan file for this branch, so
+`check-ledger.sh` had nothing to run and question 7 — "was every step gated?" — is
+unanswerable mechanically here.
+
+### A note on the test count: 285 in the pasted evidence, 283 at the end
+
+Runs quoted above show 285 because that is what they showed when they ran. The final
+count is **283**, and the drop is deliberate: the post-review pass deleted
+`TestDirtyCounts` (three tests) along with the `dirty_counts` function they were the only
+callers of, and folded its one unique case — a file both staged and unstaged, `MM` — into
+`TestWorktreeStatus`. Net −3 +1.
+
+Pasted output is left exactly as it came out. Editing recorded evidence to match a later
+state is worse than the inconsistency it would hide.
 
 ---
 

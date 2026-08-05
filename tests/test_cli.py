@@ -5,6 +5,7 @@ import os
 import unittest
 from contextlib import redirect_stdout
 
+from loom.collect import SCHEMA_VERSION
 from loom.rank import rank_snapshot
 from loom.runner import ReplayRunner
 from loom_cli import main, discover_repos, repo_roots, parse_port, build_snapshot, render_text
@@ -173,7 +174,7 @@ class TestRenderText(unittest.TestCase):
     """An empty panel and a broken panel must never read the same."""
 
     def _snapshot(self, sources, prs):
-        return {"schema": 1, "repos": [{
+        return {"schema": SCHEMA_VERSION, "repos": [{
             "name": "example", "worktrees": [], "prs": prs, "issues": [],
             "sources": sources, "needs_you": [],
         }]}
@@ -286,7 +287,7 @@ class TestBuildSnapshot(unittest.TestCase):
                              "be computed reliably")
 
     def test_the_cli_and_the_collector_agree_on_the_schema_version(self):
-        # `build_snapshot` hardcoded `"schema": 1` while `collect` used the constant,
+        # `build_snapshot` hardcoded `"schema": SCHEMA_VERSION` while `collect` used the constant,
         # so the two could drift apart in the one field whose entire job is to stop
         # drift. Audit 2026-08-05, part of L2.
         from loom.collect import SCHEMA_VERSION

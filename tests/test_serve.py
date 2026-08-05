@@ -63,11 +63,14 @@ class TestApplyGhCache(unittest.TestCase):
     """The substitution step, extracted so it never needs a live server to verify."""
 
     def _snap(self, prs: list, gh_ok: bool) -> dict:
-        # Deliberately no top-level "generated_at" — build_snapshot's real
-        # aggregate shape doesn't carry one; a fixture that included it would
-        # have hidden the KeyError this function used to raise against real data.
+        # No top-level "generated_at", and that is still deliberate -- but for a
+        # DIFFERENT reason than when this was written. build_snapshot DOES carry one
+        # now (finding H7). It is omitted here because `apply_gh_cache` must not read
+        # it: `cached_at` records when the FETCH succeeded, not when the snapshot was
+        # assembled. A fixture supplying it would let a regression that conflated the
+        # two pass unnoticed.
         return {
-            "schema": 1,
+            "schema": SCHEMA_VERSION,
             "repos": [{
                 "name": "example", "prs": prs, "issues": [],
                 "sources": [
@@ -355,7 +358,7 @@ class TestRefreshStepSurvivesFailures(unittest.TestCase):
         raise RuntimeError("collect() exploded")
 
     def test_a_raising_tick_does_not_propagate_and_keeps_the_previous_snapshot(self):
-        prev = {"schema": 1, "repos": [{"name": "example"}],
+        prev = {"schema": SCHEMA_VERSION, "repos": [{"name": "example"}],
                "collected": True, "generated_at": "T1", "refresh_error": None}
         with unittest.mock.patch("loom.serve._tick", side_effect=RuntimeError("boom")):
             snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
@@ -365,16 +368,16 @@ class TestRefreshStepSurvivesFailures(unittest.TestCase):
         self.assertEqual(snap["generated_at"], "T1")
 
     def test_the_failures_type_and_message_are_recorded(self):
-        prev = {"schema": 1, "repos": [], "collected": False}
+        prev = {"schema": SCHEMA_VERSION, "repos": [], "collected": False}
         with unittest.mock.patch("loom.serve._tick", side_effect=RuntimeError("boom")):
             snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
         self.assertIn("RuntimeError", snap["refresh_error"])
         self.assertIn("boom", snap["refresh_error"])
 
     def test_a_successful_step_after_a_failure_clears_refresh_error(self):
-        prev = {"schema": 1, "repos": [], "collected": False,
+        prev = {"schema": SCHEMA_VERSION, "repos": [], "collected": False,
                "refresh_error": "RuntimeError: boom"}
-        good = {"schema": 1, "repos": [{"name": "example"}]}
+        good = {"schema": SCHEMA_VERSION, "repos": [{"name": "example"}]}
         with unittest.mock.patch("loom.serve._tick", return_value=good):
             snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
         self.assertIsNone(snap["refresh_error"])
@@ -409,8 +412,8 @@ class TestRefreshStepSurvivesFailures(unittest.TestCase):
         self.assertIn("boom", snap["badge"]["detail"])
 
     def test_a_successful_step_stamps_generated_at(self):
-        prev = {"schema": 1, "repos": [], "collected": False}
-        good = {"schema": 1, "repos": []}
+        prev = {"schema": SCHEMA_VERSION, "repos": [], "collected": False}
+        good = {"schema": SCHEMA_VERSION, "repos": []}
         with unittest.mock.patch("loom.serve._tick", return_value=good):
             snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
         self.assertTrue(snap["generated_at"])
@@ -446,8 +449,8 @@ class TestCollectedMarker(unittest.TestCase):
     def test_not_yet_collected_and_genuinely_empty_are_never_equal(self):
         # The whole point of the fix: these two states must be distinguishable
         # by any consumer that just compares/serializes the snapshot dict.
-        not_yet = {"schema": 1, "repos": [], "collected": False}
-        genuinely_empty = {"schema": 1, "repos": [], "collected": True}
+        not_yet = {"schema": SCHEMA_VERSION, "repos": [], "collected": False}
+        genuinely_empty = {"schema": SCHEMA_VERSION, "repos": [], "collected": True}
         self.assertNotEqual(not_yet, genuinely_empty)
         self.assertNotEqual(json.dumps(not_yet), json.dumps(genuinely_empty))
 
@@ -611,7 +614,7 @@ class TestRefreshLoopIsStoppable(unittest.TestCase):
         def one_then_stop(*a, **k):
             calls.append(1)
             stop.set()          # ask it to stop after the first pass
-            return {"schema": 1, "repos": [], "collected": True}
+            return {"schema": SCHEMA_VERSION, "repos": [], "collected": True}
 
         with unittest.mock.patch("loom.serve._refresh_step", side_effect=one_then_stop):
             # If the loop cannot be stopped, this call never returns and the test
@@ -627,7 +630,7 @@ class TestHandlerRoutes(unittest.TestCase):
     """
 
     def setUp(self):
-        serve._snapshot = {"schema": 1, "repos": [{"name": "example"}], "collected": True}
+        serve._snapshot = {"schema": SCHEMA_VERSION, "repos": [{"name": "example"}], "collected": True}
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -667,7 +670,7 @@ class TestHandlerRoutes(unittest.TestCase):
         self.assertEqual(data["repos"][0]["name"], "example")
 
     def test_snapshot_json_is_503_before_the_first_collection_completes(self):
-        serve._snapshot = {"schema": 1, "repos": [], "collected": False}
+        serve._snapshot = {"schema": SCHEMA_VERSION, "repos": [], "collected": False}
         try:
             self._get("/snapshot.json")
             self.fail("expected an HTTPError for the not-yet-collected state")
@@ -679,7 +682,7 @@ class TestHandlerRoutes(unittest.TestCase):
 
     def test_snapshot_json_is_200_once_collected_is_true_even_with_zero_repos(self):
         # The genuinely-empty-fleet case must not also 503 — only "not yet".
-        serve._snapshot = {"schema": 1, "repos": [], "collected": True}
+        serve._snapshot = {"schema": SCHEMA_VERSION, "repos": [], "collected": True}
         with self._get("/snapshot.json") as r:
             self.assertEqual(r.status, 200)
             data = json.loads(r.read())
@@ -731,7 +734,8 @@ class TestHandlerRoutes(unittest.TestCase):
             sock.close()
         headers, _, body = data.partition(b"\r\n\r\n")
         self.assertIn(b"text/event-stream", headers)
-        self.assertTrue(body.startswith(b'data: {"schema": 1'), body)
+        self.assertTrue(
+            body.startswith(f'data: {{"schema": {SCHEMA_VERSION}'.encode()), body)
 
     def test_events_keeps_sending_frames_when_the_snapshot_has_not_changed(self):
         """Audit 2026-08-05, finding M10.

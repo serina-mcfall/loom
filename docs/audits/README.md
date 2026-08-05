@@ -16,7 +16,7 @@ have since been fixed.
 | **Result** | 0 Blocker · 8 High · 11 Medium · 13 Low |
 
 Audited the whole tree plus its two external consumers (the `serina-skills` loom skill,
-and the CI workflow). **All 32 findings are resolved.** Test count went from 200 to 285,
+and the CI workflow). **All 32 findings are resolved.** Test count went from 200 to 283,
 a pinned `mypy` job was added, and CI now runs on Python 3.10 through 3.13.
 
 **The audit was written by the same model family that built much of the code, and no

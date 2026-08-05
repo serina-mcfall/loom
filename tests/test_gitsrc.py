@@ -1,6 +1,6 @@
 import unittest
 from loom.runner import ReplayRunner
-from loom.gitsrc import (list_worktrees, ahead_behind, dirty_counts, Dirty, recent_commits,
+from loom.gitsrc import (list_worktrees, ahead_behind, Dirty, recent_commits,
                           touched_files, collisions, Worktree, default_branch)
 
 PORCELAIN = (
@@ -94,39 +94,6 @@ class TestAheadBehind(unittest.TestCase):
         self.assertIsNone(ahead_behind(runner, "/trees/a", "main"))
 
 
-class TestDirtyCounts(unittest.TestCase):
-    def test_separates_staged_unstaged_and_untracked(self):
-        runner = ReplayRunner({
-            "git status --porcelain=v1 -z": {
-                "returncode": 0,
-                # NUL-separated: `-z` is now used so paths with spaces or non-ASCII
-                # are not quoted, and the same call serves the collisions path set.
-                "stdout": "M  staged.py\0 M unstaged.py\0MM both.py\0?? new.py\0",
-                "stderr": "",
-            },
-        })
-        self.assertEqual(dirty_counts(runner, "/trees/a"), Dirty(staged=2, unstaged=2, untracked=1))
-
-    def test_clean_tree_is_all_zero(self):
-        runner = ReplayRunner({
-            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
-        })
-        self.assertEqual(dirty_counts(runner, "/trees/a"), Dirty(0, 0, 0))
-
-    def test_a_failed_status_is_none_not_a_clean_tree(self):
-        """Audit 2026-08-05, finding H3.
-
-        The pair with the test above, and the whole point of the change: a clean
-        tree and an unmeasurable one must not both be Dirty(0, 0, 0). They differ
-        by whether work is at risk of being lost, which is rank 5's entire job.
-        """
-        runner = ReplayRunner({
-            "git status --porcelain=v1 -z":
-                {"returncode": 128, "stdout": "", "stderr": "not a work tree"},
-        })
-        self.assertIsNone(dirty_counts(runner, "/trees/a"))
-
-
 LOG = (
     "\x1e161948b\x1f2026-08-03T07:31:55+12:00\x1ftest(clues): flatten\x1fHEAD -> feature-c\n"
     "3\t1\tsrc/board.ts\n"
@@ -180,6 +147,18 @@ class TestWorktreeStatus(unittest.TestCase):
         s = self._status("M  staged.py\0 M unstaged.py\0?? new.py\0")
         self.assertEqual(s.dirty, Dirty(staged=1, unstaged=1, untracked=1))
         self.assertEqual(s.paths, {"staged.py", "unstaged.py", "new.py"})
+
+    def test_a_file_both_staged_and_unstaged_counts_in_both_columns_once(self):
+        """`MM` — staged AND further modified in the working tree.
+
+        Inherited from the deleted `TestDirtyCounts`, which was the only place this
+        case was covered. It matters because rank 5 sums the three columns: if `MM`
+        counted once, a tree with staged-and-modified work would understate what is
+        at risk, and if it counted as two files the total would overstate it.
+        """
+        s = self._status("M  staged.py\0 M unstaged.py\0MM both.py\0?? new.py\0")
+        self.assertEqual(s.dirty, Dirty(staged=2, unstaged=2, untracked=1))
+        self.assertEqual(s.paths, {"staged.py", "unstaged.py", "both.py", "new.py"})
 
     def test_a_rename_reports_the_new_path_and_consumes_the_old_one(self):
         """`R  new\\0old\\0` -- the ORIGINAL path is a separate NUL token.

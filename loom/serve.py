@@ -66,14 +66,19 @@ def apply_gh_cache(snap: dict, cached_gh: dict[str, dict], include_gh: bool,
     which is what makes the spec's own error-honesty example -- "PRs unavailable
     - gh: HTTP 403, last good 4m ago" -- expressible at all.
 
-    `now_iso` is accepted as a parameter (rather than read off the snapshot)
-    because `build_snapshot`'s aggregate `{"schema": 1, "repos": [...]}` return
-    value carries no top-level timestamp — only the per-root `collect()` call it
-    wraps does, and that field is discarded when the repos are merged. Reading
-    `snap["generated_at"]` here would `KeyError` against the real snapshot shape;
-    verified by running this against `build_snapshot`'s actual output, not just
-    hand-built test fixtures. Defaults to wall-clock time; tests pass a fixed
-    string so assertions do not depend on real time.
+    `now_iso` is a parameter so tests can pass a fixed string and assertions do not
+    depend on real time. It defaults to wall-clock time.
+
+    DO NOT "SIMPLIFY" THIS BY READING `snap["generated_at"]`. It would work now —
+    finding H7 added that field to `build_snapshot` — but it would be wrong. This
+    timestamp records WHEN THE FETCH SUCCEEDED, which is what `last_good` and the
+    "cached 4m ago" banner mean; `generated_at` records when the snapshot was
+    assembled. On a fast tick those differ by up to SLOW_SECONDS, and conflating them
+    would report stale gh data as fresh — which is the whole defect H4 fixed.
+
+    (This paragraph previously justified the parameter by claiming `build_snapshot`
+    carried no top-level timestamp and that reading it would `KeyError`. H7 made both
+    claims false, and a stale justification invites exactly the wrong change.)
 
     Mutates `snap["repos"]` in place and returns the (possibly updated) cache —
     extracted as its own function, with no threading or sockets involved, so the
