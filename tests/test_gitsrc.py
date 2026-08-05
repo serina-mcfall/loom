@@ -67,12 +67,31 @@ class TestAheadBehind(unittest.TestCase):
         })
         self.assertEqual(ahead_behind(runner, "/trees/a", "main"), (12, 10))
 
-    def test_failure_is_zero_zero(self):
+    def test_failure_is_none_not_zero_zero(self):
+        """Audit 2026-08-05, finding H3.
+
+        This test previously asserted `(0, 0)` -- it was written to lock in the
+        defect. A worktree 12 ahead whose `git rev-list` failed reported exactly
+        what a worktree in perfect sync reports, and the page rendered "0".
+
+        `None` means CANNOT TELL, exactly as `_age_seconds` in loom/agents.py
+        already established for timestamps, and must never be read as zero.
+        """
         runner = ReplayRunner({
             "git rev-list --left-right --count main...HEAD":
                 {"returncode": 128, "stdout": "", "stderr": "bad revision"},
         })
-        self.assertEqual(ahead_behind(runner, "/trees/a", "main"), (0, 0))
+        self.assertIsNone(ahead_behind(runner, "/trees/a", "main"))
+
+    def test_unparseable_output_is_none_not_zero_zero(self):
+        # git always prints two integers here, so anything else means the command
+        # did not do what we think it did -- guessing zero would be a confident
+        # wrong answer.
+        runner = ReplayRunner({
+            "git rev-list --left-right --count main...HEAD":
+                {"returncode": 0, "stdout": "not numbers at all\n", "stderr": ""},
+        })
+        self.assertIsNone(ahead_behind(runner, "/trees/a", "main"))
 
 
 class TestDirtyCounts(unittest.TestCase):
@@ -91,6 +110,19 @@ class TestDirtyCounts(unittest.TestCase):
             "git status --porcelain=v1": {"returncode": 0, "stdout": "", "stderr": ""},
         })
         self.assertEqual(dirty_counts(runner, "/trees/a"), Dirty(0, 0, 0))
+
+    def test_a_failed_status_is_none_not_a_clean_tree(self):
+        """Audit 2026-08-05, finding H3.
+
+        The pair with the test above, and the whole point of the change: a clean
+        tree and an unmeasurable one must not both be Dirty(0, 0, 0). They differ
+        by whether work is at risk of being lost, which is rank 5's entire job.
+        """
+        runner = ReplayRunner({
+            "git status --porcelain=v1":
+                {"returncode": 128, "stdout": "", "stderr": "not a work tree"},
+        })
+        self.assertIsNone(dirty_counts(runner, "/trees/a"))
 
 
 LOG = (
@@ -141,9 +173,10 @@ class TestCollisions(unittest.TestCase):
         trees = [Worktree("/t/one", "one", "one", "h1"), Worktree("/t/two", "two", "two", "h2")]
         # ReplayRunner keys on argv alone, so both trees replay the same recording and
         # therefore both touch {a.ts, b.ts}. Positive control.
-        result = collisions(runner, trees, "main")
+        result, undetermined = collisions(runner, trees, "main")
         self.assertEqual([c["file"] for c in result], ["src/a.ts", "src/b.ts"])
         self.assertEqual(result[0]["branches"], ["one", "two"])
+        self.assertEqual(undetermined, [])
 
     def test_single_tree_never_collides_with_itself(self):
         runner = ReplayRunner({
@@ -153,7 +186,7 @@ class TestCollisions(unittest.TestCase):
             "git ls-files --others --exclude-standard -z": {"returncode": 0, "stdout": "", "stderr": ""},
         })
         trees = [Worktree("/t/one", "one", "one", "h1")]
-        self.assertEqual(collisions(runner, trees, "main"), [])
+        self.assertEqual(collisions(runner, trees, "main"), ([], []))
 
     def test_touched_files_unions_committed_and_uncommitted(self):
         runner = ReplayRunner({
@@ -175,6 +208,58 @@ class TestCollisions(unittest.TestCase):
         result = touched_files(runner, "/t/one", "main")
         self.assertIn("new.ts", result)
         self.assertNotIn("old.ts", result)
+
+    # ------------------------------------------------- audit 2026-08-05, H3
+    def test_touched_files_is_none_when_the_merge_base_cannot_be_found(self):
+        """An incomplete file set silently understates collisions.
+
+        Before this, a failed merge-base left `touched_files` returning only the
+        uncommitted files, so a worktree with 40 committed changes looked like it
+        had touched almost nothing -- and the collisions matrix confidently
+        reported "No two worktrees are editing the same file."
+
+        This is the condition `git:default-branch` already warns about: when
+        origin/HEAD is unresolvable, `base` is a guess, and `git merge-base
+        <guess> HEAD` fails on every worktree at once.
+        """
+        runner = ReplayRunner({
+            "git merge-base main HEAD":
+                {"returncode": 128, "stdout": "", "stderr": "not a valid object name"},
+            "git diff --name-only -z HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git ls-files --others --exclude-standard -z":
+                {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+        self.assertIsNone(touched_files(runner, "/t/one", "main"))
+
+    def test_touched_files_is_none_when_a_diff_fails(self):
+        runner = ReplayRunner({
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git diff --name-only -z HEAD":
+                {"returncode": 128, "stdout": "", "stderr": "fatal"},
+            "git ls-files --others --exclude-standard -z":
+                {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+        self.assertIsNone(touched_files(runner, "/t/one", "main"))
+
+    def test_a_worktree_whose_files_cannot_be_read_is_named_not_silently_skipped(self):
+        """A worktree left out of the matrix must be reported, not dropped.
+
+        Otherwise the matrix shows "no collisions" while one of the two branches
+        that actually collide was never compared at all -- the empty-versus-broken
+        confusion, one layer below where `sources` normally reaches.
+        """
+        runner = ReplayRunner({
+            "git merge-base main HEAD":
+                {"returncode": 128, "stdout": "", "stderr": "not a valid object name"},
+            "git diff --name-only -z HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git ls-files --others --exclude-standard -z":
+                {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+        trees = [Worktree("/t/one", "one", "one", "h1"), Worktree("/t/two", "two", "two", "h2")]
+        result, undetermined = collisions(runner, trees, "main")
+        self.assertEqual(result, [])
+        self.assertEqual(undetermined, ["one", "two"])
 
     def test_paths_with_spaces_and_non_ascii(self):
         runner = ReplayRunner({

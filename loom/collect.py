@@ -111,8 +111,15 @@ def collect(runner: Runner, root: str,
     panes = agents_mod.tmux_panes(runner)
 
     for t in trees:
-        t.ahead, t.behind = gitsrc.ahead_behind(runner, t.path, base)
+        # None from either call means CANNOT TELL, and is carried through to the
+        # snapshot as null rather than flattened to 0 -- see gitsrc and audit
+        # finding H3. `sources` names the affected worktrees below.
+        ab = gitsrc.ahead_behind(runner, t.path, base)
+        t.ahead, t.behind = ab if ab is not None else (None, None)
         t.dirty = gitsrc.dirty_counts(runner, t.path)
+
+    unmeasured = sorted(t.dir for t in trees
+                        if t.ahead is None or t.behind is None or t.dirty is None)
 
     repo = ghsrc.origin_repo(runner, root)
     if not include_gh:
@@ -146,7 +153,8 @@ def collect(runner: Runner, root: str,
         a = agents_mod.agent_for(t.path, sessions, panes, now)
         tree_dicts.append({
             "dir": t.dir, "path": t.path, "branch": t.branch, "head": t.head,
-            "ahead": t.ahead, "behind": t.behind, "dirty": asdict(t.dirty),
+            "ahead": t.ahead, "behind": t.behind,
+            "dirty": asdict(t.dirty) if t.dirty is not None else None,
             "agent": asdict(a), "pr": by_branch.get(t.branch or ""),
             "last_commit": _last_commit(runner, t.path),
         })
@@ -158,6 +166,7 @@ def collect(runner: Runner, root: str,
         pr_dicts.append(d)
 
     parent = _worktree_parent(trees, root)
+    found_collisions, undetermined = gitsrc.collisions(runner, trees, base)
     return {
         "schema": SCHEMA_VERSION,
         "generated_at": _now_iso(),
@@ -170,7 +179,7 @@ def collect(runner: Runner, root: str,
             "worktrees": tree_dicts,
             "prs": pr_dicts,
             "issues": [asdict(i) for i in issues],
-            "collisions": gitsrc.collisions(runner, trees, base),
+            "collisions": found_collisions,
             "commits": [asdict(c) for c in gitsrc.recent_commits(runner, root)],
             "flags": find_flags(trees, prs, parent),
             "sources": [
@@ -179,6 +188,22 @@ def collect(runner: Runner, root: str,
                     "git:default-branch", base_resolved,
                     None if base_resolved else
                     f"could not resolve origin/HEAD; falling back to a {base!r} guess")),
+                # Per-fact honesty for the worktrees and collisions panels.
+                # `sources` reported at subsystem granularity only -- one `git`
+                # entry, hardcoded True -- so a per-worktree git failure showed up
+                # nowhere and rendered as a confident 0. These two entries are the
+                # honesty channel for exactly that. Audit 2026-08-05, finding H3.
+                asdict(ghsrc.SourceStatus(
+                    "git:worktree-facts", not unmeasured,
+                    None if not unmeasured else
+                    f"could not measure ahead/behind or dirty counts for "
+                    f"{len(unmeasured)} worktree(s): {', '.join(unmeasured)}")),
+                asdict(ghsrc.SourceStatus(
+                    "git:collisions", not undetermined,
+                    None if not undetermined else
+                    f"could not enumerate changed files for {len(undetermined)} "
+                    f"worktree(s), so they are absent from the matrix: "
+                    f"{', '.join(undetermined)}")),
                 asdict(pr_status),
                 asdict(issue_status),
                 asdict(ghsrc.SourceStatus("hooks", True)),

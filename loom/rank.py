@@ -92,10 +92,31 @@ def needs_you(repo: dict) -> list[dict]:
 
     for t in repo.get("worktrees", []):
         agent = t.get("agent") or {}
-        dirty = t.get("dirty") or {}
+        if agent.get("state") not in {"stopped", "stale"}:
+            continue
+        worktree_dir = t.get("dir", "<unnamed worktree>")
+        dirty = t.get("dirty")
+
+        # RANK 5 IS THE ONE GUARD THAT SPEAKS UP WHEN IT CANNOT TELL.
+        #
+        # Everywhere else in Loom, "cannot tell" means stay silent, because a
+        # false alarm cries wolf on a strip that has to stay trustworthy. Rank 5
+        # is deliberately the exception: its rationale is "work at risk of being
+        # lost", so a false alarm costs one glance and a false silence costs
+        # someone's uncommitted work.
+        #
+        # `dirty` is None when `git status` could not be run (see
+        # gitsrc.dirty_counts), and absent on an older or hand-written snapshot.
+        # Both mean unmeasured, and both are treated the same way.
+        # Audit 2026-08-05, finding H3.
+        if dirty is None:
+            items.append({"rank": 5, "kind": "stopped_dirty", "subject": worktree_dir,
+                          "detail": "agent stopped, and git could not be asked "
+                                    "whether work was left behind"})
+            continue
+
         total = dirty.get("staged", 0) + dirty.get("unstaged", 0) + dirty.get("untracked", 0)
-        if agent.get("state") in {"stopped", "stale"} and total:
-            worktree_dir = t.get("dir", "<unnamed worktree>")
+        if total:
             items.append({"rank": 5, "kind": "stopped_dirty", "subject": worktree_dir,
                           "detail": f"{total} uncommitted files left behind"})
 

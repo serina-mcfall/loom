@@ -7,6 +7,18 @@ const STATE_LABEL = {
 };
 
 const el = (id) => document.getElementById(id);
+
+// null/undefined in the snapshot means CANNOT TELL, never zero. Rendering it as
+// "?" is the whole point of audit finding H3: `String(null)` gave "null", and
+// `t.dirty || {}` quietly turned an unmeasurable tree back into a row of zeros,
+// so a worktree 12 ahead with 9 dirty files whose git calls failed looked
+// identical to one in perfect sync. The footer's git:worktree-facts source says
+// which trees and why.
+const num = (v) => (v === null || v === undefined ? "?" : String(v));
+const dirtyTotal = (d) =>
+  d === null || d === undefined
+    ? "?"
+    : String((d.staged || 0) + (d.unstaged || 0) + (d.untracked || 0));
 const text = (tag, value, className) => {
   const n = document.createElement(tag);
   n.textContent = value;
@@ -49,9 +61,8 @@ function renderTrees(trees) {
     tr.append(th, text("td", t.branch || "detached"));
     const state = (t.agent && t.agent.state) || "none";
     tr.append(text("td", STATE_LABEL[state] || state, `state--${state}`));
-    tr.append(text("td", String(t.ahead)), text("td", String(t.behind)));
-    const d = t.dirty || {};
-    tr.append(text("td", String((d.staged || 0) + (d.unstaged || 0) + (d.untracked || 0))));
+    tr.append(text("td", num(t.ahead)), text("td", num(t.behind)));
+    tr.append(text("td", dirtyTotal(t.dirty)));
     body.append(tr);
   }
 }

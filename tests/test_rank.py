@@ -141,6 +141,35 @@ class TestNeedsYou(unittest.TestCase):
     def test_a_stopped_agent_with_a_clean_tree_is_quiet(self):
         self.assertEqual(needs_you(repo(worktrees=[tree("a", "fa", "stopped")])), [])
 
+    # ------------------------------------------------- audit 2026-08-05, H3
+    def test_a_stopped_agent_with_an_unmeasurable_tree_is_flagged_not_silenced(self):
+        """`dirty: None` means CANNOT TELL, and rank 5 guards work at risk.
+
+        Before H3, a failed `git status` returned Dirty(0,0,0), so a stopped agent
+        whose tree could not be measured was indistinguishable from one that had
+        committed everything -- and rank 5, whose whole rationale is "work at risk
+        of being lost", was silently suppressed exactly when it mattered.
+
+        Silence is NOT the safe direction here. Every other guard in this codebase
+        stays quiet when it cannot tell, because a false alarm cries wolf. Rank 5
+        is the opposite: the cost of a false alarm is one glance, and the cost of a
+        false silence is lost work. So an unmeasurable tree with a stopped agent
+        raises rank 5 and says plainly that it could not be measured.
+        """
+        t = tree("a", "fa", "stopped")
+        t["dirty"] = None
+        items = needs_you(repo(worktrees=[t]))
+        self.assertEqual([(i["rank"], i["kind"]) for i in items],
+                         [(5, "stopped_dirty")])
+        self.assertIn("could not", items[0]["detail"].lower())
+
+    def test_a_working_agent_with_an_unmeasurable_tree_does_not_rank(self):
+        # Negative control: rank 5 is about STOPPED or STALE agents. An
+        # unmeasurable tree under a live agent is not work at risk.
+        t = tree("a", "fa", "working")
+        t["dirty"] = None
+        self.assertEqual(needs_you(repo(worktrees=[t])), [])
+
     def test_items_come_back_in_rank_order(self):
         items = needs_you(repo(
             worktrees=[tree("a", "fa", "waiting")],
