@@ -37,7 +37,7 @@ These were chosen explicitly and are not open for re-litigation during planning.
 | Moment of use | Glance on return, live in a pane, **and** triage ranking |
 | Scope | Current repository, with an `--all` flag widening to every Launchpad child |
 | Form factor | Local browser dashboard **and** a Claude Code skill |
-| Agent state source | Hooks say what an agent is doing; the process list corroborates that it exists |
+| Agent state source | Hooks say what an agent is doing; the process list corroborates that it exists — **the second half was found unsound during execution and replaced by timestamp freshness; see correction 7.** The decision is left as it was taken rather than rewritten, because a spec that quietly matches whatever got built teaches nobody anything |
 | v1 slice | Everything `git` + `gh` + hooks can feed. Cost/telemetry and replay deferred |
 | Home | Its own repository (`loom`); the skill lives in `serina-skills` and drives it |
 
@@ -158,7 +158,7 @@ The interface between every unit. Versioned, because two consumers parse it.
 | `working` | A hook reported activity, uncontradicted by the process source |
 | `waiting` | A `Notification` hook fired — blocked on a permission prompt or input |
 | `idle` | Session alive, turn finished, awaiting a prompt |
-| `stale` | Hook claims activity, but the process source sees agents and none for this tree |
+| `stale` | Hook claims activity, but its timestamp has stopped advancing (see correction 7) |
 | `unknown` | Process alive, no hook data — hooks not installed for this session |
 | `stopped` | Session ended |
 
@@ -189,11 +189,18 @@ form confirmed against `--help` before it is relied on.
 
 ### Stale state is caught, not trusted
 
-A crashed agent leaves a state file reading `working` forever. `collect` corroborates the
-hook's claim against the process source. If the process source can see agents but none for
-that worktree, the state is `stale` — never `working`. If it can see nothing at all, nothing
-is corroborated and the hook stands: declaring every agent dead on no evidence is worse than
-reporting a state that may be a few seconds old.
+A crashed agent leaves a state file reading `working` forever, so an uncorroborated claim
+must eventually expire. **Staleness is decided by timestamp freshness, not by the process
+list** — the hook rewrites `since` on every event, so a live session's timestamp keeps
+advancing and a dead one's freezes. A dead process cannot update a clock.
+
+`working` claims expire after 15 minutes; `waiting` and `idle` after 12 hours, because a
+parked agent legitimately stops refreshing while it waits. A timestamp that cannot be read
+at all — missing, timezone-naive, unparseable, or in the future — means **cannot tell**, and
+never concludes death.
+
+The process list takes no part in this, in either direction. See correction 7 for why the
+original pane-corroboration rule was removed as unsound.
 
 ## Panels
 
@@ -256,11 +263,15 @@ without bound.
 2026-08-03. Using it for staleness would mark every hooked agent `stale` immediately,
 defeating the authoritative source entirely.
 
-**Staleness comes from corroboration.** Hooks say WHAT an agent is doing; the process list
-says WHETHER it exists. An active hook state is downgraded to `stale` only when the process
-source can see agents but none for that worktree. When it can see nothing at all — no tmux
-server — nothing is corroborated and the hook state stands, because declaring every agent
-dead on no evidence is the worse lie.
+**Staleness comes from the timestamp, not from the process list.** Hooks say WHAT an agent
+is doing, and the freshness of their own `since` field says WHETHER that claim is still
+current. An active state expires when its timestamp stops advancing past the limit for that
+state. A timestamp that cannot be read means cannot tell, and never concludes death —
+declaring an agent dead on no evidence is the worse lie.
+
+The process list still supplies the `unknown` state, for a worktree with a live agent
+process and no hook data at all. It plays no part in staleness. Corrected 2026-08-03; see
+correction 7.
 
 **Privacy boundary.** The state file contains only: session id, working directory, state,
 tool name, timestamp, pid. No prompts, no model output, no file contents, no environment.
@@ -304,7 +315,8 @@ measured value ever occur.
 |---|---|---|
 | "gh unavailable" banner | Working `gh` returning genuinely zero issues must render `0 issues`, **not** the banner | `gh` exit 403 must render the banner |
 | "waiting on you" row | Hook state with no waiting session — row absent | A `Notification` state file — row present |
-| Stale agent | Live pid with `working` — reports `working` | Dead pid with `working` — reports `stale` |
+| Stale agent | A `working` record refreshed seconds ago — reports `working` | A `working` record older than the 15-minute limit — reports `stale` |
+| Unreadable timestamp | — | Missing, naive, unparseable or future `since` — reports the raw state, never `stale` |
 | Collision detection | Two worktrees editing different files — no collision | Two worktrees editing one file — collision |
 | Repo pinning | — | Every recorded `gh` command line names the resolved `issue_repo` explicitly |
 
@@ -369,7 +381,8 @@ Each was verified rather than assumed, on 2026-08-03:
 
 | Gap | Severity | Why |
 |---|---|---|
-| **A sandboxed agent may be reported `stale`** | **Medium** | Staleness corroborates against `pane_current_command ∈ {claude, node}`. An agent in a sandboxed lane may present as `bwrap`, `docker` or a wrapper, so Loom would see no agent and mark a healthy one dead. Untested — needs a lane running to confirm |
+| ~~A sandboxed agent may be reported `stale`~~ | **obsolete** | Withdrawn 2026-08-05. This described staleness corroborating against `pane_current_command ∈ {claude, node}`, which correction 7 removed: the process list plays no part in staleness. A sandboxed agent presenting as `bwrap` or `docker` now only affects the `unknown` fallback, which is informational. Kept struck through rather than deleted so the reasoning is not silently lost |
+| **A live agent can still be reported `stale`** | **Low** | Timestamp expiry is what replaced pane corroboration, and the 15-minute `working` limit only bounds what the harness bounds. An MCP call has no cap, and neither does a long generation with no tool call, so a genuinely live agent CAN read `stale`. That is the acceptable direction — a false `stale` costs a glance, a false `working` is the lie the module exists to prevent — but it is a real false-positive source |
 | A hook state file is trusted absolutely | Low | Any agent can claim any state, or a `cwd` belonging to another worktree, masking a real agent there. Writing the file already requires local access |
 | `origin_repo` accepts a leading `--` | Low | `git@github.com:--upload-pack=evil/x.git` yields `--upload-pack=evil/x`, which is then passed as a `-R` value. Requires write access to `.git/config` first. GitHub names cannot start with `-`, so the regex should reject it |
 | The snapshot contains `$HOME` paths | Low | The CLI's output names the operator's home directory and repository layout, and the skill pipes that into a conversation transcript |
@@ -419,6 +432,48 @@ matters.
 **6. Task 0 needed a second mechanism.** Silencing the tooling artefacts took both a
 committed `.gitignore` and the shared `.git/info/exclude`. A `.gitignore` on `main` reaches
 no other branch's checkout, so on its own it changed nothing across six worktrees.
+
+**7. Pane corroboration was unsound and is gone.** *Added 2026-08-05, from PR #12 — the
+largest behavioural change in the project, and it was missing from this list for two days,
+which is exactly what this section exists to prevent.*
+
+The original rule read: tmux has panes somewhere but none in this worktree, therefore the
+agent here is gone. **That inference does not hold.** tmux running proves nothing about where
+agents live — an agent in a plain terminal, a VS Code terminal, or a pane whose cwd differs
+has zero panes "here" while being entirely alive. On 2026-08-03 this reported the very
+session that was reading the snapshot as `stale`.
+
+It cannot work in principle either: pane count cannot bound how many agents are alive when
+agents need no pane at all. So the surplus variant (`panes_here < active` → stale the rest)
+was unsound for the same reason and went with it.
+
+The signal that does work was already in the data. The hook rewrites `since` on every event,
+so a live session's timestamp keeps advancing and a dead one's freezes. A dead process cannot
+update a clock.
+
+A first repair attempt let a pane in the worktree exempt sessions from ageing, and that
+failed too: a pane cannot be attributed to a particular session, because the recorded pid is
+the hook's own transient `sh -c` wrapper. One pane therefore exempted every session there,
+and a dead session beside a live one kept reporting `working` — the forbidden direction. So
+panes take no part in staleness now, in either direction.
+
+**8. Rank 2 had a second unreachable condition.** *Added 2026-08-05.* Correction 1 fixed the
+checks half of rank 2 and missed the review half. `reviewDecision` is a four-valued enum
+(`null`, `REVIEW_REQUIRED`, `APPROVED`, `CHANGES_REQUESTED`) and the code tested it for
+truthiness, so `REVIEW_REQUIRED` — the exact state rank 2 exists to catch — read as "already
+reviewed". Rank 2 fired only on `null`, meaning only on repositories with no review
+requirement at all. It is now an explicit whitelist. `CHANGES_REQUESTED` remains unranked
+and undecided: it is blocked on the author, so it fails rank 2's rationale, and giving it a
+tier of its own is a change to the ranking table above rather than a bug fix.
+
+**9. `sources` needed per-fact granularity, not just per-subsystem.** *Added 2026-08-05.*
+The error-honesty rule above was written for `gh` and enforced at subsystem granularity — one
+`git` entry, hardcoded `ok: true`. That left a gap one layer down: a failed `git rev-list` or
+`git status` for a single worktree returned `(0, 0)` and `Dirty(0,0,0)`, so a worktree 12
+ahead with 9 uncommitted files rendered identically to one in perfect sync. This document's
+founding incident, reproduced inside the Worktrees panel. Facts that cannot be determined are
+now `null` rather than `0`, render as `?`, and are named by two new sources,
+`git:worktree-facts` and `git:collisions`.
 
 ## Grounding
 
