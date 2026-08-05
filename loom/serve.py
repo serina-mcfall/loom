@@ -42,9 +42,28 @@ def _now_iso() -> str:
 
 def apply_gh_cache(snap: dict, cached_gh: dict[str, dict], include_gh: bool,
                    now_iso: str | None = None) -> dict[str, dict]:
-    """Fold gh data across ticks: refresh the cache on a slow (gh-including) tick,
-    or splice cached PRs/issues into a fast tick's snapshot so the display never
-    goes blank between slow ticks.
+    """Fold gh data across ticks so the display never goes blank between slow ticks.
+
+    TWO CLOCKS, TWO FACTS, HELD SEPARATELY:
+      * the DATA is whatever the last SUCCESSFUL fetch returned
+      * the STATUS is whatever the last ATTEMPT reported, success or failure
+
+    Only a successful fetch may replace the data. An earlier version cached
+    `repo["prs"]` on every gh-including tick without asking whether the fetch
+    worked, so one transient `gh` failure -- a rate limit, an expired token, a
+    network blip -- overwrote known-good PRs with the empty list `collect`
+    correctly returns alongside `ok: False`. The thing called a cache was
+    guaranteed not to hold a cached value exactly when it was needed. Audit
+    2026-08-05, finding H4.
+
+    Keeping the status separate is what stops the page flapping. Cache them
+    together and a failed slow tick shows the banner, then the next fast tick
+    splices the stale `ok: True` status back in two seconds later, and the page
+    alternates between "gh unavailable" and a confident PR list indefinitely.
+
+    A failed attempt stamps `last_good` from the surviving data's `cached_at`,
+    which is what makes the spec's own error-honesty example -- "PRs unavailable
+    - gh: HTTP 403, last good 4m ago" -- expressible at all.
 
     `now_iso` is accepted as a parameter (rather than read off the snapshot)
     because `build_snapshot`'s aggregate `{"schema": 1, "repos": [...]}` return
@@ -65,18 +84,48 @@ def apply_gh_cache(snap: dict, cached_gh: dict[str, dict], include_gh: bool,
     """
     now_iso = now_iso if now_iso is not None else _now_iso()
     for repo in snap["repos"]:
+        name = repo["name"]
+        gh_now = [x for x in repo["sources"] if x["name"].startswith("gh")]
+        non_gh = [x for x in repo["sources"] if not x["name"].startswith("gh")]
+        entry = cached_gh.get(name)
+
+        fetch_succeeded = include_gh and bool(gh_now) and all(x["ok"] for x in gh_now)
+
+        if fetch_succeeded:
+            # The only path that may replace cached DATA.
+            cached_gh[name] = {"prs": repo["prs"], "issues": repo["issues"],
+                               "status": gh_now, "cached_at": now_iso}
+            continue
+
         if include_gh:
-            cached_gh[repo["name"]] = {
-                "prs": repo["prs"], "issues": repo["issues"],
-                "gh_sources": [x for x in repo["sources"] if x["name"].startswith("gh")],
-                "cached_at": now_iso,
-            }
-        elif repo["name"] in cached_gh:
-            c = cached_gh[repo["name"]]
-            repo["prs"], repo["issues"] = c["prs"], c["issues"]
-            repo["sources"] = [x for x in repo["sources"]
-                               if not x["name"].startswith("gh")] + c["gh_sources"]
-            repo["gh_cached_at"] = c["cached_at"]
+            # A real attempt that FAILED. Record the failure as the current status
+            # but leave the data alone -- this is the H4 fix. Stamp `last_good` so
+            # the banner can say how old the surviving data is, which is what the
+            # spec's error-honesty example always described and nothing ever set.
+            failed_status = [dict(x, last_good=entry["cached_at"] if entry else None)
+                             for x in gh_now]
+            if entry is not None:
+                entry["status"] = failed_status
+            else:
+                # Nothing was ever fetched successfully, so there is no last-good
+                # data to fall back on and none is invented.
+                cached_gh[name] = {"prs": [], "issues": [],
+                                   "status": failed_status, "cached_at": None}
+            entry = cached_gh[name]
+
+        if entry is None:
+            # A fast tick before any slow tick ever ran. The honest "not fetched
+            # this cycle" status must survive untouched.
+            continue
+
+        repo["prs"], repo["issues"] = entry["prs"], entry["issues"]
+        # Status comes from the last ATTEMPT, data from the last SUCCESS. Holding
+        # them apart is what stops the page flapping: without it, a failed slow
+        # tick showed the banner and the next fast tick spliced the stale
+        # `ok: True` statuses back in, two seconds later, forever.
+        repo["sources"] = non_gh + entry["status"]
+        if entry["cached_at"] is not None:
+            repo["gh_cached_at"] = entry["cached_at"]
     return cached_gh
 
 

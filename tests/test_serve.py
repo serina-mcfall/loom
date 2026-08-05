@@ -92,15 +92,24 @@ class TestApplyGhCache(unittest.TestCase):
         apply_gh_cache(snap, cache, include_gh=True)
         self.assertTrue(cache["example"]["cached_at"])
 
-    def test_a_fast_tick_splices_cached_prs_into_the_not_fetched_snapshot(self):
-        cache = {"example": {
-            "prs": [{"number": 1}], "issues": [],
-            "gh_sources": [
+    def _good_cache(self, prs=None) -> dict:
+        """A cache entry as a successful slow tick leaves it.
+
+        `status` is the gh source list as of the last ATTEMPT, held separately
+        from the data, which is as of the last SUCCESS. Keeping them apart is what
+        stops the display flapping -- see the H4 tests below.
+        """
+        return {"example": {
+            "prs": [{"number": 1}] if prs is None else prs, "issues": [],
+            "status": [
                 {"name": "gh:prs", "ok": True, "error": None},
                 {"name": "gh:issues", "ok": True, "error": None},
             ],
             "cached_at": "T1",
         }}
+
+    def test_a_fast_tick_splices_cached_prs_into_the_not_fetched_snapshot(self):
+        cache = self._good_cache()
         snap = self._snap(prs=[], gh_ok=False)
         apply_gh_cache(snap, cache, include_gh=False, now_iso="T2")
         repo = snap["repos"][0]
@@ -122,16 +131,82 @@ class TestApplyGhCache(unittest.TestCase):
         self.assertFalse(sources["gh:prs"]["ok"])
 
     def test_git_only_sources_are_never_touched_by_the_splice(self):
-        cache = {"example": {
-            "prs": [], "issues": [],
-            "gh_sources": [{"name": "gh:prs", "ok": True, "error": None},
-                          {"name": "gh:issues", "ok": True, "error": None}],
-            "cached_at": "T1",
-        }}
+        cache = self._good_cache(prs=[])
         snap = self._snap(prs=[], gh_ok=False)
         apply_gh_cache(snap, cache, include_gh=False, now_iso="T2")
         names = [s["name"] for s in snap["repos"][0]["sources"]]
         self.assertEqual(names.count("git"), 1)
+
+    # ------------------------------------------------- audit 2026-08-05, H4
+    def test_a_failed_slow_tick_does_not_overwrite_a_good_cache(self):
+        """THE CORE OF H4.
+
+        `apply_gh_cache` wrote `repo["prs"]` into the cache on every gh-including
+        tick without asking whether the fetch worked. When `gh` failed, `collect`
+        correctly returned `prs=[]` with `ok: False` -- and that empty list
+        overwrote the good cache. The mechanism named "cache" was guaranteed not
+        to hold a cached value at the one moment it was needed.
+        """
+        cache = self._good_cache()
+        failed = self._snap(prs=[], gh_ok=False)
+        apply_gh_cache(failed, cache, include_gh=True, now_iso="T2")
+        self.assertEqual(cache["example"]["prs"], [{"number": 1}],
+                         "a failed fetch destroyed the last known good PRs")
+        self.assertEqual(cache["example"]["cached_at"], "T1",
+                         "cached_at must still date the last SUCCESS, not the failure")
+
+    def test_a_failed_slow_tick_still_reports_the_failure_on_later_fast_ticks(self):
+        """No flapping.
+
+        The status of the last ATTEMPT is cached separately from the data of the
+        last SUCCESS. Without that split, a failed slow tick showed the banner and
+        then the very next fast tick spliced the old `ok: True` statuses back in,
+        so the page alternated between "gh unavailable" and a confident PR list
+        every two seconds.
+        """
+        cache = self._good_cache()
+        apply_gh_cache(self._snap(prs=[], gh_ok=False), cache,
+                       include_gh=True, now_iso="T2")
+
+        fast = self._snap(prs=[], gh_ok=False)
+        apply_gh_cache(fast, cache, include_gh=False, now_iso="T3")
+        sources = {s["name"]: s for s in fast["repos"][0]["sources"]}
+        self.assertFalse(sources["gh:prs"]["ok"],
+                         "the failure must persist until a fetch actually succeeds")
+
+    def test_a_failed_fetch_records_when_the_data_was_last_good(self):
+        # `last_good` is declared on SourceStatus and was never once assigned
+        # (audit L1), which made the spec's own error-honesty example --
+        # "PRs unavailable - gh: HTTP 403, last good 4m ago" -- unimplementable.
+        cache = self._good_cache()
+        failed = self._snap(prs=[], gh_ok=False)
+        apply_gh_cache(failed, cache, include_gh=True, now_iso="T2")
+        sources = {s["name"]: s for s in failed["repos"][0]["sources"]}
+        self.assertEqual(sources["gh:prs"]["last_good"], "T1")
+
+    def test_a_successful_fetch_after_a_failure_clears_it(self):
+        cache = self._good_cache()
+        apply_gh_cache(self._snap(prs=[], gh_ok=False), cache,
+                       include_gh=True, now_iso="T2")
+        recovered = self._snap(prs=[{"number": 9}], gh_ok=True)
+        apply_gh_cache(recovered, cache, include_gh=True, now_iso="T3")
+        self.assertEqual(cache["example"]["prs"], [{"number": 9}])
+        self.assertEqual(cache["example"]["cached_at"], "T3")
+        sources = {s["name"]: s for s in recovered["repos"][0]["sources"]}
+        self.assertTrue(sources["gh:prs"]["ok"])
+
+    def test_a_failed_fetch_with_nothing_ever_cached_stays_honest(self):
+        # Negative control: no prior success means there is no last-good data to
+        # fall back on, and none must be invented.
+        cache: dict = {}
+        failed = self._snap(prs=[], gh_ok=False)
+        apply_gh_cache(failed, cache, include_gh=True, now_iso="T1")
+        repo = failed["repos"][0]
+        self.assertEqual(repo["prs"], [])
+        self.assertNotIn("gh_cached_at", repo)
+        sources = {s["name"]: s for s in repo["sources"]}
+        self.assertFalse(sources["gh:prs"]["ok"])
+        self.assertIsNone(sources["gh:prs"].get("last_good"))
 
 
 def _fast_tick_runner() -> ReplayRunner:
@@ -231,8 +306,8 @@ class TestNeedsYouIsRankedAfterTheGhCacheSplice(unittest.TestCase):
                  "review": None, "checks": "none"},
             ],
             "issues": [],
-            "gh_sources": [{"name": "gh:prs", "ok": True, "error": None},
-                           {"name": "gh:issues", "ok": True, "error": None}],
+            "status": [{"name": "gh:prs", "ok": True, "error": None},
+                       {"name": "gh:issues", "ok": True, "error": None}],
             "cached_at": "T1",
         }}
 
