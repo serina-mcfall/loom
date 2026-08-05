@@ -33,19 +33,50 @@ permissions:
 
 jobs:
   tests:
-    name: tests and constraints
+    # DELIBERATELY NOT NAMED "tests and constraints".
+    #
+    # A matrix job's check-run name gets its matrix values appended, so naming this
+    # "tests and constraints" would publish "tests and constraints (3.10)" and the
+    # bare context the ruleset for `main` REQUIRES would never appear again -- an
+    # unsatisfiable gate, which looks identical to a gate that is merely slow. The
+    # stable name lives on the aggregate job below, which is what the ruleset should
+    # keep pointing at.
+    name: py${{ matrix.python }}
     runs-on: ubuntu-latest
     # A hung job otherwise burns minutes until the 6-hour default. Nothing here
     # legitimately takes more than a minute.
     timeout-minutes: 10
 
+    # THE SUPPORTED FLOOR, ENFORCED RATHER THAN ASSERTED.
+    #
+    # Nothing declared a minimum Python version anywhere: CI pinned 3.12 as a
+    # choice, `check_stdlib_only.py`'s docstring asserted 3.12, and no manifest
+    # existed to carry `requires-python`. So a user on an older interpreter got a
+    # confusing failure from a project whose whole selling point is dropping in
+    # anywhere. Audit 2026-08-05, finding L11.
+    #
+    # The floor was MEASURED, not guessed, by running the suite and a real
+    # `loom snapshot` on each interpreter:
+    #   3.9   the runtime works, but `check_stdlib_only.py` does not --
+    #         `sys.stdlib_module_names` arrived in 3.10
+    #   3.10  everything works, including the project's own checks  <- the floor
+    #   3.11, 3.12, 3.13  all pass
+    #
+    # 3.10 is therefore the declared floor: the lowest version at which the WHOLE
+    # project works, not just the part users run. A matrix keeps that honest, since
+    # a floor nothing exercises is a floor that rots.
+    strategy:
+      fail-fast: false          # one version failing should not hide the others
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
+      - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
       # No install step, and that is the point: if this workflow ever needs
       # `pip install`, the zero-dependency constraint has already been broken.
@@ -92,7 +123,19 @@ jobs:
 
           snap = json.load(open(os.path.join(os.environ.get("RUNNER_TEMP", "/tmp"),
                                              "snapshot.json")))
-          assert snap["schema"] == 1, f"schema is {snap['schema']!r}, expected 1"
+
+          # IMPORTED, NEVER HARDCODED.
+          #
+          # This assertion read `== 1` and broke the moment the schema became 2, which
+          # is how it was discovered that THIS WORKFLOW IS A THIRD CONSUMER of the
+          # contract. The design doc says the snapshot is "versioned, because two
+          # consumers parse it" -- the page and the skill -- and that undercount is
+          # exactly why the bump missed this file. Reading the constant means a future
+          # bump cannot leave this behind again.
+          sys.path.insert(0, os.getcwd())
+          from loom.collect import SCHEMA_VERSION
+          assert snap["schema"] == SCHEMA_VERSION, \
+              f"schema is {snap['schema']!r}, expected {SCHEMA_VERSION}"
           assert snap["repos"], "no repos in snapshot — collection found nothing at all"
 
           repo = snap["repos"][0]
@@ -121,11 +164,77 @@ jobs:
                   assert s.get("error"), f"{name}: not ok, but gave no reason"
 
           degraded = sorted(n for n, s in sources.items() if not s["ok"])
-          print(f"\nOK: schema 1, {len(snap['repos'])} repo(s), "
+          print(f"\nOK: schema {SCHEMA_VERSION}, {len(snap['repos'])} repo(s), "
                 f"git worktree source healthy, "
                 f"{len(degraded)} source(s) degraded with a stated reason"
                 + (f": {', '.join(degraded)}" if degraded else ""))
           PY
+
+  # ------------------------------------------------------- the stable gate name
+  # One check with a FIXED name that succeeds only if every matrix leg did.
+  #
+  # This exists so the ruleset for `main` has something stable to require. Without
+  # it, adding or removing a Python version would silently change the set of check
+  # names and leave the required context permanently absent.
+  #
+  # `always()` matters: without it this job is SKIPPED when a matrix leg fails, and
+  # a skipped required check is not a failing one -- GitHub would treat the gate as
+  # unsatisfied-but-not-failed, which reads as "still running" forever. With it, the
+  # job runs and fails loudly.
+  tests-and-constraints:
+    name: tests and constraints
+    runs-on: ubuntu-latest
+    needs: tests
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Every supported Python version passed
+        run: |
+          echo "matrix result: ${{ needs.tests.result }}"
+          if [ "${{ needs.tests.result }}" != "success" ]; then
+            echo "FAIL: at least one Python version did not pass." >&2
+            exit 1
+          fi
+          echo "OK: the suite and constraints passed on every supported version."
+
+  # --------------------------------------------------------------- the types
+  # A SEPARATE JOB ON PURPOSE, and this is the whole reason it is separate.
+  #
+  # `tests and constraints` has no install step, and that is its guarantee: if it
+  # ever needs `pip install`, the zero-dependency constraint has been broken. A
+  # type checker is a DEVELOPMENT dependency, not a runtime one, so it must not be
+  # allowed to weaken that signal. Putting mypy in its own job keeps both true --
+  # the tests job still proves Loom runs on a bare interpreter, and the code still
+  # gets checked.
+  #
+  # WHY THIS EARNED ITS PLACE: run for the first time during the 2026-08-05 audit
+  # remediation, mypy immediately found `body` being used for both `str` and `bytes`
+  # in one function, where an f-string would silently have emitted "b'...'" if
+  # anything were reordered. It also found the `last_good` field that had been
+  # declared and never assigned since v1. Audit finding M5.
+  #
+  # --allow-any-generics, not full --strict: bare `dict` is used idiomatically
+  # throughout this codebase and annotating 39 of them buys nothing. Everything
+  # else --strict checks is on, because those are the checks that find defects.
+  types:
+    name: types
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pinned. An unpinned checker turns somebody else's release into a red build
+      # on a branch that changed nothing.
+      - name: Install mypy
+        run: python3 -m pip install --quiet mypy==2.3.0
+
+      - name: Type check
+        run: mypy --strict --allow-any-generics loom/ loom_cli.py hooks/ scripts/
 
   # ---------------------------------------------------------------- the gate
   # Separate job on purpose. `tests and constraints` answers "is the code sound?"
@@ -173,12 +282,30 @@ jobs:
           want = os.environ["HEAD_SHA"]
 
           def block(msg):
+              # THE REMEDIATION MUST NAME SOMETHING THAT EXISTS.
+              #
+              # This used to say `.claude/skills/review-final/verdict.sh`, a path
+              # that does not exist in this repository -- `.claude/` holds one
+              # gitignored stamp file. A contributor hitting this gate followed the
+              # instructions to a missing script, and a gate whose escape hatch is
+              # undocumented is a gate people work around. Audit 2026-08-05, M6.
+              #
+              # No path is named now, deliberately: the script ships inside the
+              # serina-skills plugin, whose cache directory is VERSION-specific
+              # (serina/0.6.0/skills/review-final/verdict.sh today, something else
+              # after the next update). Any literal path here would rot. The skill
+              # knows where its own script lives, so the instruction is to invoke
+              # the skill.
               print(f"BLOCKED  {msg}")
               print()
               print("This branch has no review recorded for its current state.")
-              print("  1. Run the review-final skill.")
-              print("  2. .claude/skills/review-final/verdict.sh record ready <PLAN_FILE>")
+              print("  1. Run the review-final skill (serina:review-final).")
+              print("  2. Ask it to record the verdict:  verdict.sh record ready")
+              print("     -- it re-runs the objective checks and REFUSES to write")
+              print("        READY if they fail, so a claim cannot outrun the tests.")
               print("  3. Commit .superpowers/verdict.json and push.")
+              print()
+              print("verdict.sh ships with the skill, not with this repo.")
               sys.exit(1)
 
           # Absence blocks. A review killed by turn exhaustion writes nothing, and

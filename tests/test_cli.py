@@ -5,6 +5,8 @@ import os
 import unittest
 from contextlib import redirect_stdout
 
+from loom.collect import SCHEMA_VERSION
+from loom.rank import rank_snapshot
 from loom.runner import ReplayRunner
 from loom_cli import main, discover_repos, repo_roots, parse_port, build_snapshot, render_text
 
@@ -133,11 +135,46 @@ class TestRepoRoots(unittest.TestCase):
         self.assertEqual(repo_roots(False, runner), [os.getcwd()])
 
 
+class TestUsage(unittest.TestCase):
+    """Audit 2026-08-05, finding L10.
+
+    An explicit help request is a SUCCESSFUL invocation. Exiting 2 makes
+    `loom --help` fail inside any script or Makefile that checks status, and it
+    conflates "you asked for help" with "you got the arguments wrong" -- which must
+    stay distinguishable, because only one of them is an error.
+    """
+
+    def _run(self, argv):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(argv)
+        return code, buf.getvalue()
+
+    def test_asking_for_help_succeeds(self):
+        for argv in (["--help"], ["-h"], ["help"]):
+            with self.subTest(argv=argv):
+                code, out = self._run(argv)
+                self.assertEqual(code, 0, f"{argv} should succeed")
+                self.assertIn("usage:", out)
+
+    def test_no_arguments_at_all_is_still_an_error(self):
+        # Negative control: bare `loom` is a misuse, not a help request, and must
+        # keep its non-zero exit or this change would hide real mistakes.
+        code, out = self._run([])
+        self.assertEqual(code, 2)
+        self.assertIn("usage:", out)
+
+    def test_an_unknown_command_is_still_an_error(self):
+        code, out = self._run(["frobnicate"])
+        self.assertEqual(code, 2)
+        self.assertIn("usage:", out)
+
+
 class TestRenderText(unittest.TestCase):
     """An empty panel and a broken panel must never read the same."""
 
     def _snapshot(self, sources, prs):
-        return {"schema": 1, "repos": [{
+        return {"schema": SCHEMA_VERSION, "repos": [{
             "name": "example", "worktrees": [], "prs": prs, "issues": [],
             "sources": sources, "needs_you": [],
         }]}
@@ -155,8 +192,14 @@ class TestRenderText(unittest.TestCase):
 
 
 class TestBuildSnapshot(unittest.TestCase):
-    def test_attaches_needs_you_to_every_repo(self):
-        recordings = {
+    def _recordings(self) -> dict:
+        """Every git command `collect()` issues for one worktree, include_gh=False.
+
+        One fixture for the whole class. `tests/test_serve.py::_fast_tick_runner`
+        holds a near-identical copy for the same scenario -- see N1 in the
+        remediation log; consolidating them is deferred, not forgotten.
+        """
+        return {
             "git rev-parse --path-format=absolute --git-common-dir":
                 {"returncode": 0, "stdout": "/repo/.git\n", "stderr": ""},
             "git symbolic-ref --short refs/remotes/origin/HEAD":
@@ -171,7 +214,7 @@ class TestBuildSnapshot(unittest.TestCase):
                 {"returncode": 1, "stdout": "", "stderr": "no server running"},
             "git rev-list --left-right --count main...HEAD":
                 {"returncode": 0, "stdout": "0\t0\n", "stderr": ""},
-            "git status --porcelain=v1": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
             "git remote get-url origin":
                 {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
             "git log -1 --format=%h%x1f%aI%x1f%s": {
@@ -187,11 +230,76 @@ class TestBuildSnapshot(unittest.TestCase):
             "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat":
                 {"returncode": 0, "stdout": "", "stderr": ""},
         }
-        runner = ReplayRunner(recordings)
+
+    def test_attaches_needs_you_to_every_repo(self):
+        runner = ReplayRunner(self._recordings())
         snapshot = build_snapshot(False, include_gh=False, runner=runner)
         self.assertEqual(len(snapshot["repos"]), 1)
-        self.assertIn("needs_you", snapshot["repos"][0])
-        self.assertIsInstance(snapshot["repos"][0]["needs_you"], list)
+
+        # CONTRACT CHANGE, audit 2026-08-05 finding H1. This test previously
+        # asserted `build_snapshot` attaches `needs_you`, and it passed -- but
+        # that placement was the defect: `serve` rewrites `prs` after the
+        # builder returns, so a snapshot ranked here was ranked against data no
+        # consumer ever sees. Ranking moved to `rank_snapshot`, applied last by
+        # whoever publishes the snapshot.
+        #
+        # Absent, not empty: an unranked snapshot must be distinguishable from a
+        # ranked one that found nothing, or "the fleet is quiet" and "nobody
+        # ranked this" look identical -- the empty-versus-broken confusion this
+        # whole project exists to refuse.
+        self.assertNotIn("needs_you", snapshot["repos"][0],
+                         "build_snapshot must not rank; rank_snapshot does, last")
+
+        ranked = rank_snapshot(snapshot)
+        self.assertIn("needs_you", ranked["repos"][0])
+        self.assertIsInstance(ranked["repos"][0]["needs_you"], list)
+
+    # ------------------------------------------------- audit 2026-08-05, H7
+    def test_the_snapshot_states_when_it_was_generated(self):
+        """The loom skill is instructed: "If the snapshot is older than 5 minutes,
+        say so." It could not, ever.
+
+        `collect()` computes `generated_at` and `duration_ms`, and
+        `build_snapshot` discarded both when merging repos, so the CLI's JSON --
+        the skill's only input -- carried no timestamp at all. The skill asserted
+        a freshness it had no way to check, and an agent could confidently report
+        a fleet state minutes out of date.
+
+        `serve` re-stamps its own, so the page had one and the CLI did not: two
+        consumers of a schema versioned specifically to stop them drifting.
+        """
+        runner = ReplayRunner(self._recordings())
+        snapshot = build_snapshot(False, include_gh=False, runner=runner)
+        self.assertIn("generated_at", snapshot)
+        self.assertIn("duration_ms", snapshot)
+
+    def test_generated_at_carries_a_timezone_so_ages_are_computable(self):
+        # A naive timestamp is unanswerable, not assumable -- the rule
+        # loom/agents.py's `_age_seconds` already enforces. A consumer comparing a
+        # naive stamp against its own clock gets a zone-dependent answer, which is
+        # how a stale snapshot reads fresh in one timezone and not another.
+        from datetime import datetime
+        runner = ReplayRunner(self._recordings())
+        snapshot = build_snapshot(False, include_gh=False, runner=runner)
+        parsed = datetime.fromisoformat(snapshot["generated_at"])
+        self.assertIsNotNone(parsed.tzinfo,
+                             "generated_at must carry an offset or its age cannot "
+                             "be computed reliably")
+
+    def test_the_cli_and_the_collector_agree_on_the_schema_version(self):
+        # `build_snapshot` hardcoded `"schema": SCHEMA_VERSION` while `collect` used the constant,
+        # so the two could drift apart in the one field whose entire job is to stop
+        # drift. Audit 2026-08-05, part of L2.
+        from loom.collect import SCHEMA_VERSION
+        runner = ReplayRunner(self._recordings())
+        snapshot = build_snapshot(False, include_gh=False, runner=runner)
+        self.assertEqual(snapshot["schema"], SCHEMA_VERSION)
+
+    def test_duration_ms_is_a_non_negative_integer(self):
+        runner = ReplayRunner(self._recordings())
+        snapshot = build_snapshot(False, include_gh=False, runner=runner)
+        self.assertIsInstance(snapshot["duration_ms"], int)
+        self.assertGreaterEqual(snapshot["duration_ms"], 0)
 
 
 if __name__ == "__main__":

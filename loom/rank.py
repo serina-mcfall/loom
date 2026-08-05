@@ -9,6 +9,28 @@ import re
 # shouting. Tunable — this is a judgement about attention, not a fact.
 RANK1_MAX_AGE_SECONDS = 30 * 60
 
+# `reviewDecision` values that mean "no human has reviewed this yet".
+#
+# A WHITELIST, matching derive_checks in loom/ghsrc.py, and for the same reason:
+# an unrecognised value must NOT become an alert. A blacklist's unknown case
+# fires rank 2 on a state GitHub invented after this was written, and a strip
+# that cries wolf is a strip nobody reads.
+#
+# This used to be `not p.get("review")`, testing a four-valued enum for
+# truthiness. `REVIEW_REQUIRED` -- the exact state rank 2 exists to catch -- is a
+# truthy string, so it read as "already reviewed" and rank 2 fired only on
+# `null`, meaning only on repos with NO review requirement at all. Audit
+# 2026-08-05, finding H2.
+#
+# Deliberately EXCLUDED:
+#   APPROVED           reviewed; wanting a merge is a different condition
+#   CHANGES_REQUESTED  blocked on the AUTHOR, and an agent can act on it, so it
+#                      fails rank 2's rationale of "only a human moves it"
+#
+# "" is included alongside None because ghsrc normalises empty to None, but a
+# hand-written or older snapshot may carry the empty string.
+AWAITING_REVIEW = {None, "", "REVIEW_REQUIRED"}
+
 def _natural_sort_key(s: str) -> tuple:
     """Sort key that treats embedded numbers numerically, not lexicographically.
 
@@ -54,7 +76,7 @@ def needs_you(repo: dict) -> list[dict]:
             pr_number = p.get("number", "?")
             items.append({"rank": 4, "kind": "pr_failing", "subject": f"PR #{pr_number}",
                           "detail": "checks are failing"})
-        elif not p.get("review"):
+        elif p.get("review") in AWAITING_REVIEW:
             # "none" (no CI configured) counts as not failing, or this never fires.
             pr_number = p.get("number", "?")
             items.append({"rank": 2, "kind": "pr_awaiting_review",
@@ -70,10 +92,31 @@ def needs_you(repo: dict) -> list[dict]:
 
     for t in repo.get("worktrees", []):
         agent = t.get("agent") or {}
-        dirty = t.get("dirty") or {}
+        if agent.get("state") not in {"stopped", "stale"}:
+            continue
+        worktree_dir = t.get("dir", "<unnamed worktree>")
+        dirty = t.get("dirty")
+
+        # RANK 5 IS THE ONE GUARD THAT SPEAKS UP WHEN IT CANNOT TELL.
+        #
+        # Everywhere else in Loom, "cannot tell" means stay silent, because a
+        # false alarm cries wolf on a strip that has to stay trustworthy. Rank 5
+        # is deliberately the exception: its rationale is "work at risk of being
+        # lost", so a false alarm costs one glance and a false silence costs
+        # someone's uncommitted work.
+        #
+        # `dirty` is None when `git status` could not be run (see
+        # gitsrc.dirty_counts), and absent on an older or hand-written snapshot.
+        # Both mean unmeasured, and both are treated the same way.
+        # Audit 2026-08-05, finding H3.
+        if dirty is None:
+            items.append({"rank": 5, "kind": "stopped_dirty", "subject": worktree_dir,
+                          "detail": "agent stopped, and git could not be asked "
+                                    "whether work was left behind"})
+            continue
+
         total = dirty.get("staged", 0) + dirty.get("unstaged", 0) + dirty.get("untracked", 0)
-        if agent.get("state") in {"stopped", "stale"} and total:
-            worktree_dir = t.get("dir", "<unnamed worktree>")
+        if total:
             items.append({"rank": 5, "kind": "stopped_dirty", "subject": worktree_dir,
                           "detail": f"{total} uncommitted files left behind"})
 
@@ -84,3 +127,27 @@ def needs_you(repo: dict) -> list[dict]:
                       "detail": f.get("detail", "")})
 
     return sorted(items, key=lambda i: (i["rank"], _natural_sort_key(i["subject"])))
+
+
+def rank_snapshot(snapshot: dict) -> dict:
+    """Attach `needs_you` to every repo in a FINISHED snapshot, and return it.
+
+    RANKING IS A PROJECTION OVER A COMPLETED SNAPSHOT, NEVER A STEP INSIDE ITS
+    ASSEMBLY. That is the whole reason this function exists rather than the
+    builder doing it inline.
+
+    It used to be inline, in `build_snapshot`. `serve` then folded cached `gh`
+    data into `repo["prs"]` *after* the builder returned, so the strip had been
+    ranked against a PR list the consumer would never see -- empty on a fast
+    tick, by design. With 29 of every 30 ticks fast, ranks 2 and 4 were absent
+    from the strip for 58 of every 60 seconds while the panel below it listed
+    the very PRs they described. Audit 2026-08-05, finding H1.
+
+    Whoever finishes a snapshot calls this last. Anything that mutates a
+    snapshot after ranking it has reintroduced the same defect, so mutate first
+    and rank at the boundary -- that ordering is the invariant, not a style
+    preference.
+    """
+    for repo in snapshot.get("repos", []):
+        repo["needs_you"] = needs_you(repo)
+    return snapshot

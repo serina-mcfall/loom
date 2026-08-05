@@ -82,11 +82,6 @@ def tmux_panes(runner: Runner) -> list[dict]:
     return panes
 
 
-def _pane_in_worktree(pane_path: str, norm_path: str) -> bool:
-    p = os.path.realpath(pane_path)
-    return p == norm_path or p.startswith(norm_path + os.sep)
-
-
 def _age_seconds(since: str | None, now: datetime) -> float | None:
     """Seconds between `since` and `now`, or None if it cannot be determined.
 

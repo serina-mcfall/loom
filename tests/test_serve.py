@@ -19,6 +19,7 @@ import io
 import json
 import socket
 import threading
+import time
 import unittest
 import unittest.mock
 import urllib.error
@@ -27,12 +28,14 @@ from contextlib import redirect_stdout
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+from loom.collect import SCHEMA_VERSION
 from loom.runner import ReplayRunner
 from loom.serve import (
     Handler,
     apply_gh_cache,
     run_server,
     should_include_gh,
+    _now_iso,
     _refresh_step,
     _tick,
 )
@@ -60,11 +63,14 @@ class TestApplyGhCache(unittest.TestCase):
     """The substitution step, extracted so it never needs a live server to verify."""
 
     def _snap(self, prs: list, gh_ok: bool) -> dict:
-        # Deliberately no top-level "generated_at" — build_snapshot's real
-        # aggregate shape doesn't carry one; a fixture that included it would
-        # have hidden the KeyError this function used to raise against real data.
+        # No top-level "generated_at", and that is still deliberate -- but for a
+        # DIFFERENT reason than when this was written. build_snapshot DOES carry one
+        # now (finding H7). It is omitted here because `apply_gh_cache` must not read
+        # it: `cached_at` records when the FETCH succeeded, not when the snapshot was
+        # assembled. A fixture supplying it would let a regression that conflated the
+        # two pass unnoticed.
         return {
-            "schema": 1,
+            "schema": SCHEMA_VERSION,
             "repos": [{
                 "name": "example", "prs": prs, "issues": [],
                 "sources": [
@@ -92,15 +98,24 @@ class TestApplyGhCache(unittest.TestCase):
         apply_gh_cache(snap, cache, include_gh=True)
         self.assertTrue(cache["example"]["cached_at"])
 
-    def test_a_fast_tick_splices_cached_prs_into_the_not_fetched_snapshot(self):
-        cache = {"example": {
-            "prs": [{"number": 1}], "issues": [],
-            "gh_sources": [
+    def _good_cache(self, prs=None) -> dict:
+        """A cache entry as a successful slow tick leaves it.
+
+        `status` is the gh source list as of the last ATTEMPT, held separately
+        from the data, which is as of the last SUCCESS. Keeping them apart is what
+        stops the display flapping -- see the H4 tests below.
+        """
+        return {"example": {
+            "prs": [{"number": 1}] if prs is None else prs, "issues": [],
+            "status": [
                 {"name": "gh:prs", "ok": True, "error": None},
                 {"name": "gh:issues", "ok": True, "error": None},
             ],
             "cached_at": "T1",
         }}
+
+    def test_a_fast_tick_splices_cached_prs_into_the_not_fetched_snapshot(self):
+        cache = self._good_cache()
         snap = self._snap(prs=[], gh_ok=False)
         apply_gh_cache(snap, cache, include_gh=False, now_iso="T2")
         repo = snap["repos"][0]
@@ -122,27 +137,97 @@ class TestApplyGhCache(unittest.TestCase):
         self.assertFalse(sources["gh:prs"]["ok"])
 
     def test_git_only_sources_are_never_touched_by_the_splice(self):
-        cache = {"example": {
-            "prs": [], "issues": [],
-            "gh_sources": [{"name": "gh:prs", "ok": True, "error": None},
-                          {"name": "gh:issues", "ok": True, "error": None}],
-            "cached_at": "T1",
-        }}
+        cache = self._good_cache(prs=[])
         snap = self._snap(prs=[], gh_ok=False)
         apply_gh_cache(snap, cache, include_gh=False, now_iso="T2")
         names = [s["name"] for s in snap["repos"][0]["sources"]]
         self.assertEqual(names.count("git"), 1)
 
+    # ------------------------------------------------- audit 2026-08-05, H4
+    def test_a_failed_slow_tick_does_not_overwrite_a_good_cache(self):
+        """THE CORE OF H4.
 
-class TestTickSkipsGhOnFastTick(unittest.TestCase):
-    """The regression guard: a fast tick must never spawn `gh`, not once."""
+        `apply_gh_cache` wrote `repo["prs"]` into the cache on every gh-including
+        tick without asking whether the fetch worked. When `gh` failed, `collect`
+        correctly returned `prs=[]` with `ok: False` -- and that empty list
+        overwrote the good cache. The mechanism named "cache" was guaranteed not
+        to hold a cached value at the one moment it was needed.
+        """
+        cache = self._good_cache()
+        failed = self._snap(prs=[], gh_ok=False)
+        apply_gh_cache(failed, cache, include_gh=True, now_iso="T2")
+        self.assertEqual(cache["example"]["prs"], [{"number": 1}],
+                         "a failed fetch destroyed the last known good PRs")
+        self.assertEqual(cache["example"]["cached_at"], "T1",
+                         "cached_at must still date the last SUCCESS, not the failure")
 
-    def _replay_runner(self) -> ReplayRunner:
-        # Recordings for every git command `collect()` issues with include_gh=False.
-        # Deliberately contains no "gh ..." entry: if the code path ever regressed
-        # to calling gh anyway, ReplayRunner would raise KeyError on the unrecorded
-        # command, which is itself a second, independent failure signal.
-        recordings = {
+    def test_a_failed_slow_tick_still_reports_the_failure_on_later_fast_ticks(self):
+        """No flapping.
+
+        The status of the last ATTEMPT is cached separately from the data of the
+        last SUCCESS. Without that split, a failed slow tick showed the banner and
+        then the very next fast tick spliced the old `ok: True` statuses back in,
+        so the page alternated between "gh unavailable" and a confident PR list
+        every two seconds.
+        """
+        cache = self._good_cache()
+        apply_gh_cache(self._snap(prs=[], gh_ok=False), cache,
+                       include_gh=True, now_iso="T2")
+
+        fast = self._snap(prs=[], gh_ok=False)
+        apply_gh_cache(fast, cache, include_gh=False, now_iso="T3")
+        sources = {s["name"]: s for s in fast["repos"][0]["sources"]}
+        self.assertFalse(sources["gh:prs"]["ok"],
+                         "the failure must persist until a fetch actually succeeds")
+
+    def test_a_failed_fetch_records_when_the_data_was_last_good(self):
+        # `last_good` is declared on SourceStatus and was never once assigned
+        # (audit L1), which made the spec's own error-honesty example --
+        # "PRs unavailable - gh: HTTP 403, last good 4m ago" -- unimplementable.
+        cache = self._good_cache()
+        failed = self._snap(prs=[], gh_ok=False)
+        apply_gh_cache(failed, cache, include_gh=True, now_iso="T2")
+        sources = {s["name"]: s for s in failed["repos"][0]["sources"]}
+        self.assertEqual(sources["gh:prs"]["last_good"], "T1")
+
+    def test_a_successful_fetch_after_a_failure_clears_it(self):
+        cache = self._good_cache()
+        apply_gh_cache(self._snap(prs=[], gh_ok=False), cache,
+                       include_gh=True, now_iso="T2")
+        recovered = self._snap(prs=[{"number": 9}], gh_ok=True)
+        apply_gh_cache(recovered, cache, include_gh=True, now_iso="T3")
+        self.assertEqual(cache["example"]["prs"], [{"number": 9}])
+        self.assertEqual(cache["example"]["cached_at"], "T3")
+        sources = {s["name"]: s for s in recovered["repos"][0]["sources"]}
+        self.assertTrue(sources["gh:prs"]["ok"])
+
+    def test_a_failed_fetch_with_nothing_ever_cached_stays_honest(self):
+        # Negative control: no prior success means there is no last-good data to
+        # fall back on, and none must be invented.
+        cache: dict = {}
+        failed = self._snap(prs=[], gh_ok=False)
+        apply_gh_cache(failed, cache, include_gh=True, now_iso="T1")
+        repo = failed["repos"][0]
+        self.assertEqual(repo["prs"], [])
+        self.assertNotIn("gh_cached_at", repo)
+        sources = {s["name"]: s for s in repo["sources"]}
+        self.assertFalse(sources["gh:prs"]["ok"])
+        self.assertIsNone(sources["gh:prs"].get("last_good"))
+
+
+def _fast_tick_runner() -> ReplayRunner:
+    """A runner recorded for one fast (gh-free) tick over a single worktree.
+
+    Module-level rather than a method so every test that needs a fast tick shares
+    ONE fixture. Two copies would be free to drift, and a fast-tick fixture that
+    disagreed with itself is exactly the kind of divergence these tests exist to
+    catch in production code.
+    """
+    # Recordings for every git command `collect()` issues with include_gh=False.
+    # Deliberately contains no "gh ..." entry: if the code path ever regressed
+    # to calling gh anyway, ReplayRunner would raise KeyError on the unrecorded
+    # command, which is itself a second, independent failure signal.
+    recordings = {
             "git rev-parse --path-format=absolute --git-common-dir":
                 {"returncode": 0, "stdout": "/repo/.git\n", "stderr": ""},
             "git symbolic-ref --short refs/remotes/origin/HEAD":
@@ -157,7 +242,7 @@ class TestTickSkipsGhOnFastTick(unittest.TestCase):
                 {"returncode": 1, "stdout": "", "stderr": "no server running"},
             "git rev-list --left-right --count main...HEAD":
                 {"returncode": 0, "stdout": "0\t0\n", "stderr": ""},
-            "git status --porcelain=v1": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
             "git remote get-url origin":
                 {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
             "git log -1 --format=%h%x1f%aI%x1f%s": {
@@ -174,10 +259,14 @@ class TestTickSkipsGhOnFastTick(unittest.TestCase):
             "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat":
                 {"returncode": 0, "stdout": "", "stderr": ""},
         }
-        return ReplayRunner(recordings)
+    return ReplayRunner(recordings)
+
+
+class TestTickSkipsGhOnFastTick(unittest.TestCase):
+    """The regression guard: a fast tick must never spawn `gh`, not once."""
 
     def test_no_gh_command_appears_in_the_runners_captured_calls(self):
-        runner = self._replay_runner()
+        runner = _fast_tick_runner()
         cache: dict = {}
         snap = _tick(all_repos=False, include_gh=False, cached_gh=cache, runner=runner)
         gh_calls = [call for call in runner.calls if call and call[0] == "gh"]
@@ -187,9 +276,74 @@ class TestTickSkipsGhOnFastTick(unittest.TestCase):
         self.assertFalse(sources["gh:prs"]["ok"])
 
     def test_repo_roots_lookup_itself_is_a_git_command_not_a_gh_one(self):
-        runner = self._replay_runner()
+        runner = _fast_tick_runner()
         _tick(all_repos=False, include_gh=False, cached_gh={}, runner=runner)
         self.assertTrue(all(call[0] == "git" or call[0] == "tmux" for call in runner.calls))
+
+
+class TestNeedsYouIsRankedAfterTheGhCacheSplice(unittest.TestCase):
+    """Audit 2026-08-05, finding H1.
+
+    `build_snapshot` computed `needs_you` mid-assembly, BEFORE `apply_gh_cache`
+    put the cached PRs back into `repo["prs"]`. On a fast tick `collect()`
+    returns `prs=[]` by design, so every PR-derived alert -- rank 2 (awaiting
+    review) and rank 4 (failing checks) -- was ranked against an empty list and
+    never recomputed.
+
+    FAST_SECONDS=2 against SLOW_SECONDS=60 makes 29 of every 30 ticks fast, so
+    the triage strip the entire product rests on was empty for 58 of every 60
+    seconds while the panel directly below it listed the very PRs it should
+    have been ranking. The page contradicted itself on screen.
+
+    The invariant these tests pin: whatever `repo["prs"]` a consumer is shown,
+    `repo["needs_you"]` was computed from exactly that list.
+    """
+
+    def _warm_cache(self) -> dict:
+        # Keyed "repo" because _fast_tick_runner's common-dir recording is
+        # /repo/.git, so collect() names the repo after its root directory.
+        return {"repo": {
+            "prs": [
+                # Rank 4: failing checks.
+                {"number": 7, "branch": "b7", "draft": False,
+                 "review": None, "checks": "failing"},
+                # Rank 2: no review, and "none" counts as not failing.
+                {"number": 8, "branch": "b8", "draft": False,
+                 "review": None, "checks": "none"},
+            ],
+            "issues": [],
+            "status": [{"name": "gh:prs", "ok": True, "error": None},
+                       {"name": "gh:issues", "ok": True, "error": None}],
+            "cached_at": "T1",
+        }}
+
+    def test_a_fast_tick_ranks_the_cached_prs_it_displays(self):
+        snap = _tick(all_repos=False, include_gh=False,
+                     cached_gh=self._warm_cache(), runner=_fast_tick_runner())
+        repo = snap["repos"][0]
+
+        # Precondition: the splice really did happen, so this test is about
+        # ranking and not about an empty cache trivially producing no alerts.
+        self.assertEqual([p["number"] for p in repo["prs"]], [7, 8])
+
+        kinds = {i["kind"] for i in repo["needs_you"]}
+        self.assertIn("pr_failing", kinds,
+                      "PR #7's failing checks are displayed but not ranked")
+        self.assertIn("pr_awaiting_review", kinds,
+                      "PR #8 is displayed as unreviewed but not ranked")
+
+    def test_the_strip_and_the_panel_never_disagree_about_which_prs_exist(self):
+        """The general invariant, not just the two ranks above."""
+        snap = _tick(all_repos=False, include_gh=False,
+                     cached_gh=self._warm_cache(), runner=_fast_tick_runner())
+        repo = snap["repos"][0]
+
+        displayed = {f"PR #{p['number']}" for p in repo["prs"]}
+        ranked = {i["subject"] for i in repo["needs_you"]
+                  if i["subject"].startswith("PR #")}
+        self.assertEqual(ranked, displayed,
+                         "every displayed PR here warrants an alert; the strip "
+                         "must not silently drop the ones the panel shows")
 
 
 class TestRefreshStepSurvivesFailures(unittest.TestCase):
@@ -204,7 +358,7 @@ class TestRefreshStepSurvivesFailures(unittest.TestCase):
         raise RuntimeError("collect() exploded")
 
     def test_a_raising_tick_does_not_propagate_and_keeps_the_previous_snapshot(self):
-        prev = {"schema": 1, "repos": [{"name": "example"}],
+        prev = {"schema": SCHEMA_VERSION, "repos": [{"name": "example"}],
                "collected": True, "generated_at": "T1", "refresh_error": None}
         with unittest.mock.patch("loom.serve._tick", side_effect=RuntimeError("boom")):
             snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
@@ -214,24 +368,52 @@ class TestRefreshStepSurvivesFailures(unittest.TestCase):
         self.assertEqual(snap["generated_at"], "T1")
 
     def test_the_failures_type_and_message_are_recorded(self):
-        prev = {"schema": 1, "repos": [], "collected": False}
+        prev = {"schema": SCHEMA_VERSION, "repos": [], "collected": False}
         with unittest.mock.patch("loom.serve._tick", side_effect=RuntimeError("boom")):
             snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
         self.assertIn("RuntimeError", snap["refresh_error"])
         self.assertIn("boom", snap["refresh_error"])
 
     def test_a_successful_step_after_a_failure_clears_refresh_error(self):
-        prev = {"schema": 1, "repos": [], "collected": False,
+        prev = {"schema": SCHEMA_VERSION, "repos": [], "collected": False,
                "refresh_error": "RuntimeError: boom"}
-        good = {"schema": 1, "repos": [{"name": "example"}]}
+        good = {"schema": SCHEMA_VERSION, "repos": [{"name": "example"}]}
         with unittest.mock.patch("loom.serve._tick", return_value=good):
             snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
         self.assertIsNone(snap["refresh_error"])
-        self.assertEqual(snap["repos"], [{"name": "example"}])
+        # By name, not by whole-dict equality: `_refresh_step` now finalises, which
+        # attaches `needs_you` and a badge. The assertion's intent is that the good
+        # data replaced the stale data, not that the dict is byte-identical.
+        self.assertEqual([r["name"] for r in snap["repos"]], ["example"])
+        # The badge must stop reporting an error too. Not asserted as "live": this
+        # stub `good` snapshot never sets `collected`, so "connecting" is the
+        # correct reading of it, and pinning "live" here would be asserting the
+        # fixture rather than the behaviour.
+        self.assertNotEqual(snap["badge"]["state"], "error")
+
+    def test_a_failed_step_travels_with_an_error_badge_not_a_green_one(self):
+        """Audit 2026-08-05, finding H6, at the integration level.
+
+        This is the path that PRODUCES an SSE message on failure: adding
+        `refresh_error` changes the serialised body, so `/events` sends a frame.
+        The page used to conclude "live" from the mere arrival of a frame, so the
+        one moment the dashboard was lying was the moment it most confidently
+        claimed to be live.
+
+        The frozen snapshot must therefore not carry its old green badge onward.
+        """
+        prev = {"schema": SCHEMA_VERSION, "repos": [{"name": "example"}],
+                "collected": True,
+                "generated_at": _now_iso(), "refresh_error": None,
+                "badge": {"state": "live", "label": "● live", "detail": ""}}
+        with unittest.mock.patch("loom.serve._tick", side_effect=RuntimeError("boom")):
+            snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
+        self.assertEqual(snap["badge"]["state"], "error")
+        self.assertIn("boom", snap["badge"]["detail"])
 
     def test_a_successful_step_stamps_generated_at(self):
-        prev = {"schema": 1, "repos": [], "collected": False}
-        good = {"schema": 1, "repos": []}
+        prev = {"schema": SCHEMA_VERSION, "repos": [], "collected": False}
+        good = {"schema": SCHEMA_VERSION, "repos": []}
         with unittest.mock.patch("loom.serve._tick", return_value=good):
             snap = _refresh_step(prev, all_repos=False, include_gh=False, cached_gh={})
         self.assertTrue(snap["generated_at"])
@@ -257,18 +439,18 @@ class TestCollectedMarker(unittest.TestCase):
              "print(json.dumps(serve._snapshot))"],
             capture_output=True, text=True, timeout=10, check=True,
         )
-        self.assertEqual(_json.loads(out.stdout), {"schema": 1, "repos": [], "collected": False})
+        self.assertEqual(_json.loads(out.stdout), {"schema": SCHEMA_VERSION, "repos": [], "collected": False})
 
     def test_a_tick_marks_its_snapshot_collected(self):
-        runner = TestTickSkipsGhOnFastTick()._replay_runner()
+        runner = _fast_tick_runner()
         snap = _tick(all_repos=False, include_gh=False, cached_gh={}, runner=runner)
         self.assertTrue(snap["collected"])
 
     def test_not_yet_collected_and_genuinely_empty_are_never_equal(self):
         # The whole point of the fix: these two states must be distinguishable
         # by any consumer that just compares/serializes the snapshot dict.
-        not_yet = {"schema": 1, "repos": [], "collected": False}
-        genuinely_empty = {"schema": 1, "repos": [], "collected": True}
+        not_yet = {"schema": SCHEMA_VERSION, "repos": [], "collected": False}
+        genuinely_empty = {"schema": SCHEMA_VERSION, "repos": [], "collected": True}
         self.assertNotEqual(not_yet, genuinely_empty)
         self.assertNotEqual(json.dumps(not_yet), json.dumps(genuinely_empty))
 
@@ -323,6 +505,13 @@ class TestServerBindsLoopbackOnly(unittest.TestCase):
                 # this ends the call without ever opening a real socket.
                 raise KeyboardInterrupt
 
+            def server_close(self):
+                # run_server closes the socket in a `finally` so an immediate
+                # restart is not refused (M11). A fake standing in for the real
+                # server has to model the whole interface it is asked for, or the
+                # test fails on the stub rather than on the behaviour.
+                recorded["closed"] = True
+
         with unittest.mock.patch.object(serve, "ThreadingHTTPServer", FakeServer), \
              unittest.mock.patch("threading.Thread") as fake_thread_cls:
             # The refresh loop calls the real, subprocess-invoking build_snapshot;
@@ -334,6 +523,104 @@ class TestServerBindsLoopbackOnly(unittest.TestCase):
         self.assertEqual(result, 0)
         fake_thread_cls.return_value.start.assert_called_once()
         self.assertEqual(recorded["address"], ("127.0.0.1", 0))
+        self.assertTrue(recorded.get("closed"),
+                        "the listening socket must be released on the way out")
+
+
+class TestPortAlreadyInUse(unittest.TestCase):
+    """Audit 2026-08-05, finding M9.
+
+    The default port is fixed at 8787, and the most likely reason it is taken is a
+    Loom already running -- so the single most probable user error produced a raw
+    Python traceback. `parse_port` goes to real trouble to avoid exactly that for a
+    bad `--port` value; the socket path was simply missed.
+    """
+
+    def test_a_taken_port_exits_cleanly_instead_of_raising(self):
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = run_server(port=port)
+            self.assertEqual(code, 2)
+            out = buf.getvalue().lower()
+            self.assertIn(str(port), out)
+            self.assertIn("already", out)
+        finally:
+            holder.close()
+
+    def test_a_failed_bind_does_not_leave_a_refresh_thread_running(self):
+        # Otherwise a process that failed to start still spawns git subprocesses
+        # every 2 seconds for as long as it lives.
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        before = threading.active_count()
+        try:
+            with redirect_stdout(io.StringIO()):
+                run_server(port=port)
+            self.assertEqual(threading.active_count(), before,
+                             "a refresh thread was started despite the bind failing")
+        finally:
+            holder.close()
+
+
+class TestWaitSeconds(unittest.TestCase):
+    """Audit 2026-08-05, part of finding M4.
+
+    The loop slept a flat FAST_SECONDS AFTER finishing its work, so the real period
+    was 2s plus collection time -- and collection is the expensive part. On a large
+    fleet a "2 second" refresh silently became three or four.
+    """
+
+    def test_a_fast_tick_waits_out_the_remainder(self):
+        from loom.serve import wait_seconds
+        self.assertAlmostEqual(wait_seconds(0.5), serve.FAST_SECONDS - 0.5)
+
+    def test_an_instant_tick_waits_the_whole_interval(self):
+        from loom.serve import wait_seconds
+        self.assertAlmostEqual(wait_seconds(0.0), serve.FAST_SECONDS)
+
+    def test_a_tick_slower_than_the_interval_does_not_wait_negatively(self):
+        # A negative wait would raise, or with Event.wait return instantly forever;
+        # back-to-back ticks are the honest behaviour for a fleet that cannot keep up.
+        from loom.serve import wait_seconds
+        self.assertEqual(wait_seconds(serve.FAST_SECONDS + 5), 0.0)
+
+
+class TestRefreshLoopIsStoppable(unittest.TestCase):
+    """Audit 2026-08-05, finding M11.
+
+    `_refresh_loop` was `while True` with no exit condition, started as a daemon
+    thread, so `serve`'s only way out was process death -- and the loop's timing was
+    untestable without really sleeping.
+    """
+
+    def test_an_already_set_stop_event_means_the_loop_never_runs(self):
+        stop = threading.Event()
+        stop.set()
+        with unittest.mock.patch("loom.serve._refresh_step") as step:
+            serve._refresh_loop(all_repos=False, stop=stop)
+        step.assert_not_called()
+
+    def test_the_loop_exits_when_the_event_is_set(self):
+        stop = threading.Event()
+        calls = []
+
+        def one_then_stop(*a, **k):
+            calls.append(1)
+            stop.set()          # ask it to stop after the first pass
+            return {"schema": SCHEMA_VERSION, "repos": [], "collected": True}
+
+        with unittest.mock.patch("loom.serve._refresh_step", side_effect=one_then_stop):
+            # If the loop cannot be stopped, this call never returns and the test
+            # hangs -- which is itself the failure signal.
+            serve._refresh_loop(all_repos=False, stop=stop)
+        self.assertEqual(len(calls), 1)
 
 
 class TestHandlerRoutes(unittest.TestCase):
@@ -343,7 +630,7 @@ class TestHandlerRoutes(unittest.TestCase):
     """
 
     def setUp(self):
-        serve._snapshot = {"schema": 1, "repos": [{"name": "example"}], "collected": True}
+        serve._snapshot = {"schema": SCHEMA_VERSION, "repos": [{"name": "example"}], "collected": True}
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -357,6 +644,25 @@ class TestHandlerRoutes(unittest.TestCase):
     def _get(self, path: str):
         return urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=2)
 
+    def test_nothing_is_cacheable(self):
+        """A restyled page must not come back looking unchanged.
+
+        There is no build step and no fingerprinted asset names, so loom.css and
+        loom.js keep their URLs forever. A browser heuristically caching them
+        serves the old file after a reload -- which is indistinguishable, from the
+        outside, from the edit having silently failed. Observed exactly that during
+        remediation, which is why this is now pinned rather than remembered.
+
+        The snapshot is live data, so it must not be cached either; one header
+        covers both, and this server is loopback-only with a 2-second refresh, so
+        there is no bandwidth cost on the other side.
+        """
+        for path in ("/", "/static/loom.css", "/static/loom.js", "/snapshot.json"):
+            with self.subTest(path=path):
+                with self._get(path) as r:
+                    self.assertIn("no-store", r.headers.get("Cache-Control", ""),
+                                  f"{path} is cacheable")
+
     def test_snapshot_json_returns_the_current_snapshot(self):
         with self._get("/snapshot.json") as r:
             self.assertEqual(r.status, 200)
@@ -364,7 +670,7 @@ class TestHandlerRoutes(unittest.TestCase):
         self.assertEqual(data["repos"][0]["name"], "example")
 
     def test_snapshot_json_is_503_before_the_first_collection_completes(self):
-        serve._snapshot = {"schema": 1, "repos": [], "collected": False}
+        serve._snapshot = {"schema": SCHEMA_VERSION, "repos": [], "collected": False}
         try:
             self._get("/snapshot.json")
             self.fail("expected an HTTPError for the not-yet-collected state")
@@ -376,7 +682,7 @@ class TestHandlerRoutes(unittest.TestCase):
 
     def test_snapshot_json_is_200_once_collected_is_true_even_with_zero_repos(self):
         # The genuinely-empty-fleet case must not also 503 — only "not yet".
-        serve._snapshot = {"schema": 1, "repos": [], "collected": True}
+        serve._snapshot = {"schema": SCHEMA_VERSION, "repos": [], "collected": True}
         with self._get("/snapshot.json") as r:
             self.assertEqual(r.status, 200)
             data = json.loads(r.read())
@@ -428,7 +734,40 @@ class TestHandlerRoutes(unittest.TestCase):
             sock.close()
         headers, _, body = data.partition(b"\r\n\r\n")
         self.assertIn(b"text/event-stream", headers)
-        self.assertTrue(body.startswith(b'data: {"schema": 1'), body)
+        self.assertTrue(
+            body.startswith(f'data: {{"schema": {SCHEMA_VERSION}'.encode()), body)
+
+    def test_events_keeps_sending_frames_when_the_snapshot_has_not_changed(self):
+        """Audit 2026-08-05, finding M10.
+
+        `/events` compared each serialised body to the previous one and only sent on
+        a difference -- an optimisation that could never once fire, because
+        `_refresh_step` re-stamps `generated_at` with wall-clock time on every
+        successful tick, so the body always differed. Dead code that read as live.
+
+        The comparison is gone, and every tick is now deliberately a frame. That is
+        also what lets the page treat frames as a heartbeat: silence means the server
+        stopped collecting, which is the hole a suppressed-frame design would open.
+
+        FAST_SECONDS is patched down so this costs milliseconds rather than seconds.
+        """
+        with unittest.mock.patch.object(serve, "FAST_SECONDS", 0.02):
+            sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+            try:
+                sock.sendall(b"GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                data = b""
+                deadline = time.monotonic() + 3
+                # The snapshot is never touched during this loop, so any frame after
+                # the first proves suppression is not happening.
+                while data.count(b"data: ") < 3 and time.monotonic() < deadline:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+            finally:
+                sock.close()
+        self.assertGreaterEqual(data.count(b"data: "), 3,
+                                "an unchanged snapshot stopped producing frames")
 
     def test_events_sets_an_idle_socket_timeout_so_an_unread_stream_cannot_hang_forever(self):
         # Fix round 2, FIX 3: a client that opens /events and never reads would

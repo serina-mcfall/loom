@@ -79,6 +79,52 @@ class TestNeedsYou(unittest.TestCase):
     def test_an_approved_pr_is_not_awaiting_review(self):
         self.assertEqual(needs_you(repo(prs=[pr(58, "x", review="APPROVED")])), [])
 
+    # ------------------------------------------------- audit 2026-08-05, H2
+    # `reviewDecision` is a FOUR-VALUED ENUM, and rank 2 tested it for
+    # truthiness. `REVIEW_REQUIRED` -- the exact state rank 2 exists to catch --
+    # is a truthy string, so it read as "already reviewed" and rank 2 fired only
+    # on `null`, i.e. only on repos with NO review requirement at all. On any
+    # repo configured the way this one is, the second-most-important alert in the
+    # product was unreachable.
+    #
+    # One test per value, so no value can regress unobserved again.
+
+    def test_a_review_required_pr_ranks_as_awaiting_review(self):
+        # THE REGRESSION GUARD. gh reports reviewDecision="REVIEW_REQUIRED" on
+        # any repo with required reviews -- including this one.
+        items = needs_you(repo(prs=[pr(58, "x", review="REVIEW_REQUIRED")]))
+        self.assertEqual([i["kind"] for i in items], ["pr_awaiting_review"])
+
+    def test_a_review_required_pr_with_failing_checks_ranks_as_failing_not_awaiting(self):
+        # Rank 4 still wins over rank 2: the spec's rank 2 is "no review, and
+        # checks NOT failing".
+        items = needs_you(repo(prs=[pr(58, "x", review="REVIEW_REQUIRED",
+                                       checks="failing")]))
+        self.assertEqual([i["kind"] for i in items], ["pr_failing"])
+
+    def test_a_changes_requested_pr_is_not_awaiting_review(self):
+        # Deliberately NOT rank 2. `CHANGES_REQUESTED` is blocked on the AUTHOR,
+        # and rank 2's stated rationale is "only a human moves it". An agent can
+        # act on requested changes, so promoting it here would dilute the alert.
+        #
+        # It is also invisible at every other rank, which is a real gap -- but
+        # closing it means adding a rank to the spec's ranking table, a design
+        # decision rather than a bug fix. Recorded in the remediation log instead
+        # of decided here.
+        self.assertEqual(
+            needs_you(repo(prs=[pr(58, "x", review="CHANGES_REQUESTED")])), [])
+
+    def test_a_draft_pr_is_exempt_even_when_a_review_is_required(self):
+        d = pr(58, "x", review="REVIEW_REQUIRED")
+        d["draft"] = True
+        self.assertEqual(needs_you(repo(prs=[d])), [])
+
+    def test_an_unrecognised_review_decision_does_not_rank(self):
+        # A value GitHub has not invented yet must not be guessed into an alert.
+        # Silence is the safe direction: a false rank 2 cries wolf on the strip.
+        self.assertEqual(
+            needs_you(repo(prs=[pr(58, "x", review="SOME_FUTURE_STATE")])), [])
+
     def test_a_draft_pr_is_not_awaiting_review(self):
         d = pr(58, "x")
         d["draft"] = True
@@ -94,6 +140,35 @@ class TestNeedsYou(unittest.TestCase):
 
     def test_a_stopped_agent_with_a_clean_tree_is_quiet(self):
         self.assertEqual(needs_you(repo(worktrees=[tree("a", "fa", "stopped")])), [])
+
+    # ------------------------------------------------- audit 2026-08-05, H3
+    def test_a_stopped_agent_with_an_unmeasurable_tree_is_flagged_not_silenced(self):
+        """`dirty: None` means CANNOT TELL, and rank 5 guards work at risk.
+
+        Before H3, a failed `git status` returned Dirty(0,0,0), so a stopped agent
+        whose tree could not be measured was indistinguishable from one that had
+        committed everything -- and rank 5, whose whole rationale is "work at risk
+        of being lost", was silently suppressed exactly when it mattered.
+
+        Silence is NOT the safe direction here. Every other guard in this codebase
+        stays quiet when it cannot tell, because a false alarm cries wolf. Rank 5
+        is the opposite: the cost of a false alarm is one glance, and the cost of a
+        false silence is lost work. So an unmeasurable tree with a stopped agent
+        raises rank 5 and says plainly that it could not be measured.
+        """
+        t = tree("a", "fa", "stopped")
+        t["dirty"] = None
+        items = needs_you(repo(worktrees=[t]))
+        self.assertEqual([(i["rank"], i["kind"]) for i in items],
+                         [(5, "stopped_dirty")])
+        self.assertIn("could not", items[0]["detail"].lower())
+
+    def test_a_working_agent_with_an_unmeasurable_tree_does_not_rank(self):
+        # Negative control: rank 5 is about STOPPED or STALE agents. An
+        # unmeasurable tree under a live agent is not work at risk.
+        t = tree("a", "fa", "working")
+        t["dirty"] = None
+        self.assertEqual(needs_you(repo(worktrees=[t])), [])
 
     def test_items_come_back_in_rank_order(self):
         items = needs_you(repo(

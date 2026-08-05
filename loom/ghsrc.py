@@ -4,11 +4,24 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from .runner import Runner
 
-SSH_RE = re.compile(r"^git@github\.com:(?P<repo>[^/]+/[^/]+?)(?:\.git)?$")
-HTTPS_RE = re.compile(r"^https://github\.com/(?P<repo>[^/]+/[^/]+?)(?:\.git)?/?$")
+# Owner and repository names must each START with an alphanumeric.
+#
+# WHY THAT MATTERS MORE THAN IT LOOKS: the extracted value is passed straight to
+# `gh` as the argument of `-R`, so `--upload-pack=evil/x` would arrive as another
+# OPTION rather than as a repository. The design doc flagged this in its own
+# threat-model gap table and said "the regex should reject it" -- a stated
+# intention that nothing enforced until now. Audit 2026-08-05, finding M2.
+#
+# GitHub names cannot begin with a hyphen, so this rejects nothing legitimate.
+# Inner hyphens, dots and underscores are all still allowed, because real
+# repositories are full of them and breaking those would be worse than the hole.
+_NAME = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+SSH_RE = re.compile(rf"^git@github\.com:(?P<repo>{_NAME}/{_NAME}?)(?:\.git)?$")
+HTTPS_RE = re.compile(rf"^https://github\.com/(?P<repo>{_NAME}/{_NAME}?)(?:\.git)?/?$")
 
 PR_FIELDS = "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,updatedAt"
 ISSUE_FIELDS = "number,title,labels,assignees"
@@ -76,7 +89,15 @@ def derive_checks(rollup: list[dict]) -> str:
     return "pending"
 
 
-def _fetch_json(runner: Runner, root: str, argv: list[str], name: str):
+def _fetch_json(runner: Runner, root: str, argv: list[str],
+                name: str) -> tuple[Any, SourceStatus]:
+    """Run a `gh --json` command. Returns (parsed, status); parsed is None on failure.
+
+    `Any` is honest here rather than lazy: this is the boundary where an external
+    tool's JSON enters the process, and its shape is whatever `gh` decided to emit.
+    The callers immediately narrow it into `PullRequest` / `Issue` and record a
+    degraded source for anything that will not fit.
+    """
     r = runner.run(argv, cwd=root)
     if not r.ok:
         first = (r.stderr or "unknown error").strip().splitlines()[0]

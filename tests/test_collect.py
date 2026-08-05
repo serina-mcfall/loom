@@ -20,28 +20,63 @@ def pr(number, branch):
 class TestFindFlags(unittest.TestCase):
     def test_pr_whose_branch_has_no_worktree_is_an_orphan(self):
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
-        flags = find_flags(trees, [pr(56, "fix/other")], "/t", lambda d: ["a"])
+        flags = find_flags(trees, [pr(56, "fix/other")], ["/t"], lambda d: ["a"])
         self.assertEqual([f["kind"] for f in flags], ["orphan_pr"])
         self.assertIn("56", flags[0]["subject"])
 
     def test_pr_with_a_worktree_is_not_flagged(self):
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
-        self.assertEqual(find_flags(trees, [pr(1, "feature-a")], "/t", lambda d: ["a"]), [])
+        self.assertEqual(find_flags(trees, [pr(1, "feature-a")], ["/t"], lambda d: ["a"]), [])
 
     def test_directory_that_is_not_a_worktree_is_stale(self):
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
-        flags = find_flags(trees, [], "/t", lambda d: ["a", "leftover"], lambda p: True)
+        flags = find_flags(trees, [], ["/t"], lambda d: ["a", "leftover"], lambda p: True)
         self.assertEqual([f["kind"] for f in flags], ["stale_dir"])
         self.assertIn("leftover", flags[0]["subject"])
+
+    # ------------------------------------------------- audit 2026-08-05, M3
+    def test_worktrees_spanning_two_parents_are_both_scanned(self):
+        """`_worktree_parent` returned None unless EXACTLY one parent was found, and
+        `find_flags` skipped the whole stale-directory scan when it was None.
+
+        So a fleet whose worktrees live in two sibling directories -- or one worktree
+        placed somewhere else -- lost stale-directory detection entirely, with no
+        flag and no entry in `sources`. Absence of a warning reads as absence of a
+        problem. The design doc's own grounding observations list "1 directory left
+        behind that was no longer a git worktree" as a motivating fact.
+        """
+        trees = [Worktree("/t/one/a", "a", "fa", "h"),
+                 Worktree("/t/two/b", "b", "fb", "h")]
+
+        def listdir(d):
+            return {"/t/one": ["a", "leftover-one"],
+                    "/t/two": ["b", "leftover-two"]}.get(d, [])
+
+        flags = find_flags(trees, [], ["/t/one", "/t/two"], listdir, lambda p: True)
+        self.assertEqual(sorted(f["subject"] for f in flags),
+                         ["leftover-one", "leftover-two"])
+
+    def test_every_parent_directory_of_a_worktree_is_discovered(self):
+        from loom.collect import _worktree_parents
+        trees = [Worktree("/t/one/a", "a", "fa", "h"),
+                 Worktree("/t/two/b", "b", "fb", "h")]
+        self.assertEqual(_worktree_parents(trees, "/repo/root"), ["/t/one", "/t/two"])
+
+    def test_the_repos_own_parent_is_not_scanned_as_a_worktree_parent(self):
+        # The main checkout sits beside its siblings under ~/Launchpad; scanning
+        # there would flag every unrelated project as a stale directory.
+        from loom.collect import _worktree_parents
+        trees = [Worktree("/home/x/Launchpad/loom", "loom", "main", "h")]
+        self.assertEqual(_worktree_parents(trees, "/home/x/Launchpad/loom"), [])
 
     def test_a_tidy_fleet_produces_no_flags(self):
         # The negative control: this must be able to return nothing.
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
-        self.assertEqual(find_flags(trees, [pr(1, "feature-a")], "/t", lambda d: ["a"]), [])
+        self.assertEqual(find_flags(trees, [pr(1, "feature-a")], ["/t"], lambda d: ["a"]), [])
 
     def test_hidden_directories_are_ignored(self):
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
-        self.assertEqual(find_flags(trees, [], "/t", lambda d: ["a", ".workmux_trash_x"]), [])
+        self.assertEqual(find_flags(trees, [], ["/t"], lambda d: ["a", ".workmux_trash_x"]), [])
 
     def test_a_plain_file_is_not_flagged(self):
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
@@ -52,7 +87,7 @@ class TestFindFlags(unittest.TestCase):
         def isdir(p):
             return p == "/t/a"  # notes.txt is a file, not a directory
 
-        self.assertEqual(find_flags(trees, [], "/t", listdir, isdir), [])
+        self.assertEqual(find_flags(trees, [], ["/t"], listdir, isdir), [])
 
     def test_a_directory_containing_dot_git_is_someone_elses_checkout_not_stale(self):
         trees = [Worktree("/t/a", "a", "feature-a", "h")]
@@ -64,7 +99,7 @@ class TestFindFlags(unittest.TestCase):
                 return [".git", "README.md"]
             return []
 
-        self.assertEqual(find_flags(trees, [], "/t", listdir, lambda p: True), [])
+        self.assertEqual(find_flags(trees, [], ["/t"], listdir, lambda p: True), [])
 
     def test_a_directory_with_no_dot_git_is_still_flagged(self):
         # Positive control: the isdir/.git guard must not disable detection entirely.
@@ -77,14 +112,125 @@ class TestFindFlags(unittest.TestCase):
                 return ["README.md"]
             return []
 
-        flags = find_flags(trees, [], "/t", listdir, lambda p: True)
+        flags = find_flags(trees, [], ["/t"], listdir, lambda p: True)
         self.assertEqual([f["kind"] for f in flags], ["stale_dir"])
         self.assertIn("leftover", flags[0]["subject"])
 
 
+class TestSubprocessBudget(unittest.TestCase):
+    """Audit 2026-08-05, finding M4.
+
+    Loom is meant to sit open all day on a laptop, refreshing every 2 seconds. One
+    tick used to spawn 12 processes for a SINGLE worktree -- 360 a minute -- and the
+    cost is `5 + 7n`, so the six-worktree fleet the design was built against came to
+    47 per tick and roughly 1,410 a minute.
+
+    This test is a budget, deliberately: a bare count with the breakdown written
+    down, so anyone adding a git call to the per-worktree path has to come here and
+    justify raising it rather than quietly costing every user another 30 spawns a
+    minute.
+    """
+
+    # Per tick, include_gh=False, one worktree:
+    #   repo-level   default_branch, worktree list, tmux, origin remote,
+    #                recent_commits                                        = 5
+    #   per worktree rev-list (ahead/behind), status (counts AND paths),
+    #                merge-base, diff merge-base..HEAD                     = 4
+    BUDGET = 9
+
+    def _runner(self):
+        return ReplayRunner({
+            "git symbolic-ref --short refs/remotes/origin/HEAD":
+                {"returncode": 0, "stdout": "origin/main\n", "stderr": ""},
+            "git worktree list --porcelain": {
+                "returncode": 0,
+                "stdout": "worktree /repo\nHEAD abc123\nbranch refs/heads/main\n\n",
+                "stderr": ""},
+            "tmux list-panes -a -F #{pane_current_path}\t#{pane_current_command}\t"
+            "#{pane_pid}\t#{window_name}":
+                {"returncode": 1, "stdout": "", "stderr": "no server"},
+            "git rev-list --left-right --count main...HEAD":
+                {"returncode": 0, "stdout": "0\t0\n", "stderr": ""},
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git remote get-url origin":
+                {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only -z base1 HEAD":
+                {"returncode": 0, "stdout": "", "stderr": ""},
+            "git log --all --no-merges -n 40 "
+            "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat":
+                {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+
+    def test_one_tick_over_one_worktree_stays_within_budget(self):
+        runner = self._runner()
+        collect(runner, "/repo", "/nonexistent-state-dir", include_gh=False)
+        self.assertLessEqual(
+            len(runner.calls), self.BUDGET,
+            f"spawned {len(runner.calls)} processes, budget is {self.BUDGET}:\n" +
+            "\n".join("    " + " ".join(c) for c in runner.calls))
+
+    def test_the_status_call_is_not_repeated_per_worktree(self):
+        # The specific saving: `git status` is asked ONCE and its answer feeds both
+        # the dirty counts and the collisions path set.
+        runner = self._runner()
+        collect(runner, "/repo", "/nonexistent-state-dir", include_gh=False)
+        statuses = [c for c in runner.calls if c[:2] == ("git", "status")]
+        self.assertEqual(len(statuses), 1, f"status called {len(statuses)} times")
+
+    def test_no_per_worktree_git_log_is_issued(self):
+        # `_last_commit` cost one `git log` per worktree per tick to populate a field
+        # no consumer read (audit L2). Removed rather than left as a silent tax.
+        runner = self._runner()
+        collect(runner, "/repo", "/nonexistent-state-dir", include_gh=False)
+        per_tree_logs = [c for c in runner.calls if c[:3] == ("git", "log", "-1")]
+        self.assertEqual(per_tree_logs, [])
+
+
 class TestSchema(unittest.TestCase):
     def test_version_is_pinned(self):
-        self.assertEqual(SCHEMA_VERSION, 1)
+        """Bumped to 2 on 2026-08-05 when three fields were removed from the contract.
+
+        This test exists to make a bump DELIBERATE, and it did its job: the removals
+        (worktree `head`, PR `worktree`, issue `assignees`) were read by no consumer,
+        so nothing broke -- but "probably nobody noticed" is how a version field
+        becomes decoration. Audit finding L2.
+        """
+        self.assertEqual(SCHEMA_VERSION, 2)
+
+
+class TestDroppedFields(unittest.TestCase):
+    """Audit 2026-08-05, finding L2.
+
+    Fifteen fields were produced and read by nothing. Each was resolved as render,
+    validate, or drop -- these are the drops: no consumer read them and none plausibly
+    would, so they were pure schema noise and drift surface.
+
+    `root` and `worktrees[].path` were deliberately KEPT despite also being unrendered.
+    They are skill-facing: an agent reporting "worktree X needs you" has to be able to
+    say where X is. That is now written down in the contract rather than left for
+    someone to rediscover as apparently-dead weight.
+    """
+
+    def _snapshot(self):
+        runner = TestSubprocessBudget()._runner()
+        return collect(runner, "/repo", "/nonexistent-state-dir", include_gh=False)
+
+    def test_a_worktree_no_longer_carries_its_head_sha(self):
+        # The commits ticker already shows shas, and an eighth column in the
+        # Worktrees table costs more than the field is worth.
+        wt = self._snapshot()["repos"][0]["worktrees"][0]
+        self.assertNotIn("head", wt)
+
+    def test_a_worktree_still_carries_the_fields_the_page_renders(self):
+        # Positive control: the drop must not have taken anything live with it.
+        wt = self._snapshot()["repos"][0]["worktrees"][0]
+        for k in ("dir", "path", "branch", "ahead", "behind", "dirty", "agent", "pr"):
+            self.assertIn(k, wt)
+
+    def test_the_repo_still_carries_the_skill_facing_paths(self):
+        repo = self._snapshot()["repos"][0]
+        self.assertIn("root", repo)
 
 
 class TestReap(unittest.TestCase):
@@ -137,7 +283,7 @@ class TestCollectSources(unittest.TestCase):
                 {"returncode": 1, "stdout": "", "stderr": "no server running"},
             "git rev-list --left-right --count main...HEAD":
                 {"returncode": 0, "stdout": "0\t0\n", "stderr": ""},
-            "git status --porcelain=v1": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
             "git remote get-url origin":
                 {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
             "gh pr list -R you/example --state open --limit 50 --json "

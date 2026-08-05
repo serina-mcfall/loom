@@ -1,7 +1,8 @@
 # Loom — design
 
 - **Date:** 2026-08-03
-- **Status:** approved, not yet planned
+- **Status:** built and merged (PR #2, 2026-08-03). Audited 2026-08-05; see
+  `docs/audits/` for findings and the corrections list at the end of this file
 - **Author:** Serina McFall, with Claude
 - **Supersedes:** nothing
 
@@ -37,7 +38,7 @@ These were chosen explicitly and are not open for re-litigation during planning.
 | Moment of use | Glance on return, live in a pane, **and** triage ranking |
 | Scope | Current repository, with an `--all` flag widening to every Launchpad child |
 | Form factor | Local browser dashboard **and** a Claude Code skill |
-| Agent state source | Hooks say what an agent is doing; the process list corroborates that it exists |
+| Agent state source | Hooks say what an agent is doing; the process list corroborates that it exists — **the second half was found unsound during execution and replaced by timestamp freshness; see correction 7.** The decision is left as it was taken rather than rewritten, because a spec that quietly matches whatever got built teaches nobody anything |
 | v1 slice | Everything `git` + `gh` + hooks can feed. Cost/telemetry and replay deferred |
 | Home | Its own repository (`loom`); the skill lives in `serina-skills` and drives it |
 
@@ -93,63 +94,106 @@ into telling different stories.
 
 ## The snapshot contract
 
-The interface between every unit. Versioned, because two consumers parse it.
+The interface between every unit. Versioned, because **three** consumers parse it: the
+page, the skill, and `.github/workflows/checks.yml`'s end-to-end smoke test.
+
+> This said "two consumers" until 2026-08-05, and the undercount had a consequence. The
+> schema-2 bump updated the code and this document and missed the workflow, which
+> asserted `snap["schema"] == 1` against a literal — CI went red on all four Python
+> versions. The workflow now imports `SCHEMA_VERSION` rather than hardcoding it, so a
+> future bump cannot leave it behind. Counting the consumers wrong is not a documentation
+> nit when the count is the reason a consumer gets forgotten.
+
+Updated 2026-08-05 for **schema 2**. Every field below is now either rendered by the
+page, validated, or explicitly marked skill-facing — see finding L2.
 
 ```jsonc
 {
-  "schema": 1,
+  "schema": 2,
   "generated_at": "2026-08-03T07:45:00+12:00",
   "duration_ms": 340,
   "repos": [{
     "name": "example-repo",
-    "root": "/home/you/Projects/example-repo",
+    "root": "/home/you/Projects/example-repo",   // SKILL-FACING: unrendered, but an
+                                                 // agent saying "worktree X needs you"
+                                                 // has to be able to say where X is
     "issue_repo": "you/example-repo",
     "default_branch": "main",
 
     "worktrees": [{
       "dir": "feature-b",
-      "path": "/home/you/Projects/example-worktrees/feature-b",
+      "path": "/home/you/Projects/example-worktrees/feature-b",  // SKILL-FACING, as above
       "branch": "fix/feature-b-silent-load",
-      "head": "3f0d19c",
-      "ahead": 3,
-      "behind": 1,
-      "dirty": { "staged": 0, "unstaged": 7, "untracked": 2 },
-      "last_commit": { "sha": "3f0d19c", "when": "…", "subject": "…" },
+      "ahead": 3,           // null means COULD NOT BE DETERMINED, never 0 (finding H3)
+      "behind": 1,          // the page renders null as "?"
+      "dirty": { "staged": 0, "unstaged": 7, "untracked": 2 },   // or null, same rule
       "agent": {
         "state": "waiting",
         "source": "hook",
         "since": "2026-08-03T07:41:00+12:00",
-        "pid": 2176024,
-        "tmux_window": "wm-feature-b"
+        "pid": 2176024,       // a debugging aid, NEVER a liveness signal
+        "tmux_window": "wm-feature-b",
+        "age_seconds": 42.0   // null means cannot tell; rank 1 needs the difference
       },
       "pr": 58
     }],
+    // REMOVED in schema 2: `head` (the ticker shows shas) and `last_commit` (one
+    // `git log` per worktree per tick for a field nothing read — finding M4).
 
     "prs": [{
       "number": 58, "title": "…", "branch": "fix/feature-b-silent-load",
       "draft": false, "review": null, "checks": "passing",
-      "worktree": "feature-b", "updated_at": "…"
+      "updated_at": "…"
     }],
+    // REMOVED in schema 2: the PR's `worktree` back-link. Each worktree already
+    // carries its `pr`, and two mappings for one relationship is a drift surface.
 
-    "issues": [{ "number": 55, "title": "…", "labels": ["bug","client"], "assignees": [] }],
+    "issues": [{ "number": 55, "title": "…", "labels": ["bug","client"] }],
+    // REMOVED in schema 2: `assignees`. No consumer read it, and a snapshot piped
+    // into a conversation transcript need not name people.
 
     "collisions": [{ "file": "src/board.ts", "branches": ["feature-a","feature-c"] }],
 
     "commits": [{ "when": "…", "branch": "feature-c", "sha": "161948b",
-                  "subject": "…", "files": 2, "add": 64, "del": 1 }],
+                  "subject": "…", "files": 2, "add": 64, "dele": 1 }],
+                  // `dele`, not `del`: `del` is a Python keyword. Corrected 2026-08-05.
 
     "flags": [{ "kind": "orphan_pr", "severity": "warn", "subject": "PR #56",
                 "detail": "branch fix/feature-a-null-case has no worktree" }],
 
     "sources": [{ "name": "git", "ok": true },
+                { "name": "git:default-branch", "ok": true },
+                // ADDED in schema 2 (finding H3): per-fact honesty. `sources` was
+                // per-SUBSYSTEM only, so a failed `git status` for one worktree
+                // showed up nowhere and rendered as a confident 0.
+                { "name": "git:worktree-facts", "ok": false,
+                  "error": "could not measure … for 1 worktree(s): feature-b" },
+                { "name": "git:collisions", "ok": true },
                 { "name": "gh:prs", "ok": true },
                 { "name": "gh:issues", "ok": false, "error": "HTTP 403 rate limited",
                   "last_good": "2026-08-03T07:41:00+12:00" },
                 { "name": "hooks", "ok": true },
-                { "name": "tmux", "ok": true }]
-  }]
+                { "name": "tmux", "ok": true }],
+
+    "gh_cached_at": "2026-08-03T07:41:00+12:00",  // present only when gh data is
+                                                  // being served from cache
+    "needs_you": [ /* per-repo ranked items; see Ranking */ ]
+  }],
+
+  // Attached by `loom.view.finalise`, the single boundary both consumers call:
+  "needs_you": [ /* the whole fleet's items, rank-ordered, each labelled with its
+                    repo when there is more than one */ ],
+  "announcement": "3 items need your attention. Top: …",   // one sentence for a
+                                                           // screen reader, debounced
+  "badge": { "state": "live", "label": "● live", "detail": "collected 0s ago",
+             "stale_after_seconds": 10 }
 }
 ```
+
+**`schema` is validated, not decorative.** The page refuses to render a snapshot whose
+version it does not recognise, and that refusal outranks every other badge state
+including a collection error: if the shape cannot be trusted, no field read out of it
+can be either. Before 2026-08-05 neither consumer looked at the number at all.
 
 ### `agent.state` values
 
@@ -158,7 +202,7 @@ The interface between every unit. Versioned, because two consumers parse it.
 | `working` | A hook reported activity, uncontradicted by the process source |
 | `waiting` | A `Notification` hook fired — blocked on a permission prompt or input |
 | `idle` | Session alive, turn finished, awaiting a prompt |
-| `stale` | Hook claims activity, but the process source sees agents and none for this tree |
+| `stale` | Hook claims activity, but its timestamp has stopped advancing (see correction 7) |
 | `unknown` | Process alive, no hook data — hooks not installed for this session |
 | `stopped` | Session ended |
 
@@ -189,11 +233,18 @@ form confirmed against `--help` before it is relied on.
 
 ### Stale state is caught, not trusted
 
-A crashed agent leaves a state file reading `working` forever. `collect` corroborates the
-hook's claim against the process source. If the process source can see agents but none for
-that worktree, the state is `stale` — never `working`. If it can see nothing at all, nothing
-is corroborated and the hook stands: declaring every agent dead on no evidence is worse than
-reporting a state that may be a few seconds old.
+A crashed agent leaves a state file reading `working` forever, so an uncorroborated claim
+must eventually expire. **Staleness is decided by timestamp freshness, not by the process
+list** — the hook rewrites `since` on every event, so a live session's timestamp keeps
+advancing and a dead one's freezes. A dead process cannot update a clock.
+
+`working` claims expire after 15 minutes; `waiting` and `idle` after 12 hours, because a
+parked agent legitimately stops refreshing while it waits. A timestamp that cannot be read
+at all — missing, timezone-naive, unparseable, or in the future — means **cannot tell**, and
+never concludes death.
+
+The process list takes no part in this, in either direction. See correction 7 for why the
+original pane-corroboration rule was removed as unsound.
 
 ## Panels
 
@@ -212,7 +263,9 @@ reporting a state that may be a few seconds old.
 | Collisions | File × branch matrix of uncommitted and unmerged changes against the merge-base |
 | Ticker | Recent commits across all worktrees, newest first |
 | PRs & issues | Open PRs with review and check state; open issues |
-| Loose ends | Orphan PRs, stale directories, branches with no issue |
+| Loose ends | Orphan PRs and stale directories. ("Branches with no issue" was
+  listed here and never implemented — no code path produces such a flag. Removed
+  from the description 2026-08-05 rather than left as a phantom feature) |
 | Sources | Which sources answered, which failed, how stale the cached ones are |
 
 The collisions panel compares **uncommitted and unmerged** changes against the
@@ -256,11 +309,15 @@ without bound.
 2026-08-03. Using it for staleness would mark every hooked agent `stale` immediately,
 defeating the authoritative source entirely.
 
-**Staleness comes from corroboration.** Hooks say WHAT an agent is doing; the process list
-says WHETHER it exists. An active hook state is downgraded to `stale` only when the process
-source can see agents but none for that worktree. When it can see nothing at all — no tmux
-server — nothing is corroborated and the hook state stands, because declaring every agent
-dead on no evidence is the worse lie.
+**Staleness comes from the timestamp, not from the process list.** Hooks say WHAT an agent
+is doing, and the freshness of their own `since` field says WHETHER that claim is still
+current. An active state expires when its timestamp stops advancing past the limit for that
+state. A timestamp that cannot be read means cannot tell, and never concludes death —
+declaring an agent dead on no evidence is the worse lie.
+
+The process list still supplies the `unknown` state, for a worktree with a live agent
+process and no hook data at all. It plays no part in staleness. Corrected 2026-08-03; see
+correction 7.
 
 **Privacy boundary.** The state file contains only: session id, working directory, state,
 tool name, timestamp, pid. No prompts, no model output, no file contents, no environment.
@@ -287,8 +344,14 @@ Requirements, not aspirations. Each is verifiable.
   carries text, so a screen reader hears "board.ts, feature-c, collides" rather than silence.
 - The "needs you" strip is `aria-live="polite"`, **debounced to ~15 seconds**. A 2-second
   live region would make a screen reader unusable.
-- Every collapse control is a real `<button>`, keyboard reachable, `:focus-visible`
-  styled, with an honest `aria-expanded`.
+- **If any collapse control is added**, it must be a real `<button>`, keyboard
+  reachable, `:focus-visible` styled, with an honest `aria-expanded`. Made
+  conditional 2026-08-05: the page has no interactive controls, so as an
+  unconditional requirement this was trivially satisfied and verified nothing,
+  while reading in a list of "requirements, not aspirations" as a passed check.
+- Every scrollable region is focusable (`tabindex=0`) and named, so a keyboard
+  user can reach and scroll it and a screen reader does not meet an unlabelled
+  group. Added 2026-08-05 — this is the requirement the page actually has.
 - `prefers-reduced-motion` disables every pulse and transition.
 - Dark theme, with all text verified at 4.5:1 contrast or better.
 
@@ -304,7 +367,8 @@ measured value ever occur.
 |---|---|---|
 | "gh unavailable" banner | Working `gh` returning genuinely zero issues must render `0 issues`, **not** the banner | `gh` exit 403 must render the banner |
 | "waiting on you" row | Hook state with no waiting session — row absent | A `Notification` state file — row present |
-| Stale agent | Live pid with `working` — reports `working` | Dead pid with `working` — reports `stale` |
+| Stale agent | A `working` record refreshed seconds ago — reports `working` | A `working` record older than the 15-minute limit — reports `stale` |
+| Unreadable timestamp | — | Missing, naive, unparseable or future `since` — reports the raw state, never `stale` |
 | Collision detection | Two worktrees editing different files — no collision | Two worktrees editing one file — collision |
 | Repo pinning | — | Every recorded `gh` command line names the resolved `issue_repo` explicitly |
 
@@ -369,7 +433,8 @@ Each was verified rather than assumed, on 2026-08-03:
 
 | Gap | Severity | Why |
 |---|---|---|
-| **A sandboxed agent may be reported `stale`** | **Medium** | Staleness corroborates against `pane_current_command ∈ {claude, node}`. An agent in a sandboxed lane may present as `bwrap`, `docker` or a wrapper, so Loom would see no agent and mark a healthy one dead. Untested — needs a lane running to confirm |
+| ~~A sandboxed agent may be reported `stale`~~ | **obsolete** | Withdrawn 2026-08-05. This described staleness corroborating against `pane_current_command ∈ {claude, node}`, which correction 7 removed: the process list plays no part in staleness. A sandboxed agent presenting as `bwrap` or `docker` now only affects the `unknown` fallback, which is informational. Kept struck through rather than deleted so the reasoning is not silently lost |
+| **A live agent can still be reported `stale`** | **Low** | Timestamp expiry is what replaced pane corroboration, and the 15-minute `working` limit only bounds what the harness bounds. An MCP call has no cap, and neither does a long generation with no tool call, so a genuinely live agent CAN read `stale`. That is the acceptable direction — a false `stale` costs a glance, a false `working` is the lie the module exists to prevent — but it is a real false-positive source |
 | A hook state file is trusted absolutely | Low | Any agent can claim any state, or a `cwd` belonging to another worktree, masking a real agent there. Writing the file already requires local access |
 | `origin_repo` accepts a leading `--` | Low | `git@github.com:--upload-pack=evil/x.git` yields `--upload-pack=evil/x`, which is then passed as a `-R` value. Requires write access to `.git/config` first. GitHub names cannot start with `-`, so the regex should reject it |
 | The snapshot contains `$HOME` paths | Low | The CLI's output names the operator's home directory and repository layout, and the skill pipes that into a conversation transcript |
@@ -419,6 +484,48 @@ matters.
 **6. Task 0 needed a second mechanism.** Silencing the tooling artefacts took both a
 committed `.gitignore` and the shared `.git/info/exclude`. A `.gitignore` on `main` reaches
 no other branch's checkout, so on its own it changed nothing across six worktrees.
+
+**7. Pane corroboration was unsound and is gone.** *Added 2026-08-05, from PR #12 — the
+largest behavioural change in the project, and it was missing from this list for two days,
+which is exactly what this section exists to prevent.*
+
+The original rule read: tmux has panes somewhere but none in this worktree, therefore the
+agent here is gone. **That inference does not hold.** tmux running proves nothing about where
+agents live — an agent in a plain terminal, a VS Code terminal, or a pane whose cwd differs
+has zero panes "here" while being entirely alive. On 2026-08-03 this reported the very
+session that was reading the snapshot as `stale`.
+
+It cannot work in principle either: pane count cannot bound how many agents are alive when
+agents need no pane at all. So the surplus variant (`panes_here < active` → stale the rest)
+was unsound for the same reason and went with it.
+
+The signal that does work was already in the data. The hook rewrites `since` on every event,
+so a live session's timestamp keeps advancing and a dead one's freezes. A dead process cannot
+update a clock.
+
+A first repair attempt let a pane in the worktree exempt sessions from ageing, and that
+failed too: a pane cannot be attributed to a particular session, because the recorded pid is
+the hook's own transient `sh -c` wrapper. One pane therefore exempted every session there,
+and a dead session beside a live one kept reporting `working` — the forbidden direction. So
+panes take no part in staleness now, in either direction.
+
+**8. Rank 2 had a second unreachable condition.** *Added 2026-08-05.* Correction 1 fixed the
+checks half of rank 2 and missed the review half. `reviewDecision` is a four-valued enum
+(`null`, `REVIEW_REQUIRED`, `APPROVED`, `CHANGES_REQUESTED`) and the code tested it for
+truthiness, so `REVIEW_REQUIRED` — the exact state rank 2 exists to catch — read as "already
+reviewed". Rank 2 fired only on `null`, meaning only on repositories with no review
+requirement at all. It is now an explicit whitelist. `CHANGES_REQUESTED` remains unranked
+and undecided: it is blocked on the author, so it fails rank 2's rationale, and giving it a
+tier of its own is a change to the ranking table above rather than a bug fix.
+
+**9. `sources` needed per-fact granularity, not just per-subsystem.** *Added 2026-08-05.*
+The error-honesty rule above was written for `gh` and enforced at subsystem granularity — one
+`git` entry, hardcoded `ok: true`. That left a gap one layer down: a failed `git rev-list` or
+`git status` for a single worktree returned `(0, 0)` and `Dirty(0,0,0)`, so a worktree 12
+ahead with 9 uncommitted files rendered identically to one in perfect sync. This document's
+founding incident, reproduced inside the Worktrees panel. Facts that cannot be determined are
+now `null` rather than `0`, render as `?`, and are named by two new sources,
+`git:worktree-facts` and `git:collisions`.
 
 ## Grounding
 

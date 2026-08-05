@@ -1,10 +1,30 @@
 :root {
   --bg: #0d1117; --panel: #161b22; --line: #30363d;
-  --text: #e6edf3;      /* 16.0:1 on --bg (computed, WCAG 2.1 relative luminance) */
-  --dim: #9fb0c0;       /* 8.5:1 on --bg  */
-  --warn: #ffb86b;      /* 11.1:1 on --bg */
-  --bad: #ff8f8f;       /* 8.6:1 on --bg  */
-  --good: #7ee2a8;      /* 12.0:1 on --bg */
+  /* Every ratio below is computed against BOTH --bg and --panel with the WCAG 2.1
+     relative-luminance formula, and the WORSE of the two is recorded. Panels sit
+     on --panel, so checking only --bg would overstate every one of them.
+     All pass AA for normal text (>= 4.5:1); the weakest is 6.7:1. */
+  --text: #e6edf3;      /* 14.6:1 worst */
+  --dim: #9fb0c0;       /*  7.8:1 worst */
+  --warn: #ffb86b;      /* 10.1:1 worst */
+  --bad: #ff8f8f;       /*  7.9:1 worst */
+  --good: #7ee2a8;      /* 11.0:1 worst */
+
+  /* Identity hues — these say WHAT a thing is, never how urgent it is. */
+  --time: #7fd6e8;      /* 10.5:1 worst — timestamps */
+  --branch: #c9adf5;    /*  8.9:1 worst — branch names */
+  --num: #8fbcf5;       /*  8.8:1 worst — PR and issue numbers */
+
+  /* The rank ramp: warm and loud at 1, cool and quiet at 6, so the strip reads
+     as a gradient of urgency at a glance. COLOUR IS NEVER THE SIGNAL — the rank
+     number is printed in every chip, and the detail text says why in words.
+     This only makes an ordering already present in the text easier to scan. */
+  --rank1: #ff8f8f;     /*  7.9:1 worst — blocked on a human right now */
+  --rank2: #ffb86b;     /* 10.1:1 worst — parked, awaiting review */
+  --rank3: #f2d68a;     /* 12.2:1 worst — collision brewing */
+  --rank4: #d8cf9a;     /* 11.0:1 worst — failing checks */
+  --rank5: #a9bdd4;     /*  9.0:1 worst — stopped with work behind */
+  --rank6: #94a3b3;     /*  6.7:1 worst — loose ends */
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text);
@@ -15,27 +35,95 @@ h2 { font-size: .8rem; margin: 0 0 .6rem; color: var(--dim);
 .bar { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;
        padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
 footer.bar { border: 0; border-top: 1px solid var(--line); }
-main { display: grid; gap: 1rem; padding: 1rem;
-       grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); }
+main { display: flex; flex-direction: column; gap: 1rem; padding: 1rem; }
+/* One grid per repo, so each repo's panels wrap independently.
+   `align-items: start` is what stops the stretching: grid rows default to
+   equal height, so one long Issues panel dragged every panel beside it to
+   match and left great empty gaps under the short ones. */
+.panels { display: grid; gap: .8rem; align-items: start;
+          grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); }
 .panel { background: var(--panel); border: 1px solid var(--line);
-         border-radius: 6px; padding: .9rem; min-width: 0; }
-.panel--needs { grid-column: 1 / -1; }
+         border-radius: 6px; padding: .7rem .8rem; min-width: 0; }
+/* A panel whose content is unbounded (34 open issues, 40 commits) gets a ceiling
+   and scrolls inside itself, so one busy repo cannot push the rest off screen.
+   Focusable, because a region that scrolls must be reachable without a mouse. */
+.capped { max-height: 15rem; overflow-y: auto; }
+
+/* The two table panels carry the most columns, so they get twice the width rather
+   than abbreviating their headers away. `span 2` clamps harmlessly to a
+   single-column grid on a narrow viewport, so this does not need a media query
+   and the panels still reflow on a phone. */
+.panel--wide { grid-column: span 2; }
+/* A repo section is a labelled group of panels, with its name as the h2. */
+.repo { display: flex; flex-direction: column; gap: .6rem; }
+.repo + .repo { margin-top: .4rem; padding-top: 1rem;
+                border-top: 1px solid var(--line); }
+.repo > h2 { font-size: .9rem; color: var(--text); margin: 0; }
+h3 { font-size: .8rem; margin: 0 0 .6rem; color: var(--dim);
+     letter-spacing: .12em; text-transform: uppercase; }
 .scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: .3rem .6rem; border-bottom: 1px solid var(--line);
          white-space: nowrap; }
 th { color: var(--dim); font-weight: 400; }
 ul, ol { margin: 0; padding: 0; list-style: none; }
-.needs-item { padding: .35rem 0; border-bottom: 1px solid var(--line); }
-.rank { display: inline-block; min-width: 2.4rem; color: var(--dim); }
+/* The rank accent runs down the left edge as well as colouring the chip, so the
+   ordering is visible in peripheral vision when scanning a long strip. */
+.needs-item { padding: .3rem 0 .3rem .6rem; border-bottom: 1px solid var(--line);
+              border-left: 3px solid var(--line); }
+.rank { display: inline-block; min-width: 2.4rem; color: var(--dim);
+        font-weight: 700; }
+.needs-item .repo-tag { color: var(--dim); }
+.rank--1 { border-left-color: var(--rank1); } .rank--1 .rank { color: var(--rank1); }
+.rank--2 { border-left-color: var(--rank2); } .rank--2 .rank { color: var(--rank2); }
+.rank--3 { border-left-color: var(--rank3); } .rank--3 .rank { color: var(--rank3); }
+.rank--4 { border-left-color: var(--rank4); } .rank--4 .rank { color: var(--rank4); }
+.rank--5 { border-left-color: var(--rank5); } .rank--5 .rank { color: var(--rank5); }
+.rank--6 { border-left-color: var(--rank6); } .rank--6 .rank { color: var(--rank6); }
+
+/* Worktrees: zebra striping to separate rows, and state-coloured numbers.
+   `nth-child(even)` on a tint, not a hue, so it never competes with the state
+   colours it sits behind. */
+tbody tr:nth-child(even) { background: #1b212a; }
+.n--ahead { color: var(--good); }
+.n--behind { color: var(--warn); }
+.n--dirty { color: var(--warn); }
+.n--zero { color: var(--dim); }
+/* An unmeasurable fact reads "?" in italics — never mistakable for a number. */
+.n--unknown { color: var(--dim); font-style: italic; }
+
+/* Collisions: the word stays, the colour just makes the pattern jump out. */
+.collide { color: var(--bad); font-weight: 700; }
+.collide--no { color: var(--dim); }
+
+/* PRs and issues: number, branch and each state get their own carrier. */
+.pr-num { color: var(--num); font-weight: 700; }
+.pr-branch { color: var(--branch); }
+.issue-num { color: var(--num); }
+.issue-label { color: var(--dim); }
+.st--good { color: var(--good); }
+.st--warn { color: var(--warn); }
+.st--bad { color: var(--bad); }
+.st--dim { color: var(--dim); }
+
+/* Commits: time first and coloured so the eye can walk the column vertically. */
+.c-time { color: var(--time); }
+.c-branch { color: var(--branch); }
+.ticker li { padding: .1rem 0; }
 .state--waiting { color: var(--warn); }
 .state--stale, .state--stopped { color: var(--bad); }
 .state--working { color: var(--good); }
 .state--unknown, .state--none { color: var(--dim); }
-.src--bad { color: var(--bad); }
-.src--ok  { color: var(--good); }
+.src--bad  { color: var(--bad); }
+.src--ok   { color: var(--good); }
+.src--warn { color: var(--warn); }
 .sources { display: flex; gap: 1.2rem; flex-wrap: wrap; }
 .summary { margin: 0; color: var(--dim); }
+/* The repo identity line, below the heading. The heading stays the bare name
+   so the section's accessible name does not change every 2 seconds. */
+.repo-meta { margin: 0; color: var(--dim); font-size: .8rem; }
+.cached-at { margin: .4rem 0 0; color: var(--dim); font-size: .75rem; }
+.c-sha { color: var(--dim); }
 .conn { margin-left: auto; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden;
                    clip-path: inset(50%); white-space: nowrap; }

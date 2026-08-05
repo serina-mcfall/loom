@@ -3,7 +3,34 @@
 A local dashboard showing what a fleet of coding agents is doing across git worktrees:
 who is blocked, which PRs are waiting on a human, and which worktrees are about to collide.
 
-Design: `docs/superpowers/specs/2026-08-03-loom-design.md`
+- **Design:** [`docs/superpowers/specs/2026-08-03-loom-design.md`](docs/superpowers/specs/2026-08-03-loom-design.md)
+- **Audits and remediation:** [`docs/audits/`](docs/audits/README.md)
+
+## Requirements
+
+**Python 3.10 or newer. Nothing else — no pip install, no build step, no lockfile.**
+
+Every import is standard library or first-party, enforced on every push by
+`scripts/check_stdlib_only.py`, which fails on an import it has never heard of rather
+than allowing it.
+
+The floor was measured rather than assumed, by running the suite and a real
+`loom snapshot` on each interpreter:
+
+| Version | Result |
+|---|---|
+| 3.9 | Loom itself runs, but `check_stdlib_only.py` does not — `sys.stdlib_module_names` arrived in 3.10 |
+| **3.10** | **everything works, including the project's own checks — the declared floor** |
+| 3.11 · 3.12 · 3.13 | pass |
+
+CI runs the suite on all four supported versions, so the floor is enforced rather
+than claimed.
+
+> There is deliberately **no `pyproject.toml`**. It would be the conventional home
+> for `requires-python`, but the absence of any dependency file is itself the
+> evidence the design cites for "no third-party supply chain" — a claim a reader can
+> check in one `ls`. Trading that for one metadata line was not worth it, so the
+> requirement is stated here and enforced in CI instead.
 
 ## Usage
 
@@ -42,5 +69,15 @@ and says so plainly when they told it nothing.
 ## Running the tests
 
 ```bash
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s tests    # 283 tests, no network, no fixtures to fetch
+python3 scripts/check_stdlib_only.py     # every import is stdlib or first-party
 ```
+
+Both run on every push, across Python 3.10 through 3.13.
+
+## Licence
+
+[MIT](LICENSE) — © 2026 Serina McFall.
+
+Chosen deliberately: the zero-dependency constraint exists so Loom can be dropped into
+any repository, and without a licence nobody legally could.

@@ -14,7 +14,11 @@ from . import agents as agents_mod
 from . import ghsrc, gitsrc
 from .runner import Runner
 
-SCHEMA_VERSION = 1
+# Bumped to 2 on 2026-08-05: three fields left the contract (worktree `head`,
+# PR `worktree`, issue `assignees`). No consumer read any of them, so nothing broke
+# -- but declining to bump because "probably nobody noticed" is how a version field
+# becomes decoration. Audit finding L2.
+SCHEMA_VERSION = 2
 
 
 def _now_iso() -> str:
@@ -22,9 +26,32 @@ def _now_iso() -> str:
 
 
 def find_flags(trees: list[gitsrc.Worktree], prs: list[ghsrc.PullRequest],
-               worktree_parent: str | None,
+               worktree_parents: list[str] | None,
                listdir: Callable[[str], list[str]] = os.listdir,
                isdir: Callable[[str], bool] = os.path.isdir) -> list[dict]:
+    """Loose ends: PRs with no worktree, and directories that are no longer one.
+
+    `worktree_parents` is a LIST because a fleet's worktrees need not share one
+    parent. It used to be a single value that `_worktree_parent` returned only when
+    exactly one candidate existed, which silently disabled the stale-directory scan
+    for any fleet spread across two directories. Audit 2026-08-05, finding M3.
+    """
+    # A BARE STRING HERE FAILS SILENTLY AND MUST NOT BE TOLERATED.
+    #
+    # `str` is iterable, so passing the old single-parent value would loop over its
+    # CHARACTERS -- listdir("/"), listdir("t") -- and produce a plausible empty
+    # result instead of an error. When this parameter changed from `str` to
+    # `list[str]`, seven existing tests kept passing for exactly that reason: they
+    # assert an empty list, and character-iteration happened to produce one. Only
+    # the single test expecting a flag caught it.
+    #
+    # A wrong answer that looks like a right one is the failure mode this whole
+    # project refuses, so this converts it into a loud one.
+    if isinstance(worktree_parents, str):
+        raise TypeError(
+            "worktree_parents must be a list of paths, not a string: "
+            f"{worktree_parents!r} would be iterated character by character")
+
     flags: list[dict] = []
     branches = {t.branch for t in trees if t.branch}
 
@@ -34,16 +61,17 @@ def find_flags(trees: list[gitsrc.Worktree], prs: list[ghsrc.PullRequest],
                           "subject": f"PR #{p.number}",
                           "detail": f"branch {p.branch} has no worktree"})
 
-    if worktree_parent:
-        known = {t.dir for t in trees}
+    known = {t.dir for t in trees}
+    seen: set[str] = set()
+    for parent in worktree_parents or []:
         try:
-            entries = listdir(worktree_parent)
+            entries = listdir(parent)
         except OSError:
             entries = []
         for name in sorted(entries):
-            if name.startswith(".") or name in known:
+            if name.startswith(".") or name in known or name in seen:
                 continue
-            full = os.path.join(worktree_parent, name)
+            full = os.path.join(parent, name)
             if not isdir(full):
                 continue
             try:
@@ -52,15 +80,22 @@ def find_flags(trees: list[gitsrc.Worktree], prs: list[ghsrc.PullRequest],
                 inner = []
             if ".git" in inner:
                 continue
+            seen.add(name)
             flags.append({"kind": "stale_dir", "severity": "warn", "subject": name,
                           "detail": f"{name} is not a git worktree"})
     return flags
 
 
-def _worktree_parent(trees: list[gitsrc.Worktree], root: str) -> str | None:
-    parents = {os.path.dirname(t.path.rstrip("/")) for t in trees
-               if os.path.dirname(t.path.rstrip("/")) != os.path.dirname(root.rstrip("/"))}
-    return sorted(parents)[0] if len(parents) == 1 else None
+def _worktree_parents(trees: list[gitsrc.Worktree], root: str) -> list[str]:
+    """Every distinct directory that holds a worktree, except the repo's own.
+
+    The repo's own parent is excluded because the main checkout sits beside
+    unrelated sibling projects (all of ~/Launchpad, for this fleet), and scanning
+    there would flag every one of them as a stale directory.
+    """
+    own = os.path.dirname(root.rstrip("/"))
+    return sorted({os.path.dirname(t.path.rstrip("/")) for t in trees
+                   if os.path.dirname(t.path.rstrip("/")) != own})
 
 
 def reap(state_dir: str, older_than_hours: int = 24,
@@ -87,18 +122,6 @@ def reap(state_dir: str, older_than_hours: int = 24,
     return removed
 
 
-def _last_commit(runner: Runner, path: str) -> dict | None:
-    """The worktree's own HEAD commit, not the repo-wide log used for the ticker."""
-    r = runner.run(["git", "log", "-1", "--format=%h%x1f%aI%x1f%s"], cwd=path)
-    if not r.ok or not r.stdout.strip():
-        return None
-    parts = r.stdout.strip().split("\x1f")
-    if len(parts) != 3:
-        return None
-    sha, when, subject = parts
-    return {"sha": sha, "when": when, "subject": subject}
-
-
 def collect(runner: Runner, root: str,
             state_dir: str = agents_mod.DEFAULT_STATE_DIR,
             include_gh: bool = True) -> dict:
@@ -110,16 +133,30 @@ def collect(runner: Runner, root: str,
     sessions = agents_mod.read_state_dir(state_dir)
     panes = agents_mod.tmux_panes(runner)
 
+    # ONE `git status` PER WORKTREE, feeding both the dirty counts and the collisions
+    # path set. Asking twice was two extra processes per worktree per tick for
+    # information already in hand -- audit finding M4.
+    statuses = {t.path: gitsrc.worktree_status(runner, t.path) for t in trees}
+
     for t in trees:
-        t.ahead, t.behind = gitsrc.ahead_behind(runner, t.path, base)
-        t.dirty = gitsrc.dirty_counts(runner, t.path)
+        # None from either source means CANNOT TELL, and is carried through to the
+        # snapshot as null rather than flattened to 0 -- see gitsrc and audit
+        # finding H3. `sources` names the affected worktrees below.
+        ab = gitsrc.ahead_behind(runner, t.path, base)
+        t.ahead, t.behind = ab if ab is not None else (None, None)
+        s = statuses[t.path]
+        t.dirty = s.dirty if s is not None else None
+
+    unmeasured = sorted(t.dir for t in trees
+                        if t.ahead is None or t.behind is None or t.dirty is None)
 
     repo = ghsrc.origin_repo(runner, root)
     if not include_gh:
         # Skip the gh calls entirely rather than fetch-and-discard: the whole point
         # of this flag is to avoid the network call. Report not-fetched, never ok=True
         # — an empty list must never be mistaken for "zero open PRs".
-        prs, issues = [], []
+        prs: list[ghsrc.PullRequest] = []
+        issues: list[ghsrc.Issue] = []
         not_fetched = "not fetched this cycle"
         pr_status = ghsrc.SourceStatus("gh:prs", False, not_fetched)
         issue_status = ghsrc.SourceStatus("gh:issues", False, not_fetched)
@@ -145,19 +182,19 @@ def collect(runner: Runner, root: str,
         # one row and stale in the next.
         a = agents_mod.agent_for(t.path, sessions, panes, now)
         tree_dicts.append({
-            "dir": t.dir, "path": t.path, "branch": t.branch, "head": t.head,
-            "ahead": t.ahead, "behind": t.behind, "dirty": asdict(t.dirty),
+            "dir": t.dir, "path": t.path, "branch": t.branch,
+            "ahead": t.ahead, "behind": t.behind,
+            "dirty": asdict(t.dirty) if t.dirty is not None else None,
             "agent": asdict(a), "pr": by_branch.get(t.branch or ""),
-            "last_commit": _last_commit(runner, t.path),
         })
 
-    pr_dicts = []
-    for p in prs:
-        d = asdict(p)
-        d["worktree"] = tree_by_branch.get(p.branch)
-        pr_dicts.append(d)
+    # No reverse `worktree` link: each worktree already carries its `pr` number and
+    # the page renders that direction. Two mappings for one relationship is a drift
+    # surface with no consumer. Audit finding L2.
+    pr_dicts = [asdict(p) for p in prs]
 
-    parent = _worktree_parent(trees, root)
+    parents = _worktree_parents(trees, root)
+    found_collisions, undetermined = gitsrc.collisions(runner, trees, base, statuses)
     return {
         "schema": SCHEMA_VERSION,
         "generated_at": _now_iso(),
@@ -169,16 +206,36 @@ def collect(runner: Runner, root: str,
             "default_branch": base,
             "worktrees": tree_dicts,
             "prs": pr_dicts,
-            "issues": [asdict(i) for i in issues],
-            "collisions": gitsrc.collisions(runner, trees, base),
+            # `assignees` is dropped from each issue: no consumer read it, and a
+            # snapshot piped into a conversation transcript need not name people.
+            # Audit finding L2.
+            "issues": [{k: v for k, v in asdict(i).items() if k != "assignees"}
+                       for i in issues],
+            "collisions": found_collisions,
             "commits": [asdict(c) for c in gitsrc.recent_commits(runner, root)],
-            "flags": find_flags(trees, prs, parent),
+            "flags": find_flags(trees, prs, parents),
             "sources": [
                 asdict(ghsrc.SourceStatus("git", True)),
                 asdict(ghsrc.SourceStatus(
                     "git:default-branch", base_resolved,
                     None if base_resolved else
                     f"could not resolve origin/HEAD; falling back to a {base!r} guess")),
+                # Per-fact honesty for the worktrees and collisions panels.
+                # `sources` reported at subsystem granularity only -- one `git`
+                # entry, hardcoded True -- so a per-worktree git failure showed up
+                # nowhere and rendered as a confident 0. These two entries are the
+                # honesty channel for exactly that. Audit 2026-08-05, finding H3.
+                asdict(ghsrc.SourceStatus(
+                    "git:worktree-facts", not unmeasured,
+                    None if not unmeasured else
+                    f"could not measure ahead/behind or dirty counts for "
+                    f"{len(unmeasured)} worktree(s): {', '.join(unmeasured)}")),
+                asdict(ghsrc.SourceStatus(
+                    "git:collisions", not undetermined,
+                    None if not undetermined else
+                    f"could not enumerate changed files for {len(undetermined)} "
+                    f"worktree(s), so they are absent from the matrix: "
+                    f"{', '.join(undetermined)}")),
                 asdict(pr_status),
                 asdict(issue_status),
                 asdict(ghsrc.SourceStatus("hooks", True)),
