@@ -134,6 +134,41 @@ class TestRepoRoots(unittest.TestCase):
         self.assertEqual(repo_roots(False, runner), [os.getcwd()])
 
 
+class TestUsage(unittest.TestCase):
+    """Audit 2026-08-05, finding L10.
+
+    An explicit help request is a SUCCESSFUL invocation. Exiting 2 makes
+    `loom --help` fail inside any script or Makefile that checks status, and it
+    conflates "you asked for help" with "you got the arguments wrong" -- which must
+    stay distinguishable, because only one of them is an error.
+    """
+
+    def _run(self, argv):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(argv)
+        return code, buf.getvalue()
+
+    def test_asking_for_help_succeeds(self):
+        for argv in (["--help"], ["-h"], ["help"]):
+            with self.subTest(argv=argv):
+                code, out = self._run(argv)
+                self.assertEqual(code, 0, f"{argv} should succeed")
+                self.assertIn("usage:", out)
+
+    def test_no_arguments_at_all_is_still_an_error(self):
+        # Negative control: bare `loom` is a misuse, not a help request, and must
+        # keep its non-zero exit or this change would hide real mistakes.
+        code, out = self._run([])
+        self.assertEqual(code, 2)
+        self.assertIn("usage:", out)
+
+    def test_an_unknown_command_is_still_an_error(self):
+        code, out = self._run(["frobnicate"])
+        self.assertEqual(code, 2)
+        self.assertIn("usage:", out)
+
+
 class TestRenderText(unittest.TestCase):
     """An empty panel and a broken panel must never read the same."""
 

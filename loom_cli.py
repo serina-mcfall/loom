@@ -143,10 +143,21 @@ def render_text(snapshot: dict) -> str:
     return "\n".join(lines)
 
 
+HELP_FLAGS = {"--help", "-h", "help"}
+
+
 def main(argv: list[str]) -> int:
     if not argv:
+        # Bare `loom` is a misuse, not a help request. Distinct exit codes keep those
+        # two apart, because only one of them is an error.
         print(USAGE)
         return 2
+    if argv[0] in HELP_FLAGS:
+        # An explicit help request is a SUCCESSFUL invocation. Exiting 2 made
+        # `loom --help` fail inside any script or Makefile that checks status.
+        # Audit 2026-08-05, finding L10.
+        print(USAGE)
+        return 0
     command, *rest = argv
     if command == "snapshot":
         # finalise last, on the finished snapshot: one boundary for both consumers,

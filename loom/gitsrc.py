@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .runner import Runner
 
@@ -12,10 +12,6 @@ class Dirty:
     staged: int = 0
     unstaged: int = 0
     untracked: int = 0
-
-    @property
-    def total(self) -> int:
-        return self.staged + self.unstaged + self.untracked
 
 
 @dataclass
