@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from .runner import Runner
 
@@ -88,7 +89,15 @@ def derive_checks(rollup: list[dict]) -> str:
     return "pending"
 
 
-def _fetch_json(runner: Runner, root: str, argv: list[str], name: str):
+def _fetch_json(runner: Runner, root: str, argv: list[str],
+                name: str) -> tuple[Any, SourceStatus]:
+    """Run a `gh --json` command. Returns (parsed, status); parsed is None on failure.
+
+    `Any` is honest here rather than lazy: this is the boundary where an external
+    tool's JSON enters the process, and its shape is whatever `gh` decided to emit.
+    The callers immediately narrow it into `PullRequest` / `Issue` and record a
+    degraded source for anything that will not fit.
+    """
     r = runner.run(argv, cwd=root)
     if not r.ok:
         first = (r.stderr or "unknown error").strip().splitlines()[0]

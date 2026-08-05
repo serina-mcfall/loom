@@ -157,7 +157,8 @@ def collect(runner: Runner, root: str,
         # Skip the gh calls entirely rather than fetch-and-discard: the whole point
         # of this flag is to avoid the network call. Report not-fetched, never ok=True
         # — an empty list must never be mistaken for "zero open PRs".
-        prs, issues = [], []
+        prs: list[ghsrc.PullRequest] = []
+        issues: list[ghsrc.Issue] = []
         not_fetched = "not fetched this cycle"
         pr_status = ghsrc.SourceStatus("gh:prs", False, not_fetched)
         issue_status = ghsrc.SourceStatus("gh:issues", False, not_fetched)

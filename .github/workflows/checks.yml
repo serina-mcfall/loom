@@ -127,6 +127,45 @@ jobs:
                 + (f": {', '.join(degraded)}" if degraded else ""))
           PY
 
+  # --------------------------------------------------------------- the types
+  # A SEPARATE JOB ON PURPOSE, and this is the whole reason it is separate.
+  #
+  # `tests and constraints` has no install step, and that is its guarantee: if it
+  # ever needs `pip install`, the zero-dependency constraint has been broken. A
+  # type checker is a DEVELOPMENT dependency, not a runtime one, so it must not be
+  # allowed to weaken that signal. Putting mypy in its own job keeps both true --
+  # the tests job still proves Loom runs on a bare interpreter, and the code still
+  # gets checked.
+  #
+  # WHY THIS EARNED ITS PLACE: run for the first time during the 2026-08-05 audit
+  # remediation, mypy immediately found `body` being used for both `str` and `bytes`
+  # in one function, where an f-string would silently have emitted "b'...'" if
+  # anything were reordered. It also found the `last_good` field that had been
+  # declared and never assigned since v1. Audit finding M5.
+  #
+  # --allow-any-generics, not full --strict: bare `dict` is used idiomatically
+  # throughout this codebase and annotating 39 of them buys nothing. Everything
+  # else --strict checks is on, because those are the checks that find defects.
+  types:
+    name: types
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pinned. An unpinned checker turns somebody else's release into a red build
+      # on a branch that changed nothing.
+      - name: Install mypy
+        run: python3 -m pip install --quiet mypy==2.3.0
+
+      - name: Type check
+        run: mypy --strict --allow-any-generics loom/ loom_cli.py hooks/ scripts/
+
   # ---------------------------------------------------------------- the gate
   # Separate job on purpose. `tests and constraints` answers "is the code sound?"
   # This answers "did a human-run review vouch for THIS commit?" — a different
@@ -173,12 +212,30 @@ jobs:
           want = os.environ["HEAD_SHA"]
 
           def block(msg):
+              # THE REMEDIATION MUST NAME SOMETHING THAT EXISTS.
+              #
+              # This used to say `.claude/skills/review-final/verdict.sh`, a path
+              # that does not exist in this repository -- `.claude/` holds one
+              # gitignored stamp file. A contributor hitting this gate followed the
+              # instructions to a missing script, and a gate whose escape hatch is
+              # undocumented is a gate people work around. Audit 2026-08-05, M6.
+              #
+              # No path is named now, deliberately: the script ships inside the
+              # serina-skills plugin, whose cache directory is VERSION-specific
+              # (serina/0.6.0/skills/review-final/verdict.sh today, something else
+              # after the next update). Any literal path here would rot. The skill
+              # knows where its own script lives, so the instruction is to invoke
+              # the skill.
               print(f"BLOCKED  {msg}")
               print()
               print("This branch has no review recorded for its current state.")
-              print("  1. Run the review-final skill.")
-              print("  2. .claude/skills/review-final/verdict.sh record ready <PLAN_FILE>")
+              print("  1. Run the review-final skill (serina:review-final).")
+              print("  2. Ask it to record the verdict:  verdict.sh record ready")
+              print("     -- it re-runs the objective checks and REFUSES to write")
+              print("        READY if they fail, so a claim cannot outrun the tests.")
               print("  3. Commit .superpowers/verdict.json and push.")
+              print()
+              print("verdict.sh ships with the skill, not with this repo.")
               sys.exit(1)
 
           # Absence blocks. A review killed by turn exhaustion writes nothing, and

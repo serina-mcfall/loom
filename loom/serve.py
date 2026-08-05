@@ -299,7 +299,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 while True:
                     with _lock:
-                        body = json.dumps(_snapshot)
+                        frame = json.dumps(_snapshot)
                     # EVERY TICK IS A FRAME, DELIBERATELY.
                     #
                     # This used to compare `body` against the previous one and send
@@ -314,7 +314,7 @@ class Handler(BaseHTTPRequestHandler):
                     # collecting, and a page that suppressed identical frames could
                     # not tell that apart from "nothing changed". On loopback, at one
                     # snapshot every two seconds, there is nothing to save.
-                    self.wfile.write(f"data: {body}\n\n".encode())
+                    self.wfile.write(f"data: {frame}\n\n".encode())
                     self.wfile.flush()
                     time.sleep(FAST_SECONDS)
             except (BrokenPipeError, ConnectionResetError, TimeoutError, socket.timeout):
