@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from .collect import SCHEMA_VERSION
 from .rank import rank_snapshot
 
 # How old a snapshot may be before the page stops calling it live.
@@ -38,6 +39,7 @@ _LABEL = {
     "live": "● live",
     "stale": "⚠ stale",
     "error": "✕ not collecting",
+    "incompatible": "✕ wrong schema",
 }
 
 
@@ -84,6 +86,22 @@ def badge(snap: dict, now: datetime | None = None) -> dict:
         # second copy of a policy that lives here.
         return {"state": state, "label": _LABEL[state], "detail": detail,
                 "stale_after_seconds": STALE_AFTER_SECONDS}
+
+    # SCHEMA FIRST, ABOVE EVERYTHING INCLUDING A REFRESH ERROR.
+    #
+    # The snapshot is versioned and the spec's stated reason is that "two consumers
+    # parse it and would otherwise drift silently" -- yet neither consumer ever read
+    # the number. A version field nothing validates is decoration: it records a
+    # promise nothing enforces, which is this project's own definition of a boundary
+    # that is not a boundary. Audit 2026-08-05, part of L2.
+    #
+    # It outranks the refresh error because if the shape cannot be trusted, no field
+    # read out of it can be either -- including `refresh_error` itself.
+    got = snap.get("schema")
+    if got != SCHEMA_VERSION:
+        return out("incompatible",
+                   f"snapshot schema is {got!r}, this page understands "
+                   f"{SCHEMA_VERSION} — refusing to read it")
 
     if snap.get("refresh_error"):
         return out("error", f"collection is failing: {snap['refresh_error']}")

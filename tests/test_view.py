@@ -17,6 +17,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
+from loom.collect import SCHEMA_VERSION
 from loom.view import STALE_AFTER_SECONDS, badge, finalise
 
 
@@ -27,11 +28,11 @@ def iso(delta_seconds: float = 0.0) -> str:
 
 class TestBadge(unittest.TestCase):
     def test_before_the_first_collection_it_is_connecting_not_live(self):
-        b = badge({"schema": 1, "repos": [], "collected": False})
+        b = badge({"schema": SCHEMA_VERSION, "repos": [], "collected": False})
         self.assertEqual(b["state"], "connecting")
 
     def test_a_fresh_snapshot_is_live(self):
-        b = badge({"collected": True, "generated_at": iso(), "refresh_error": None})
+        b = badge({"schema": SCHEMA_VERSION, "collected": True, "generated_at": iso(), "refresh_error": None})
         self.assertEqual(b["state"], "live")
 
     def test_a_refresh_error_is_an_error_however_fresh_the_stamp(self):
@@ -43,41 +44,41 @@ class TestBadge(unittest.TestCase):
         over every other signal, because it is the only one that says the data is
         not merely old but actively not being collected.
         """
-        b = badge({"collected": True, "generated_at": iso(),
+        b = badge({"schema": SCHEMA_VERSION, "collected": True, "generated_at": iso(),
                    "refresh_error": "KeyError: 'prs'"})
         self.assertEqual(b["state"], "error")
         self.assertIn("KeyError", b["detail"])
 
     def test_an_old_snapshot_is_stale_even_with_no_error(self):
-        b = badge({"collected": True, "generated_at": iso(-STALE_AFTER_SECONDS - 5),
+        b = badge({"schema": SCHEMA_VERSION, "collected": True, "generated_at": iso(-STALE_AFTER_SECONDS - 5),
                    "refresh_error": None})
         self.assertEqual(b["state"], "stale")
 
     def test_a_snapshot_just_inside_the_window_is_still_live(self):
-        b = badge({"collected": True, "generated_at": iso(-1), "refresh_error": None})
+        b = badge({"schema": SCHEMA_VERSION, "collected": True, "generated_at": iso(-1), "refresh_error": None})
         self.assertEqual(b["state"], "live")
 
     def test_a_missing_timestamp_is_not_reported_live(self):
         # Cannot tell how old it is, so it must not claim freshness. Silence in the
         # reassuring direction is the failure mode this whole project refuses.
-        b = badge({"collected": True, "refresh_error": None})
+        b = badge({"schema": SCHEMA_VERSION, "collected": True, "refresh_error": None})
         self.assertNotEqual(b["state"], "live")
 
     def test_a_naive_timestamp_is_not_reported_live(self):
         # A stamp with no offset gives a zone-dependent age -- the exact trap
         # loom/agents.py's `_age_seconds` refuses for hook records.
-        b = badge({"collected": True, "generated_at": "2026-08-05T12:00:00",
+        b = badge({"schema": SCHEMA_VERSION, "collected": True, "generated_at": "2026-08-05T12:00:00",
                    "refresh_error": None})
         self.assertNotEqual(b["state"], "live")
 
     def test_an_unparseable_timestamp_is_not_reported_live(self):
-        b = badge({"collected": True, "generated_at": "not a timestamp",
+        b = badge({"schema": SCHEMA_VERSION, "collected": True, "generated_at": "not a timestamp",
                    "refresh_error": None})
         self.assertNotEqual(b["state"], "live")
 
     def test_a_future_timestamp_is_not_reported_live(self):
         # Evidence of a broken producer, not of health -- same rule as _age_seconds.
-        b = badge({"collected": True, "generated_at": iso(3600), "refresh_error": None})
+        b = badge({"schema": SCHEMA_VERSION, "collected": True, "generated_at": iso(3600), "refresh_error": None})
         self.assertNotEqual(b["state"], "live")
 
     def test_every_state_carries_the_staleness_threshold_for_the_page(self):
@@ -88,9 +89,9 @@ class TestBadge(unittest.TestCase):
         threshold to notice that silence, and hardcoding it in loom.js would be a
         second copy of a policy that belongs here.
         """
-        for snap in ({"collected": False},
-                     {"collected": True, "generated_at": iso()},
-                     {"collected": True, "generated_at": iso(), "refresh_error": "x"}):
+        for snap in ({"schema": SCHEMA_VERSION, "collected": False},
+                     {"schema": SCHEMA_VERSION, "collected": True, "generated_at": iso()},
+                     {"schema": SCHEMA_VERSION, "collected": True, "generated_at": iso(), "refresh_error": "x"}):
             with self.subTest(snap=snap):
                 self.assertEqual(badge(snap)["stale_after_seconds"],
                                  STALE_AFTER_SECONDS)
@@ -103,10 +104,10 @@ class TestBadge(unittest.TestCase):
         JS lookup table nothing tests.
         """
         cases = [
-            {"collected": False},
-            {"collected": True, "generated_at": iso()},
-            {"collected": True, "generated_at": iso(-STALE_AFTER_SECONDS - 5)},
-            {"collected": True, "generated_at": iso(), "refresh_error": "boom"},
+            {"schema": SCHEMA_VERSION, "collected": False},
+            {"schema": SCHEMA_VERSION, "collected": True, "generated_at": iso()},
+            {"schema": SCHEMA_VERSION, "collected": True, "generated_at": iso(-STALE_AFTER_SECONDS - 5)},
+            {"schema": SCHEMA_VERSION, "collected": True, "generated_at": iso(), "refresh_error": "boom"},
         ]
         for snap in cases:
             b = badge(snap)
@@ -115,6 +116,51 @@ class TestBadge(unittest.TestCase):
                 # A word, not just a glyph: at least three letters of real text.
                 letters = [c for c in b["label"] if c.isalpha()]
                 self.assertGreaterEqual(len(letters), 3, f"glyph only: {b['label']!r}")
+
+
+class TestSchemaIsActuallyChecked(unittest.TestCase):
+    """Audit 2026-08-05, part of finding L2.
+
+    The snapshot is versioned, and the spec's stated reason is that "two consumers
+    parse it and would otherwise drift silently". Neither consumer ever looked at the
+    number. A version field nothing validates is decoration -- it records a promise
+    that nothing enforces, which is this project's own definition of a boundary that
+    is not a boundary.
+
+    A schema mismatch outranks every other badge state, including a refresh error: if
+    the shape cannot be trusted then no field read out of it can be either, and
+    reporting "live" over a snapshot this code does not understand would be the worst
+    lie available.
+    """
+
+    def test_a_matching_schema_is_not_flagged(self):
+        from loom.collect import SCHEMA_VERSION
+        b = badge({"schema": SCHEMA_VERSION, "collected": True,
+                   "generated_at": iso(), "refresh_error": None})
+        self.assertEqual(b["state"], "live")
+
+    def test_a_newer_schema_is_refused_rather_than_rendered(self):
+        from loom.collect import SCHEMA_VERSION
+        b = badge({"schema": SCHEMA_VERSION + 1, "collected": True,
+                   "generated_at": iso(), "refresh_error": None})
+        self.assertEqual(b["state"], "incompatible")
+        self.assertIn(str(SCHEMA_VERSION + 1), b["detail"])
+
+    def test_an_older_schema_is_refused_too(self):
+        b = badge({"schema": 0, "collected": True, "generated_at": iso()})
+        self.assertEqual(b["state"], "incompatible")
+
+    def test_a_mismatch_outranks_a_refresh_error(self):
+        b = badge({"schema": 999, "collected": True, "generated_at": iso(),
+                   "refresh_error": "KeyError: 'prs'"})
+        self.assertEqual(b["state"], "incompatible")
+
+    def test_a_snapshot_with_no_schema_at_all_is_refused(self):
+        # The module-level default before the first tick DOES carry one, so an absent
+        # schema means something built this dict that was not `collect`.
+        # NO "schema" KEY HERE ON PURPOSE -- that absence is the whole test.
+        b = badge({"collected": True, "generated_at": iso()})
+        self.assertEqual(b["state"], "incompatible")
 
 
 class TestAggregateNeeds(unittest.TestCase):
@@ -132,7 +178,7 @@ class TestAggregateNeeds(unittest.TestCase):
     """
 
     def _snap(self, *repos: dict) -> dict:
-        return {"schema": 1, "collected": True, "repos": list(repos)}
+        return {"schema": SCHEMA_VERSION, "collected": True, "repos": list(repos)}
 
     def _repo(self, name: str, **over) -> dict:
         base = {"name": name, "worktrees": [], "prs": [], "collisions": [],
@@ -269,7 +315,7 @@ class TestAnnouncement(unittest.TestCase):
             self._snap(self._item(2, "a", "d"), self._item(3, "b", "d"))))
 
     def test_finalise_attaches_the_announcement(self):
-        snap = finalise({"schema": 1, "collected": True, "repos": []})
+        snap = finalise({"schema": SCHEMA_VERSION, "collected": True, "repos": []})
         self.assertEqual(snap["announcement"], "Nothing needs you.")
 
 
@@ -280,7 +326,7 @@ class TestFinalise(unittest.TestCase):
 
     def _snap(self) -> dict:
         return {
-            "schema": 1, "collected": True, "generated_at": iso(),
+            "schema": SCHEMA_VERSION, "collected": True, "generated_at": iso(),
             "refresh_error": None,
             "repos": [{
                 "name": "one", "worktrees": [], "collisions": [], "flags": [],

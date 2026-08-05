@@ -14,7 +14,11 @@ from . import agents as agents_mod
 from . import ghsrc, gitsrc
 from .runner import Runner
 
-SCHEMA_VERSION = 1
+# Bumped to 2 on 2026-08-05: three fields left the contract (worktree `head`,
+# PR `worktree`, issue `assignees`). No consumer read any of them, so nothing broke
+# -- but declining to bump because "probably nobody noticed" is how a version field
+# becomes decoration. Audit finding L2.
+SCHEMA_VERSION = 2
 
 
 def _now_iso() -> str:
@@ -178,17 +182,16 @@ def collect(runner: Runner, root: str,
         # one row and stale in the next.
         a = agents_mod.agent_for(t.path, sessions, panes, now)
         tree_dicts.append({
-            "dir": t.dir, "path": t.path, "branch": t.branch, "head": t.head,
+            "dir": t.dir, "path": t.path, "branch": t.branch,
             "ahead": t.ahead, "behind": t.behind,
             "dirty": asdict(t.dirty) if t.dirty is not None else None,
             "agent": asdict(a), "pr": by_branch.get(t.branch or ""),
         })
 
-    pr_dicts = []
-    for p in prs:
-        d = asdict(p)
-        d["worktree"] = tree_by_branch.get(p.branch)
-        pr_dicts.append(d)
+    # No reverse `worktree` link: each worktree already carries its `pr` number and
+    # the page renders that direction. Two mappings for one relationship is a drift
+    # surface with no consumer. Audit finding L2.
+    pr_dicts = [asdict(p) for p in prs]
 
     parents = _worktree_parents(trees, root)
     found_collisions, undetermined = gitsrc.collisions(runner, trees, base, statuses)
@@ -203,7 +206,11 @@ def collect(runner: Runner, root: str,
             "default_branch": base,
             "worktrees": tree_dicts,
             "prs": pr_dicts,
-            "issues": [asdict(i) for i in issues],
+            # `assignees` is dropped from each issue: no consumer read it, and a
+            # snapshot piped into a conversation transcript need not name people.
+            # Audit finding L2.
+            "issues": [{k: v for k, v in asdict(i).items() if k != "assignees"}
+                       for i in issues],
             "collisions": found_collisions,
             "commits": [asdict(c) for c in gitsrc.recent_commits(runner, root)],
             "flags": find_flags(trees, prs, parents),

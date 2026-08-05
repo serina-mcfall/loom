@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from loom.agents import DEFAULT_STATE_DIR
-from loom.collect import collect
+from loom.collect import collect, SCHEMA_VERSION
 from loom.view import finalise
 from loom.runner import Runner, SubprocessRunner
 
@@ -120,7 +120,7 @@ def build_snapshot(all_repos: bool, include_gh: bool = True,
     # Timezone-aware on purpose: a naive stamp gives a zone-dependent age, the
     # same trap loom/agents.py's `_age_seconds` refuses.
     return {
-        "schema": 1,
+        "schema": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         "duration_ms": int((time.monotonic() - started) * 1000),
         "repos": repos,

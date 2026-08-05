@@ -189,7 +189,48 @@ class TestSubprocessBudget(unittest.TestCase):
 
 class TestSchema(unittest.TestCase):
     def test_version_is_pinned(self):
-        self.assertEqual(SCHEMA_VERSION, 1)
+        """Bumped to 2 on 2026-08-05 when three fields were removed from the contract.
+
+        This test exists to make a bump DELIBERATE, and it did its job: the removals
+        (worktree `head`, PR `worktree`, issue `assignees`) were read by no consumer,
+        so nothing broke -- but "probably nobody noticed" is how a version field
+        becomes decoration. Audit finding L2.
+        """
+        self.assertEqual(SCHEMA_VERSION, 2)
+
+
+class TestDroppedFields(unittest.TestCase):
+    """Audit 2026-08-05, finding L2.
+
+    Fifteen fields were produced and read by nothing. Each was resolved as render,
+    validate, or drop -- these are the drops: no consumer read them and none plausibly
+    would, so they were pure schema noise and drift surface.
+
+    `root` and `worktrees[].path` were deliberately KEPT despite also being unrendered.
+    They are skill-facing: an agent reporting "worktree X needs you" has to be able to
+    say where X is. That is now written down in the contract rather than left for
+    someone to rediscover as apparently-dead weight.
+    """
+
+    def _snapshot(self):
+        runner = TestSubprocessBudget()._runner()
+        return collect(runner, "/repo", "/nonexistent-state-dir", include_gh=False)
+
+    def test_a_worktree_no_longer_carries_its_head_sha(self):
+        # The commits ticker already shows shas, and an eighth column in the
+        # Worktrees table costs more than the field is worth.
+        wt = self._snapshot()["repos"][0]["worktrees"][0]
+        self.assertNotIn("head", wt)
+
+    def test_a_worktree_still_carries_the_fields_the_page_renders(self):
+        # Positive control: the drop must not have taken anything live with it.
+        wt = self._snapshot()["repos"][0]["worktrees"][0]
+        for k in ("dir", "path", "branch", "ahead", "behind", "dirty", "agent", "pr"):
+            self.assertIn(k, wt)
+
+    def test_the_repo_still_carries_the_skill_facing_paths(self):
+        repo = self._snapshot()["repos"][0]
+        self.assertIn("root", repo)
 
 
 class TestReap(unittest.TestCase):

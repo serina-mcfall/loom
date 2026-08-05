@@ -14,7 +14,7 @@ const STATE_LABEL = {
 
 const BADGE_CLASS = {
   live: "src--ok", connecting: "", stale: "src--warn", error: "src--bad",
-  disconnected: "src--bad",
+  disconnected: "src--bad", incompatible: "src--bad",
 };
 
 const el = (id) => document.getElementById(id);
@@ -103,6 +103,9 @@ function renderTrees(body, trees) {
     const th = text("th", t.dir);
     th.scope = "row";
     tr.append(th, text("td", t.branch || "detached"));
+    // `pr` links this tree to the review waiting on it. Em dash, not blank, so an
+    // empty cell is never mistaken for a rendering failure.
+    tr.append(text("td", t.pr ? `#${t.pr}` : "—", t.pr ? "pr-num" : "st--dim"));
     const state = (t.agent && t.agent.state) || "none";
     tr.append(text("td", STATE_LABEL[state] || state, `state--${state}`));
     // Colour only reinforces the number that is already printed. An unmeasurable
@@ -172,6 +175,11 @@ function renderPrs(box, repo) {
     li.append(text("span", review, REVIEW_CLASS[p.review] || "st--warn"));
     li.append(text("span", ", checks "));
     li.append(text("span", p.checks, CHECK_CLASS[p.checks] || "st--dim"));
+    // `updated_at` was fetched from gh and rendered nowhere (L2). Date only: the
+    // exact minute is noise next to "which of these has gone quiet".
+    if (p.updated_at) {
+      li.append(text("span", `, updated ${p.updated_at.slice(0, 10)}`, "c-time"));
+    }
     list.append(li);
   }
   for (const i of repo.issues) {
@@ -187,6 +195,12 @@ function renderPrs(box, repo) {
     list.append(text("li", "No open pull requests or issues."));
   }
   box.append(list);
+  // L7: the spec's Refresh table says "cached age is displayed" and its Panels table
+  // says "how stale the cached ones are". `gh_cached_at` was produced by
+  // apply_gh_cache and displayed nowhere, so both promises were unkept.
+  if (repo.gh_cached_at) {
+    box.append(text("p", `gh data cached at ${repo.gh_cached_at}`, "cached-at"));
+  }
 }
 
 function renderSources(list, sources) {
@@ -206,6 +220,14 @@ function renderTicker(ol, commits) {
     li.append(text("span", c.when.slice(11, 16) + " ", "c-time"));
     if (c.branch) li.append(text("span", c.branch + " ", "c-branch"));
     li.append(text("span", c.subject));
+    // sha, files and the +/- totals were all collected and rendered nowhere (L2).
+    // The sha is what you need to `git show` the thing you just read about.
+    li.append(text("span", ` ${c.sha}`, "c-sha"));
+    if (c.files) {
+      li.append(text("span", ` ${c.files}f `, "st--dim"));
+      li.append(text("span", `+${c.add}`, "st--good"));
+      li.append(text("span", ` \u2212${c.dele}`, "st--bad"));
+    }
     ol.append(li);
   }
 }
@@ -270,17 +292,24 @@ function buildRepoSection(repo, i) {
   const headId = `repo-${i}-h`;
   section.setAttribute("aria-labelledby", headId);
 
-  // h1 Loom > h2 repo name > h3 panels. One heading per repo, as agreed.
+  // h1 Loom > h2 repo name > h3 panels. One heading per repo.
+  //
+  // The heading is the repo NAME ONLY. It used to also carry the tree/PR/issue
+  // counts, which meant the section's accessible name changed every 2 seconds --
+  // a moving landmark label, which is disorienting to navigate by. The counts and
+  // the repo's identity live in a plain paragraph below instead.
   const heading = text("h2", repo.name);
   heading.id = headId;
-  section.append(heading);
+  const meta = text("p", "", "repo-meta");
+  section.append(heading, meta);
 
   const panels = document.createElement("div");
   panels.className = "panels";
 
   // Both tables get double width: six columns, and one column per branch, do not
   // fit a 20rem cell. Widening beats abbreviating the headers to glyphs.
-  const treesTable = tableWith(["Tree", "Branch", "Agent", "Ahead", "Behind", "Dirty"]);
+  const treesTable = tableWith(
+      ["Tree", "Branch", "PR", "Agent", "Ahead", "Behind", "Dirty"]);
   const treesPanel = panel(`repo-${i}-trees-h`, "Worktrees", "h3",
                            scrollBox(`repo-${i}-trees-h`, treesTable));
   treesPanel.classList.add("panel--wide");
@@ -313,7 +342,8 @@ function buildRepoSection(repo, i) {
   section.append(panels);
   return {
     section,
-    refs: { heading, treesBody: treesTable.tBodies[0], collTable, prsBox, ticker, sources },
+    refs: { heading, meta, treesBody: treesTable.tBodies[0], collTable, prsBox,
+            ticker, sources },
   };
 }
 
@@ -339,9 +369,19 @@ function syncRepos(repos) {
   for (const repo of repos) {
     const r = repoRefs.get(repo.name);
     if (!r) continue;
-    r.heading.textContent =
-      `${repo.name} — ${repo.worktrees.length} trees, ${repo.prs.length} PRs, ` +
-      `${repo.issues.length} issues`;
+    // `issue_repo` is which GitHub repository every `gh` call was pinned to, and
+    // `default_branch` is what ahead/behind is measured against -- both were
+    // produced and rendered nowhere (L2). Shown here because when
+    // `git:default-branch` degrades to a guess, seeing WHICH branch it guessed is
+    // the difference between a warning and an actionable one.
+    const n = (c, one, many) => `${c} ${c === 1 ? one : many}`;
+    r.meta.replaceChildren();
+    if (repo.issue_repo) r.meta.append(text("span", repo.issue_repo, "pr-branch"));
+    r.meta.append(text("span", ` · ${repo.default_branch || "?"} · `, "c-branch"));
+    r.meta.append(text("span",
+      [n(repo.worktrees.length, "tree", "trees"),
+       n(repo.prs.length, "PR", "PRs"),
+       n(repo.issues.length, "issue", "issues")].join(" · ")));
     renderTrees(r.treesBody, repo.worktrees);
     renderCollisions(r.collTable, repo.collisions, repo.worktrees);
     renderPrs(r.prsBox, repo);
@@ -379,6 +419,11 @@ function render(snapshot) {
   const parts = [`${repos.length} repo${repos.length === 1 ? "" : "s"}`,
                  `${trees} tree${trees === 1 ? "" : "s"}`];
   if (badge.detail) parts.push(badge.detail);
+  // duration_ms was produced every tick and rendered nowhere (L2). It is the
+  // only visible feedback on collection cost, which finding M4 was about.
+  if (snapshot.duration_ms !== undefined) {
+    parts.push(`${snapshot.duration_ms}ms`);
+  }
   el("summary").textContent = parts.join(" · ");
 
   renderNeeds(snapshot.needs_you || []);

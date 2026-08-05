@@ -285,6 +285,15 @@ class TestBuildSnapshot(unittest.TestCase):
                              "generated_at must carry an offset or its age cannot "
                              "be computed reliably")
 
+    def test_the_cli_and_the_collector_agree_on_the_schema_version(self):
+        # `build_snapshot` hardcoded `"schema": 1` while `collect` used the constant,
+        # so the two could drift apart in the one field whose entire job is to stop
+        # drift. Audit 2026-08-05, part of L2.
+        from loom.collect import SCHEMA_VERSION
+        runner = ReplayRunner(self._recordings())
+        snapshot = build_snapshot(False, include_gh=False, runner=runner)
+        self.assertEqual(snapshot["schema"], SCHEMA_VERSION)
+
     def test_duration_ms_is_a_non_negative_integer(self):
         runner = ReplayRunner(self._recordings())
         snapshot = build_snapshot(False, include_gh=False, runner=runner)

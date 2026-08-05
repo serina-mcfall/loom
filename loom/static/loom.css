@@ -119,6 +119,11 @@ tbody tr:nth-child(even) { background: #1b212a; }
 .src--warn { color: var(--warn); }
 .sources { display: flex; gap: 1.2rem; flex-wrap: wrap; }
 .summary { margin: 0; color: var(--dim); }
+/* The repo identity line, below the heading. The heading stays the bare name
+   so the section's accessible name does not change every 2 seconds. */
+.repo-meta { margin: 0; color: var(--dim); font-size: .8rem; }
+.cached-at { margin: .4rem 0 0; color: var(--dim); font-size: .75rem; }
+.c-sha { color: var(--dim); }
 .conn { margin-left: auto; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden;
                    clip-path: inset(50%); white-space: nowrap; }

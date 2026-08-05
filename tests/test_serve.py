@@ -28,6 +28,7 @@ from contextlib import redirect_stdout
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+from loom.collect import SCHEMA_VERSION
 from loom.runner import ReplayRunner
 from loom.serve import (
     Handler,
@@ -398,7 +399,8 @@ class TestRefreshStepSurvivesFailures(unittest.TestCase):
 
         The frozen snapshot must therefore not carry its old green badge onward.
         """
-        prev = {"schema": 1, "repos": [{"name": "example"}], "collected": True,
+        prev = {"schema": SCHEMA_VERSION, "repos": [{"name": "example"}],
+                "collected": True,
                 "generated_at": _now_iso(), "refresh_error": None,
                 "badge": {"state": "live", "label": "● live", "detail": ""}}
         with unittest.mock.patch("loom.serve._tick", side_effect=RuntimeError("boom")):
@@ -434,7 +436,7 @@ class TestCollectedMarker(unittest.TestCase):
              "print(json.dumps(serve._snapshot))"],
             capture_output=True, text=True, timeout=10, check=True,
         )
-        self.assertEqual(_json.loads(out.stdout), {"schema": 1, "repos": [], "collected": False})
+        self.assertEqual(_json.loads(out.stdout), {"schema": SCHEMA_VERSION, "repos": [], "collected": False})
 
     def test_a_tick_marks_its_snapshot_collected(self):
         runner = _fast_tick_runner()

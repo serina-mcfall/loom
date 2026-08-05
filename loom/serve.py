@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .collect import SCHEMA_VERSION
 from .runner import Runner
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -26,7 +27,7 @@ _lock = threading.Lock()
 # it, {"repos": []} is ambiguous between "nothing has been collected yet" and
 # "collection ran and there are genuinely no repos" — exactly the failure mode
 # the whole `sources` mechanism in loom.collect exists to prevent elsewhere.
-_snapshot: dict = {"schema": 1, "repos": [], "collected": False}
+_snapshot: dict = {"schema": SCHEMA_VERSION, "repos": [], "collected": False}
 
 
 def should_include_gh(now: float, last_slow: float, have_cache: bool) -> bool:
