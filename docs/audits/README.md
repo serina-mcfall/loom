@@ -36,6 +36,20 @@ Not findings, but deliberately left for a human:
 | Issues #3, #4, #6, #8 | Fixed on the branch, so they close on merge. Closing them now would claim `main` is fixed when it is not |
 | Issue #11 (tokens-and-cost panel) | A legitimate deferred feature, matching the spec's own out-of-scope list |
 
+### Now tracked as issues
+
+The two follow-ups from the `review-final` pass that will recur rather than sit still:
+
+| Issue | |
+|---|---|
+| [#14](https://github.com/serina-mcfall/loom/issues/14) | Every new branch inherits a stale READY verdict, and it reads as a broken gate |
+| [#15](https://github.com/serina-mcfall/loom/issues/15) | `HEAD` requests return 501, so anything health-checking the server sees it as broken |
+
+The remaining five are in PR #13's review comment: the duplicated fast-tick fixture,
+`/favicon.ico` 404s, `CHANGES_REQUESTED` unranked (a design decision), `types` not
+required by the ruleset (a gate change), and the loom skill's dead `hooks` constraint
+(which lives in `serina-skills`).
+
 ## If you are running the next one
 
 Do not re-run blind and do not grade an existing audit from its own text: verify each
