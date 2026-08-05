@@ -31,17 +31,17 @@ test is how a suite stops being evidence.
 | H6 | Green "live" badge over frozen data | High | **fixed** | `d21fd35` |
 | H7 | Skill checks a field the CLI never emits | High | **fixed (Loom side)** | `25974b0` |
 | H8 | `loom.js` has no test coverage | High | **fixed** | `d21fd35` |
-| M1 | Spec documents the abandoned staleness rule | Medium | pending | — |
-| M2 | `origin_repo` accepts a leading `--` | Medium | pending | — |
-| M3 | `stale_dir` flags silently disabled | Medium | pending | — |
-| M4 | 12 subprocess spawns per worktree per tick | Medium | pending | — |
-| M5 | CI runs no lint, typecheck, JS test or coverage | Medium | pending | — |
-| M6 | Verdict gate's remediation path does not exist | Medium | pending | — |
-| M7 | `role="status"` rewritten every 2s | Medium | pending | — |
-| M8 | `aria-live` toggling is an unreliable debounce | Medium | pending | — |
-| M9 | `serve` on a taken port raises a traceback | Medium | pending | — |
-| M10 | SSE change-suppression can never suppress | Medium | pending | — |
-| M11 | Refresh thread cannot be stopped | Medium | pending | — |
+| M1 | Spec documents the abandoned staleness rule | Medium | **fixed** | `0aca7c5` |
+| M2 | `origin_repo` accepts a leading `--` | Medium | **fixed** | `5404e46` |
+| M3 | `stale_dir` flags silently disabled | Medium | **fixed** | `5404e46` |
+| M4 | 12 subprocess spawns per worktree per tick | Medium | **fixed** | `04cd99d` |
+| M5 | CI runs no lint, typecheck, JS test or coverage | Medium | **fixed (typecheck)** | `c70610a` |
+| M6 | Verdict gate's remediation path does not exist | Medium | **fixed** | `c70610a` |
+| M7 | `role="status"` rewritten every 2s | Medium | **fixed** | `d21fd35` |
+| M8 | `aria-live` toggling is an unreliable debounce | Medium | **fixed** | `949c9da` |
+| M9 | `serve` on a taken port raises a traceback | Medium | **fixed** | `d29a075` |
+| M10 | SSE change-suppression can never suppress | Medium | **fixed** | `d29a075` |
+| M11 | Refresh thread cannot be stopped | Medium | **fixed** | `d29a075` |
 | L1 | Three dead declarations | Low | pending | — |
 | L2 | ~15 snapshot fields read by nothing | Low | pending | — |
 | L3 | Spec status stale | Low | pending | — |
@@ -496,6 +496,181 @@ After the CSS landed, the page appeared unchanged. Two separate causes, both rea
    means an edited `loom.css` keeps its URL forever, and the browser served the old
    one. Indistinguishable from the edit having failed. Now fixed with `no-store` and
    pinned by a test verified to fail without it.
+
+---
+
+## The Medium tier
+
+All 11 fixed. Grouped by the files they touched rather than by number, so each commit
+stayed reviewable.
+
+### M2 + M3 · `5404e46` — the data layer
+
+**M2 RED** — three of four cases accepted an option-shaped remote:
+
+```
+AssertionError: '--upload-pack=evil/x' is not None
+AssertionError: '-x/y' is not None
+AssertionError: 'owner/-oProxyCommand=evil' is not None
+```
+
+**GREEN** — owner and repo must each begin with an alphanumeric. Verified that
+legitimate names with inner hyphens, dots and underscores still parse
+(`serina-mcfall/loom`, `some_org/my.dotted-repo`).
+
+**M3** — `find_flags` took a single parent string, and that shape *was* the bug. Now
+a list, with `_worktree_parents` returning all of them.
+
+#### The most instructive moment of the whole tier
+
+Changing that parameter from `str` to `list[str]` should have broken eight call sites.
+**Seven of them kept passing.** `str` is iterable, so `"/t"` was looped over
+character by character — `listdir("/")`, `listdir("t")` — which returned nothing
+matching, so no flags were produced, and those seven tests assert an empty list.
+
+They passed for entirely the wrong reason. Only the single test that expected a flag
+caught it:
+
+```
+FAIL: test_a_directory_with_no_dot_git_is_still_flagged
+AssertionError: Lists differ: [] != ['stale_dir']
+```
+
+A `TypeError` guard now makes that loud. This is the "could this pass if the thing
+did not exist" rule catching a live instance in my own change.
+
+### M9 + M10 + M11 · `d29a075` — the server
+
+**RED** — raw `OSError` escaping the bind, and no way to stop the loop:
+
+```
+ERROR: test_a_taken_port_exits_cleanly_instead_of_raising   OSError: [Errno 98]
+ERROR: test_an_already_set_stop_event_means_the_loop_never_runs
+       TypeError: _refresh_loop() got an unexpected keyword argument 'stop'
+```
+
+**Verified live** against the running server:
+
+```
+$ ./bin/loom serve --port 8787
+cannot serve on 127.0.0.1:8787 — Address already in use.
+Port 8787 is already in use; a Loom may already be running there.
+Try `loom serve --port 8788`, or stop the other one.
+exit code: 2
+```
+
+**M10 note — the fix was deliberately NOT the obvious one.** The audit offered
+"compare a digest that excludes the timestamps, or drop the comparison". Repairing
+the digest would have *created* a hole: an EventSource whose server stopped
+collecting stays OPEN and merely goes quiet, so `onerror` never fires. Suppressing
+identical frames makes "nothing changed" and "the server died" indistinguishable.
+
+So every tick is now a frame, deliberately, and the page watches for **silence** —
+using `stale_after_seconds` carried on the badge rather than a constant of its own,
+so the threshold cannot drift from `view.STALE_AFTER_SECONDS`.
+
+**One test stub had to grow.** `FakeServer` gained `server_close`, because
+`run_server` now closes the socket in a `finally`. A fake standing in for the real
+thing has to model the interface it is asked for, or the test fails on the stub
+instead of on the behaviour.
+
+### M8 · `949c9da` — the accessibility mechanism
+
+Flipping `aria-live` between `off` and `polite` on every render was the wrong
+mechanism for a right intent. The visible list is no longer a live region at all; a
+separate permanently-polite hidden region receives one sentence from
+`view.announcement`, debounced to 15 seconds and only when the sentence changed.
+
+**Measured in a browser over 8 seconds, against the real fleet:**
+
+```
+  visibleListMutations: 48      (repaints, for the eye)
+  announcementMutations: 0      (debounced)
+  ariaLiveToggles: 0            (the fragile mechanism is gone)
+  visibleList aria-live: null   hiddenRegion aria-live: polite, role=status
+```
+
+48 repaints, 0 announcements. Every one of those 48 used to happen inside a live
+region governed by the toggle.
+
+### M5 + M6 · `c70610a` — CI
+
+**mypy earned its place on its first run.** It found `body` used for both `str` and
+`bytes` inside one function, where the f-string would have emitted `"b'...'"` if
+anything were reordered — plus a missing return annotation and two unannotated empty
+lists. Five errors, all fixed.
+
+Deliberate configuration choices:
+
+- **A separate job.** `tests and constraints` has no install step and that is its
+  guarantee. A type checker is a *development* dependency, so putting it in its own
+  job keeps both signals true: the tests job still proves Loom runs on a bare
+  interpreter, and the code still gets checked.
+- **`--strict --allow-any-generics`,** not full `--strict`. Bare `dict` is used
+  idiomatically here and annotating 39 of them buys nothing; every check that finds
+  defects stays on.
+- **mypy pinned to 2.3.0.** An unpinned checker turns somebody else's release into a
+  red build on a branch that changed nothing.
+
+**M6** — the gate now names **no path at all**, deliberately. `verdict.sh` ships
+inside the serina-skills plugin, whose cache directory is version-specific
+(`serina/0.6.0/...` today, something else after the next update), so any literal path
+would rot exactly as the old one did. The instruction is to invoke the skill, which
+knows where its own script lives.
+
+**Not made a required check in the ruleset** — that is a gate change and Serina's call.
+
+### M1 · `0aca7c5` — the spec
+
+Five sites described the pane-corroboration rule PR #12 removed as unsound. Now
+correction 7, with the full reasoning including why the *first repair attempt* also
+failed. Two further corrections recorded (8: rank 2's review half; 9: `sources`
+needing per-fact granularity).
+
+The obsolete threat-model row is **struck through rather than deleted**, and the
+Decisions table entry is **annotated rather than rewritten** — the document's own
+stated reason for keeping a corrections list is that a spec quietly matching whatever
+got built teaches nobody anything.
+
+### M4 · `04cd99d` — the subprocess cost
+
+Measured against real repositories, before and after:
+
+```
+  1 worktree   12 -> 9  spawns  (360 -> 270 a minute)
+  7 worktrees  54 -> 33 spawns (1620 -> 990 a minute)
+```
+
+Cost went from `5 + 7n` to `5 + 4n`. Three changes: one `git status` per worktree
+serving both the counts and the collision paths; `_last_commit` deleted (one `git
+log` per worktree per tick for a field nothing read); and `wait_seconds` so ticks
+START every 2 seconds rather than being spaced 2 seconds apart.
+
+**Equivalence proven, not assumed.** The risk in reusing status output is subtly
+different collision detection, so both paths were run against the live 7-worktree
+fleet:
+
+```
+  NEW (status reuse): 3 collisions, 0 undetermined
+  OLD (4 git calls) : 3 collisions, 0 undetermined
+  IDENTICAL RESULT: True
+```
+
+#### Two corrections to my own audit
+
+1. **A3 was wrong.** It suggested `git status --porcelain=v2 --branch` to get
+   ahead/behind and dirty in one call. Verified by execution: `branch.ab` is measured
+   against the **upstream**, and Loom compares against the **default branch**. Not
+   equivalent, and following it would have silently changed what ahead/behind means.
+2. **`-z` is mandatory, which A3 did not mention.** `--porcelain=v1` quotes paths
+   containing spaces or non-ASCII, so paths parsed from it would disagree with the
+   ones `git diff -z` returns and the matrix would compare two spellings of one file.
+   Rename entries also carry the original path as a **separate NUL token** — verified
+   against real git output; missing that desynchronises every path after it.
+
+A budget test now pins the spawn count with its breakdown written down, so adding a
+per-worktree git call means justifying a raise rather than quietly costing every user
+another 30 spawns a minute.
 
 ---
 
