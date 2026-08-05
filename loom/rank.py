@@ -84,3 +84,27 @@ def needs_you(repo: dict) -> list[dict]:
                       "detail": f.get("detail", "")})
 
     return sorted(items, key=lambda i: (i["rank"], _natural_sort_key(i["subject"])))
+
+
+def rank_snapshot(snapshot: dict) -> dict:
+    """Attach `needs_you` to every repo in a FINISHED snapshot, and return it.
+
+    RANKING IS A PROJECTION OVER A COMPLETED SNAPSHOT, NEVER A STEP INSIDE ITS
+    ASSEMBLY. That is the whole reason this function exists rather than the
+    builder doing it inline.
+
+    It used to be inline, in `build_snapshot`. `serve` then folded cached `gh`
+    data into `repo["prs"]` *after* the builder returned, so the strip had been
+    ranked against a PR list the consumer would never see -- empty on a fast
+    tick, by design. With 29 of every 30 ticks fast, ranks 2 and 4 were absent
+    from the strip for 58 of every 60 seconds while the panel below it listed
+    the very PRs they described. Audit 2026-08-05, finding H1.
+
+    Whoever finishes a snapshot calls this last. Anything that mutates a
+    snapshot after ranking it has reintroduced the same defect, so mutate first
+    and rank at the boundary -- that ordering is the invariant, not a style
+    preference.
+    """
+    for repo in snapshot.get("repos", []):
+        repo["needs_you"] = needs_you(repo)
+    return snapshot

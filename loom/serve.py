@@ -97,9 +97,14 @@ def _tick(all_repos: bool, include_gh: bool, cached_gh: dict[str, dict],
     them is exactly the failure mode `loom.collect`'s `sources` mechanism exists
     to prevent for `gh`, just one layer up, at the server boundary.
     """
+    from loom.rank import rank_snapshot
     from loom_cli import build_snapshot
     snap = build_snapshot(all_repos, include_gh=include_gh, runner=runner)
     apply_gh_cache(snap, cached_gh, include_gh)
+    # RANK AFTER THE SPLICE, NEVER BEFORE. `apply_gh_cache` has just rewritten
+    # `repo["prs"]`; ranking earlier would score a PR list this snapshot does
+    # not contain, which is precisely audit finding H1.
+    rank_snapshot(snap)
     snap["collected"] = True
     return snap
 

@@ -9,7 +9,7 @@ from typing import Callable
 
 from loom.agents import DEFAULT_STATE_DIR
 from loom.collect import collect
-from loom.rank import needs_you
+from loom.rank import rank_snapshot
 from loom.runner import Runner, SubprocessRunner
 
 USAGE = """usage: loom <command> [options]
@@ -93,13 +93,19 @@ def parse_port(rest: list[str]) -> int:
 
 def build_snapshot(all_repos: bool, include_gh: bool = True,
                    runner: Runner | None = None) -> dict:
+    """Collect every repo into one snapshot. Deliberately does NOT rank.
+
+    Ranking is `loom.rank.rank_snapshot`'s job and belongs at the boundary that
+    publishes the snapshot, because `serve` mutates `prs` after this returns --
+    see rank_snapshot's docstring and audit finding H1. A snapshot from here is
+    unranked on purpose; `needs_you` is absent rather than empty, so a consumer
+    that forgot to rank fails loudly instead of showing a quiet fleet.
+    """
     runner = runner or SubprocessRunner()
     repos = []
     for root in repo_roots(all_repos, runner):
         snap = collect(runner, root, DEFAULT_STATE_DIR, include_gh=include_gh)
-        for repo in snap["repos"]:
-            repo["needs_you"] = needs_you(repo)
-            repos.append(repo)
+        repos.extend(snap["repos"])
     return {"schema": 1, "repos": repos}
 
 
@@ -125,7 +131,8 @@ def main(argv: list[str]) -> int:
         return 2
     command, *rest = argv
     if command == "snapshot":
-        snapshot = build_snapshot("--all" in rest)
+        # rank last, on the finished snapshot -- see rank_snapshot's docstring.
+        snapshot = rank_snapshot(build_snapshot("--all" in rest))
         print(json.dumps(snapshot, indent=2) if "--json" in rest else render_text(snapshot))
         return 0
     if command == "serve":

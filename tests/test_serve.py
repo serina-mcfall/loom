@@ -134,15 +134,19 @@ class TestApplyGhCache(unittest.TestCase):
         self.assertEqual(names.count("git"), 1)
 
 
-class TestTickSkipsGhOnFastTick(unittest.TestCase):
-    """The regression guard: a fast tick must never spawn `gh`, not once."""
+def _fast_tick_runner() -> ReplayRunner:
+    """A runner recorded for one fast (gh-free) tick over a single worktree.
 
-    def _replay_runner(self) -> ReplayRunner:
-        # Recordings for every git command `collect()` issues with include_gh=False.
-        # Deliberately contains no "gh ..." entry: if the code path ever regressed
-        # to calling gh anyway, ReplayRunner would raise KeyError on the unrecorded
-        # command, which is itself a second, independent failure signal.
-        recordings = {
+    Module-level rather than a method so every test that needs a fast tick shares
+    ONE fixture. Two copies would be free to drift, and a fast-tick fixture that
+    disagreed with itself is exactly the kind of divergence these tests exist to
+    catch in production code.
+    """
+    # Recordings for every git command `collect()` issues with include_gh=False.
+    # Deliberately contains no "gh ..." entry: if the code path ever regressed
+    # to calling gh anyway, ReplayRunner would raise KeyError on the unrecorded
+    # command, which is itself a second, independent failure signal.
+    recordings = {
             "git rev-parse --path-format=absolute --git-common-dir":
                 {"returncode": 0, "stdout": "/repo/.git\n", "stderr": ""},
             "git symbolic-ref --short refs/remotes/origin/HEAD":
@@ -174,10 +178,14 @@ class TestTickSkipsGhOnFastTick(unittest.TestCase):
             "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat":
                 {"returncode": 0, "stdout": "", "stderr": ""},
         }
-        return ReplayRunner(recordings)
+    return ReplayRunner(recordings)
+
+
+class TestTickSkipsGhOnFastTick(unittest.TestCase):
+    """The regression guard: a fast tick must never spawn `gh`, not once."""
 
     def test_no_gh_command_appears_in_the_runners_captured_calls(self):
-        runner = self._replay_runner()
+        runner = _fast_tick_runner()
         cache: dict = {}
         snap = _tick(all_repos=False, include_gh=False, cached_gh=cache, runner=runner)
         gh_calls = [call for call in runner.calls if call and call[0] == "gh"]
@@ -187,9 +195,74 @@ class TestTickSkipsGhOnFastTick(unittest.TestCase):
         self.assertFalse(sources["gh:prs"]["ok"])
 
     def test_repo_roots_lookup_itself_is_a_git_command_not_a_gh_one(self):
-        runner = self._replay_runner()
+        runner = _fast_tick_runner()
         _tick(all_repos=False, include_gh=False, cached_gh={}, runner=runner)
         self.assertTrue(all(call[0] == "git" or call[0] == "tmux" for call in runner.calls))
+
+
+class TestNeedsYouIsRankedAfterTheGhCacheSplice(unittest.TestCase):
+    """Audit 2026-08-05, finding H1.
+
+    `build_snapshot` computed `needs_you` mid-assembly, BEFORE `apply_gh_cache`
+    put the cached PRs back into `repo["prs"]`. On a fast tick `collect()`
+    returns `prs=[]` by design, so every PR-derived alert -- rank 2 (awaiting
+    review) and rank 4 (failing checks) -- was ranked against an empty list and
+    never recomputed.
+
+    FAST_SECONDS=2 against SLOW_SECONDS=60 makes 29 of every 30 ticks fast, so
+    the triage strip the entire product rests on was empty for 58 of every 60
+    seconds while the panel directly below it listed the very PRs it should
+    have been ranking. The page contradicted itself on screen.
+
+    The invariant these tests pin: whatever `repo["prs"]` a consumer is shown,
+    `repo["needs_you"]` was computed from exactly that list.
+    """
+
+    def _warm_cache(self) -> dict:
+        # Keyed "repo" because _fast_tick_runner's common-dir recording is
+        # /repo/.git, so collect() names the repo after its root directory.
+        return {"repo": {
+            "prs": [
+                # Rank 4: failing checks.
+                {"number": 7, "branch": "b7", "draft": False,
+                 "review": None, "checks": "failing"},
+                # Rank 2: no review, and "none" counts as not failing.
+                {"number": 8, "branch": "b8", "draft": False,
+                 "review": None, "checks": "none"},
+            ],
+            "issues": [],
+            "gh_sources": [{"name": "gh:prs", "ok": True, "error": None},
+                           {"name": "gh:issues", "ok": True, "error": None}],
+            "cached_at": "T1",
+        }}
+
+    def test_a_fast_tick_ranks_the_cached_prs_it_displays(self):
+        snap = _tick(all_repos=False, include_gh=False,
+                     cached_gh=self._warm_cache(), runner=_fast_tick_runner())
+        repo = snap["repos"][0]
+
+        # Precondition: the splice really did happen, so this test is about
+        # ranking and not about an empty cache trivially producing no alerts.
+        self.assertEqual([p["number"] for p in repo["prs"]], [7, 8])
+
+        kinds = {i["kind"] for i in repo["needs_you"]}
+        self.assertIn("pr_failing", kinds,
+                      "PR #7's failing checks are displayed but not ranked")
+        self.assertIn("pr_awaiting_review", kinds,
+                      "PR #8 is displayed as unreviewed but not ranked")
+
+    def test_the_strip_and_the_panel_never_disagree_about_which_prs_exist(self):
+        """The general invariant, not just the two ranks above."""
+        snap = _tick(all_repos=False, include_gh=False,
+                     cached_gh=self._warm_cache(), runner=_fast_tick_runner())
+        repo = snap["repos"][0]
+
+        displayed = {f"PR #{p['number']}" for p in repo["prs"]}
+        ranked = {i["subject"] for i in repo["needs_you"]
+                  if i["subject"].startswith("PR #")}
+        self.assertEqual(ranked, displayed,
+                         "every displayed PR here warrants an alert; the strip "
+                         "must not silently drop the ones the panel shows")
 
 
 class TestRefreshStepSurvivesFailures(unittest.TestCase):
@@ -260,7 +333,7 @@ class TestCollectedMarker(unittest.TestCase):
         self.assertEqual(_json.loads(out.stdout), {"schema": 1, "repos": [], "collected": False})
 
     def test_a_tick_marks_its_snapshot_collected(self):
-        runner = TestTickSkipsGhOnFastTick()._replay_runner()
+        runner = _fast_tick_runner()
         snap = _tick(all_repos=False, include_gh=False, cached_gh={}, runner=runner)
         self.assertTrue(snap["collected"])
 

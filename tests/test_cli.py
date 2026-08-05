@@ -5,6 +5,7 @@ import os
 import unittest
 from contextlib import redirect_stdout
 
+from loom.rank import rank_snapshot
 from loom.runner import ReplayRunner
 from loom_cli import main, discover_repos, repo_roots, parse_port, build_snapshot, render_text
 
@@ -190,8 +191,24 @@ class TestBuildSnapshot(unittest.TestCase):
         runner = ReplayRunner(recordings)
         snapshot = build_snapshot(False, include_gh=False, runner=runner)
         self.assertEqual(len(snapshot["repos"]), 1)
-        self.assertIn("needs_you", snapshot["repos"][0])
-        self.assertIsInstance(snapshot["repos"][0]["needs_you"], list)
+
+        # CONTRACT CHANGE, audit 2026-08-05 finding H1. This test previously
+        # asserted `build_snapshot` attaches `needs_you`, and it passed -- but
+        # that placement was the defect: `serve` rewrites `prs` after the
+        # builder returns, so a snapshot ranked here was ranked against data no
+        # consumer ever sees. Ranking moved to `rank_snapshot`, applied last by
+        # whoever publishes the snapshot.
+        #
+        # Absent, not empty: an unranked snapshot must be distinguishable from a
+        # ranked one that found nothing, or "the fleet is quiet" and "nobody
+        # ranked this" look identical -- the empty-versus-broken confusion this
+        # whole project exists to refuse.
+        self.assertNotIn("needs_you", snapshot["repos"][0],
+                         "build_snapshot must not rank; rank_snapshot does, last")
+
+        ranked = rank_snapshot(snapshot)
+        self.assertIn("needs_you", ranked["repos"][0])
+        self.assertIsInstance(ranked["repos"][0]["needs_you"], list)
 
 
 if __name__ == "__main__":
