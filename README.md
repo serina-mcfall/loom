@@ -69,5 +69,15 @@ and says so plainly when they told it nothing.
 ## Running the tests
 
 ```bash
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s tests    # 285 tests, no network, no fixtures to fetch
+python3 scripts/check_stdlib_only.py     # every import is stdlib or first-party
 ```
+
+Both run on every push, across Python 3.10 through 3.13.
+
+## Licence
+
+[MIT](LICENSE) — © 2026 Serina McFall.
+
+Chosen deliberately: the zero-dependency constraint exists so Loom can be dropped into
+any repository, and without a licence nobody legally could.

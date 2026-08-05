@@ -49,22 +49,24 @@ test is how a suite stops being evidence.
 | L5 | Collapse-control a11y requirement is vacuous | Low | **fixed** | `ff56ba4` |
 | L6 | "Loose ends" panel never built | Low | **fixed (built)** | `ff56ba4` |
 | L7 | Cached gh age promised, never displayed | Low | **fixed** | `5b32be6` |
-| L8 | Issues #5 and #7 fixed but open | Low | **awaiting Serina** | — |
-| L9 | No LICENSE | Low | **awaiting Serina** | — |
+| L8 | Issues #5 and #7 fixed but open | Low | **closed** | (GitHub) |
+| L9 | No LICENSE | Low | **fixed (MIT)** | see below |
 | L10 | `--help` exits 2 | Low | **fixed** | `4a5f9de` |
 | L11 | No declared Python floor | Low | **fixed (measured, 3.10)** | `ff56ba4` |
 | L12 | Completed plan is the largest file | Low | **fixed (archived)** | `ff56ba4` |
 | L13 | No index of decision records | Low | **fixed** | `ff56ba4` |
-
+| N4 | Static assets were cacheable (found while fixing) | new | **fixed** | `8d98887` |
 | — | Colour coding + compactness (requested live) | extra | **done** | `8d98887` |
-| N4 | Static assets were cacheable | new | **fixed** | `8d98887` |
 
-**All 8 High findings are fixed.** M7 landed early with H6 because it was the same
-lines of code.
+**All 32 audit findings are resolved**, plus one new finding raised during the work and
+the colour-coding pass Serina asked for mid-review.
 
-**Blocked on a decision from Serina:** L9 (which licence), L11 (declare the Python
-floor in README vs add a `pyproject.toml`, which weakens the "no dependency file
-exists" boundary the spec cites as evidence).
+M7 landed early, with H6, because it was the same lines of code. L9 and L8 were Serina's
+calls: MIT, and close only the two issues verifiably fixed on `main` while the rest close
+on merge.
+
+Test count: **200 → 285.** Gates: suite, stdlib check, and a new pinned `mypy` job, all
+green on Python 3.10 through 3.13.
 
 **Decisions taken during the High tier:**
 
@@ -800,6 +802,30 @@ mechanism by which L3 through L7 all went unnoticed.
 example still showed schema 1 with `head`, `last_commit`, PR `worktree` and `assignees`
 after `5b32be6` removed them. Updating the code and leaving the document behind is the
 exact failure the audit was about, so it was caught and corrected in `ff56ba4`.
+
+### L9 · MIT, and L8 · the two issues that were already fixed
+
+**L9** — MIT, Serina's choice. The reasoning she was given and accepted: the
+zero-dependency constraint exists so Loom can be dropped into any repository, and
+without a licence nobody legally could.
+
+**L8** — closing issues is an outward-facing change to her repository, so it was asked
+rather than assumed. Her call was the staged one: close only what is fixed on `main`.
+
+Both were re-verified **against `main`'s code**, not this branch, by extracting `main`
+with `git archive` into a temp directory and running the original reproductions there.
+`git archive` rather than `git worktree add`, so the check did not register a phantom
+worktree that Loom itself would then have reported:
+
+```
+  #7  node pane + 3h-old 'working' session -> 'stale'      still broken? False
+  #5  one malformed gh record -> parsed [1], ok=False      still broken? False
+```
+
+Closed with that evidence in the comment. #3, #4, #6 and #8 are fixed on this branch
+only, so they close on merge via the PR body — closing them now would claim `main` is
+fixed when it is not. #11 (a tokens-and-cost panel) is a legitimate deferred feature,
+matching the spec's own out-of-scope list.
 
 ---
 

@@ -16,8 +16,8 @@ have since been fixed.
 | **Result** | 0 Blocker · 8 High · 11 Medium · 13 Low |
 
 Audited the whole tree plus its two external consumers (the `serina-skills` loom skill,
-and the CI workflow). Every High and Medium is fixed; the Low tier is nearly complete.
-Test count went from 200 to 285, and a pinned `mypy` job was added.
+and the CI workflow). **All 32 findings are resolved.** Test count went from 200 to 285,
+a pinned `mypy` job was added, and CI now runs on Python 3.10 through 3.13.
 
 **The audit was written by the same model family that built much of the code, and no
 third party has graded it.** Its most serious findings carry pasted execution output for
@@ -26,12 +26,15 @@ remediation log records three places where execution proved the audit itself wro
 
 ### Still open at the end of the Low tier
 
-| | Needs |
+Not findings, but deliberately left for a human:
+
+| | Why it is not fixed here |
 |---|---|
-| `CHANGES_REQUESTED` is invisible at every rank | A decision — giving it a rank changes the spec's ranking table |
-| The loom skill's `hooks` constraint can never fire | An edit in `serina-skills`, a different repo |
-| LICENCE | Serina's choice of licence |
-| Issues #3–#8 | Close on merge; #5 and #7 were already fixed before this audit |
+| `CHANGES_REQUESTED` is invisible at every rank | A design decision: giving it a rank changes the spec's ranking table, which is not a bugfix |
+| The loom skill's `hooks` constraint can never fire | The skill's wording is wrong, not the code — and it lives in `serina-skills`, a different repository, installed from GitHub |
+| The `types` check is not required by the ruleset | Making it required is a gate change |
+| Issues #3, #4, #6, #8 | Fixed on the branch, so they close on merge. Closing them now would claim `main` is fixed when it is not |
+| Issue #11 (tokens-and-cost panel) | A legitimate deferred feature, matching the spec's own out-of-scope list |
 
 ## If you are running the next one
 
