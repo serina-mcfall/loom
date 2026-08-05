@@ -118,18 +118,6 @@ def reap(state_dir: str, older_than_hours: int = 24,
     return removed
 
 
-def _last_commit(runner: Runner, path: str) -> dict | None:
-    """The worktree's own HEAD commit, not the repo-wide log used for the ticker."""
-    r = runner.run(["git", "log", "-1", "--format=%h%x1f%aI%x1f%s"], cwd=path)
-    if not r.ok or not r.stdout.strip():
-        return None
-    parts = r.stdout.strip().split("\x1f")
-    if len(parts) != 3:
-        return None
-    sha, when, subject = parts
-    return {"sha": sha, "when": when, "subject": subject}
-
-
 def collect(runner: Runner, root: str,
             state_dir: str = agents_mod.DEFAULT_STATE_DIR,
             include_gh: bool = True) -> dict:
@@ -141,13 +129,19 @@ def collect(runner: Runner, root: str,
     sessions = agents_mod.read_state_dir(state_dir)
     panes = agents_mod.tmux_panes(runner)
 
+    # ONE `git status` PER WORKTREE, feeding both the dirty counts and the collisions
+    # path set. Asking twice was two extra processes per worktree per tick for
+    # information already in hand -- audit finding M4.
+    statuses = {t.path: gitsrc.worktree_status(runner, t.path) for t in trees}
+
     for t in trees:
-        # None from either call means CANNOT TELL, and is carried through to the
+        # None from either source means CANNOT TELL, and is carried through to the
         # snapshot as null rather than flattened to 0 -- see gitsrc and audit
         # finding H3. `sources` names the affected worktrees below.
         ab = gitsrc.ahead_behind(runner, t.path, base)
         t.ahead, t.behind = ab if ab is not None else (None, None)
-        t.dirty = gitsrc.dirty_counts(runner, t.path)
+        s = statuses[t.path]
+        t.dirty = s.dirty if s is not None else None
 
     unmeasured = sorted(t.dir for t in trees
                         if t.ahead is None or t.behind is None or t.dirty is None)
@@ -188,7 +182,6 @@ def collect(runner: Runner, root: str,
             "ahead": t.ahead, "behind": t.behind,
             "dirty": asdict(t.dirty) if t.dirty is not None else None,
             "agent": asdict(a), "pr": by_branch.get(t.branch or ""),
-            "last_commit": _last_commit(runner, t.path),
         })
 
     pr_dicts = []
@@ -198,7 +191,7 @@ def collect(runner: Runner, root: str,
         pr_dicts.append(d)
 
     parents = _worktree_parents(trees, root)
-    found_collisions, undetermined = gitsrc.collisions(runner, trees, base)
+    found_collisions, undetermined = gitsrc.collisions(runner, trees, base, statuses)
     return {
         "schema": SCHEMA_VERSION,
         "generated_at": _now_iso(),

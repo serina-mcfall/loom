@@ -97,9 +97,11 @@ class TestAheadBehind(unittest.TestCase):
 class TestDirtyCounts(unittest.TestCase):
     def test_separates_staged_unstaged_and_untracked(self):
         runner = ReplayRunner({
-            "git status --porcelain=v1": {
+            "git status --porcelain=v1 -z": {
                 "returncode": 0,
-                "stdout": "M  staged.py\n M unstaged.py\nMM both.py\n?? new.py\n",
+                # NUL-separated: `-z` is now used so paths with spaces or non-ASCII
+                # are not quoted, and the same call serves the collisions path set.
+                "stdout": "M  staged.py\0 M unstaged.py\0MM both.py\0?? new.py\0",
                 "stderr": "",
             },
         })
@@ -107,7 +109,7 @@ class TestDirtyCounts(unittest.TestCase):
 
     def test_clean_tree_is_all_zero(self):
         runner = ReplayRunner({
-            "git status --porcelain=v1": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
         })
         self.assertEqual(dirty_counts(runner, "/trees/a"), Dirty(0, 0, 0))
 
@@ -119,7 +121,7 @@ class TestDirtyCounts(unittest.TestCase):
         by whether work is at risk of being lost, which is rank 5's entire job.
         """
         runner = ReplayRunner({
-            "git status --porcelain=v1":
+            "git status --porcelain=v1 -z":
                 {"returncode": 128, "stdout": "", "stderr": "not a work tree"},
         })
         self.assertIsNone(dirty_counts(runner, "/trees/a"))
@@ -152,6 +154,65 @@ class TestRecentCommits(unittest.TestCase):
 
     def test_branch_comes_from_the_decoration(self):
         self.assertEqual(recent_commits(self.runner, "/repo")[0].branch, "feature-c")
+
+
+class TestWorktreeStatus(unittest.TestCase):
+    """Audit 2026-08-05, finding M4.
+
+    One `git status` call now yields BOTH the dirty counts and the set of changed
+    paths. It used to take three separate calls to learn the same things: `git
+    status` for the counts, then `git diff --name-only HEAD` and `git ls-files
+    --others` inside `touched_files` for the paths -- all three asking the same
+    working tree about the same changes.
+
+    `-z` is required, not cosmetic: `--porcelain=v1` without it QUOTES paths
+    containing spaces or non-ASCII, so a collisions matrix built from the parsed
+    output would silently disagree with one built from `git diff -z`.
+    """
+
+    def _status(self, out: str):
+        from loom.gitsrc import worktree_status
+        return worktree_status(ReplayRunner({
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": out, "stderr": ""},
+        }), "/t/one")
+
+    def test_counts_and_paths_come_from_the_same_single_call(self):
+        s = self._status("M  staged.py\0 M unstaged.py\0?? new.py\0")
+        self.assertEqual(s.dirty, Dirty(staged=1, unstaged=1, untracked=1))
+        self.assertEqual(s.paths, {"staged.py", "unstaged.py", "new.py"})
+
+    def test_a_rename_reports_the_new_path_and_consumes_the_old_one(self):
+        """`R  new\\0old\\0` -- the ORIGINAL path is a separate NUL token.
+
+        Verified against real git output. Miss this and the old path is parsed as
+        though it were a status entry of its own, which corrupts every path after
+        it in the stream.
+
+        Only the new path is reported, matching `git diff --name-only`'s existing
+        rename behaviour, so the two sources of collision paths agree.
+        """
+        s = self._status("R  renamed.txt\0a.txt\0 M b.txt\0")
+        self.assertEqual(s.paths, {"renamed.txt", "b.txt"},
+                         "the old path leaked in, or the stream desynchronised")
+        self.assertEqual(s.dirty, Dirty(staged=1, unstaged=1, untracked=0))
+
+    def test_a_path_with_a_space_survives_intact(self):
+        # The reason -z is mandatory: without it git would quote this.
+        s = self._status(" M some dir/a file.txt\0")
+        self.assertEqual(s.paths, {"some dir/a file.txt"})
+
+    def test_a_clean_tree_is_counts_of_zero_and_no_paths(self):
+        s = self._status("")
+        self.assertEqual(s.dirty, Dirty(0, 0, 0))
+        self.assertEqual(s.paths, set())
+
+    def test_a_failed_status_is_none_not_an_empty_status(self):
+        from loom.gitsrc import worktree_status
+        runner = ReplayRunner({
+            "git status --porcelain=v1 -z":
+                {"returncode": 128, "stdout": "", "stderr": "not a work tree"},
+        })
+        self.assertIsNone(worktree_status(runner, "/t/one"))
 
 
 class TestCollisions(unittest.TestCase):

@@ -117,6 +117,76 @@ class TestFindFlags(unittest.TestCase):
         self.assertIn("leftover", flags[0]["subject"])
 
 
+class TestSubprocessBudget(unittest.TestCase):
+    """Audit 2026-08-05, finding M4.
+
+    Loom is meant to sit open all day on a laptop, refreshing every 2 seconds. One
+    tick used to spawn 12 processes for a SINGLE worktree -- 360 a minute -- and the
+    cost is `5 + 7n`, so the six-worktree fleet the design was built against came to
+    47 per tick and roughly 1,410 a minute.
+
+    This test is a budget, deliberately: a bare count with the breakdown written
+    down, so anyone adding a git call to the per-worktree path has to come here and
+    justify raising it rather than quietly costing every user another 30 spawns a
+    minute.
+    """
+
+    # Per tick, include_gh=False, one worktree:
+    #   repo-level   default_branch, worktree list, tmux, origin remote,
+    #                recent_commits                                        = 5
+    #   per worktree rev-list (ahead/behind), status (counts AND paths),
+    #                merge-base, diff merge-base..HEAD                     = 4
+    BUDGET = 9
+
+    def _runner(self):
+        return ReplayRunner({
+            "git symbolic-ref --short refs/remotes/origin/HEAD":
+                {"returncode": 0, "stdout": "origin/main\n", "stderr": ""},
+            "git worktree list --porcelain": {
+                "returncode": 0,
+                "stdout": "worktree /repo\nHEAD abc123\nbranch refs/heads/main\n\n",
+                "stderr": ""},
+            "tmux list-panes -a -F #{pane_current_path}\t#{pane_current_command}\t"
+            "#{pane_pid}\t#{window_name}":
+                {"returncode": 1, "stdout": "", "stderr": "no server"},
+            "git rev-list --left-right --count main...HEAD":
+                {"returncode": 0, "stdout": "0\t0\n", "stderr": ""},
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git remote get-url origin":
+                {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only -z base1 HEAD":
+                {"returncode": 0, "stdout": "", "stderr": ""},
+            "git log --all --no-merges -n 40 "
+            "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat":
+                {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+
+    def test_one_tick_over_one_worktree_stays_within_budget(self):
+        runner = self._runner()
+        collect(runner, "/repo", "/nonexistent-state-dir", include_gh=False)
+        self.assertLessEqual(
+            len(runner.calls), self.BUDGET,
+            f"spawned {len(runner.calls)} processes, budget is {self.BUDGET}:\n" +
+            "\n".join("    " + " ".join(c) for c in runner.calls))
+
+    def test_the_status_call_is_not_repeated_per_worktree(self):
+        # The specific saving: `git status` is asked ONCE and its answer feeds both
+        # the dirty counts and the collisions path set.
+        runner = self._runner()
+        collect(runner, "/repo", "/nonexistent-state-dir", include_gh=False)
+        statuses = [c for c in runner.calls if c[:2] == ("git", "status")]
+        self.assertEqual(len(statuses), 1, f"status called {len(statuses)} times")
+
+    def test_no_per_worktree_git_log_is_issued(self):
+        # `_last_commit` cost one `git log` per worktree per tick to populate a field
+        # no consumer read (audit L2). Removed rather than left as a silent tax.
+        runner = self._runner()
+        collect(runner, "/repo", "/nonexistent-state-dir", include_gh=False)
+        per_tree_logs = [c for c in runner.calls if c[:3] == ("git", "log", "-1")]
+        self.assertEqual(per_tree_logs, [])
+
+
 class TestSchema(unittest.TestCase):
     def test_version_is_pinned(self):
         self.assertEqual(SCHEMA_VERSION, 1)
@@ -172,7 +242,7 @@ class TestCollectSources(unittest.TestCase):
                 {"returncode": 1, "stdout": "", "stderr": "no server running"},
             "git rev-list --left-right --count main...HEAD":
                 {"returncode": 0, "stdout": "0\t0\n", "stderr": ""},
-            "git status --porcelain=v1": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
             "git remote get-url origin":
                 {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
             "gh pr list -R you/example --state open --limit 50 --json "

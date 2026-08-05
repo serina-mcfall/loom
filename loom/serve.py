@@ -201,6 +201,22 @@ def _refresh_step(prev_snapshot: dict, all_repos: bool, include_gh: bool,
         return finalise(stale)
 
 
+def wait_seconds(elapsed: float) -> float:
+    """How long to wait so ticks START every FAST_SECONDS, rather than being spaced
+    FAST_SECONDS APART.
+
+    The loop used to sleep a flat FAST_SECONDS after finishing, so the real period
+    was 2s plus however long collection took -- and collection is the expensive part
+    (see finding M4). On a large fleet that silently stretched a "2 second" refresh
+    into three or four. Pure so the arithmetic is testable without sleeping.
+
+    Clamped at zero: a tick slower than FAST_SECONDS simply runs back to back, which
+    is the honest meaning of "refresh every 2 seconds" on a fleet that cannot manage
+    it. That cannot busy-spin, because every iteration does real subprocess work.
+    """
+    return max(0.0, FAST_SECONDS - elapsed)
+
+
 def _refresh_loop(all_repos: bool, stop: threading.Event | None = None) -> None:
     """git and hooks every FAST_SECONDS; gh at most once every SLOW_SECONDS.
 
@@ -227,7 +243,7 @@ def _refresh_loop(all_repos: bool, stop: threading.Event | None = None) -> None:
             last_slow = now
         with _lock:
             _snapshot = snap
-        stop.wait(FAST_SECONDS)
+        stop.wait(wait_seconds(time.monotonic() - now))
 
 
 class Handler(BaseHTTPRequestHandler):

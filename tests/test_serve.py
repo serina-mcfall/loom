@@ -238,7 +238,7 @@ def _fast_tick_runner() -> ReplayRunner:
                 {"returncode": 1, "stdout": "", "stderr": "no server running"},
             "git rev-list --left-right --count main...HEAD":
                 {"returncode": 0, "stdout": "0\t0\n", "stderr": ""},
-            "git status --porcelain=v1": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
             "git remote get-url origin":
                 {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
             "git log -1 --format=%h%x1f%aI%x1f%s": {
@@ -562,6 +562,29 @@ class TestPortAlreadyInUse(unittest.TestCase):
                              "a refresh thread was started despite the bind failing")
         finally:
             holder.close()
+
+
+class TestWaitSeconds(unittest.TestCase):
+    """Audit 2026-08-05, part of finding M4.
+
+    The loop slept a flat FAST_SECONDS AFTER finishing its work, so the real period
+    was 2s plus collection time -- and collection is the expensive part. On a large
+    fleet a "2 second" refresh silently became three or four.
+    """
+
+    def test_a_fast_tick_waits_out_the_remainder(self):
+        from loom.serve import wait_seconds
+        self.assertAlmostEqual(wait_seconds(0.5), serve.FAST_SECONDS - 0.5)
+
+    def test_an_instant_tick_waits_the_whole_interval(self):
+        from loom.serve import wait_seconds
+        self.assertAlmostEqual(wait_seconds(0.0), serve.FAST_SECONDS)
+
+    def test_a_tick_slower_than_the_interval_does_not_wait_negatively(self):
+        # A negative wait would raise, or with Event.wait return instantly forever;
+        # back-to-back ticks are the honest behaviour for a fleet that cannot keep up.
+        from loom.serve import wait_seconds
+        self.assertEqual(wait_seconds(serve.FAST_SECONDS + 5), 0.0)
 
 
 class TestRefreshLoopIsStoppable(unittest.TestCase):
