@@ -21,6 +21,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from .collect import SCHEMA_VERSION
+from .ghsrc import github_url
 from .rank import rank_snapshot
 
 # How old a snapshot may be before the page stops calling it live.
@@ -140,9 +141,14 @@ def aggregate_needs(snap: dict) -> list[dict]:
     items: list[dict] = []
     for repo in repos:
         name = repo.get("name", "<unnamed repo>")
+        issue_repo = repo.get("issue_repo")
         for item in repo.get("needs_you", []):
             subject = item.get("subject", "")
+            # Only PR-derived items get a link. A blocked agent has no GitHub page and a
+            # collision spans two branches with no single URL, so those are None -- the
+            # page then renders no link rather than a broken one.
             items.append({**item, "repo": name, "show_repo": many,
+                          "url": github_url(issue_repo, "pull", item.get("pr")),
                           "label": f"{name} · {subject}" if many else subject})
     return sorted(items, key=lambda i: (i["rank"], i["repo"], i.get("subject", "")))
 

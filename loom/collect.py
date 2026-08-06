@@ -58,7 +58,7 @@ def find_flags(trees: list[gitsrc.Worktree], prs: list[ghsrc.PullRequest],
     for p in prs:
         if p.branch not in branches:
             flags.append({"kind": "orphan_pr", "severity": "warn",
-                          "subject": f"PR #{p.number}",
+                          "subject": f"PR #{p.number}", "pr": p.number,
                           "detail": f"branch {p.branch} has no worktree"})
 
     known = {t.dir for t in trees}
@@ -191,7 +191,10 @@ def collect(runner: Runner, root: str,
     # No reverse `worktree` link: each worktree already carries its `pr` number and
     # the page renders that direction. Two mappings for one relationship is a drift
     # surface with no consumer. Audit finding L2.
-    pr_dicts = [asdict(p) for p in prs]
+    # `url` is built from `issue_repo` -- the same owner/repo pinned to every gh call --
+    # so the link and the data cannot disagree. None when origin was unresolvable, and
+    # the page then renders no link rather than one that 404s.
+    pr_dicts = [{**asdict(p), "url": ghsrc.github_url(repo, "pull", p.number)} for p in prs]
 
     parents = _worktree_parents(trees, root)
     found_collisions, undetermined = gitsrc.collisions(runner, trees, base, statuses)
@@ -209,7 +212,10 @@ def collect(runner: Runner, root: str,
             # `assignees` is dropped from each issue: no consumer read it, and a
             # snapshot piped into a conversation transcript need not name people.
             # Audit finding L2.
-            "issues": [{k: v for k, v in asdict(i).items() if k != "assignees"}
+            # `issues`, not `pull` -- github.com's paths differ, and swapping them
+            # silently redirects for some numbers and 404s for others.
+            "issues": [{**{k: v for k, v in asdict(i).items() if k != "assignees"},
+                        "url": ghsrc.github_url(repo, "issues", i.number)}
                        for i in issues],
             "collisions": found_collisions,
             "commits": [asdict(c) for c in gitsrc.recent_commits(runner, root)],

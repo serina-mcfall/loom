@@ -127,6 +127,12 @@ tbody tr:nth-child(even) { background: #1b212a; }
 .conn { margin-left: auto; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden;
                    clip-path: inset(50%); white-space: nowrap; }
+/* The page's first interactive control. Colour is not the only affordance -- it is an
+   anchor, so it gets the browser's own pointer and focus behaviour too. */
+.gh-link { color: var(--num); text-decoration: none; padding: 0 .25rem;
+           border-radius: 3px; }
+.gh-link:hover { background: var(--line); text-decoration: underline; }
+
 :focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

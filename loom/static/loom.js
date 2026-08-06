@@ -74,6 +74,30 @@ function announce(sentence) {
   el("needs-announce").textContent = sentence;
 }
 
+/** A real <a> to GitHub, or null when there is nothing to link to.
+ *
+ *  MUST be an anchor with a genuine href: keyboard access, middle-click and ctrl-click
+ *  all come free, and an onclick handler would silently break all three.
+ *
+ *  The arrow is DECORATIVE (aria-hidden). The accessible name is the full sentence in
+ *  visually-hidden text -- not an aria-label on a glyph, because an icon-only link whose
+ *  label drifts from its icon is a standing accessibility trap. A screen reader hears
+ *  "Open PR #16 in serina-learning on GitHub", not "link, arrow".
+ */
+function ghLink(url, describe) {
+  if (!url) return null;                 // null means no honest link exists -- render none
+  const a = document.createElement("a");
+  a.href = url;
+  a.className = "gh-link";
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";         // never hand the opener to another origin
+  a.append(text("span", describe, "visually-hidden"));
+  const glyph = text("span", "\u2197");
+  glyph.setAttribute("aria-hidden", "true");
+  a.append(glyph);
+  return a;
+}
+
 function renderNeeds(items) {
   const list = el("needs");
   list.replaceChildren();
@@ -92,6 +116,11 @@ function renderNeeds(items) {
     if (item.show_repo) li.append(text("span", `${item.repo} · `, "repo-tag"));
     li.append(text("strong", `${item.subject} `));
     li.append(text("span", `— ${item.detail}`));
+    // Only PR-derived items carry a url; a blocked agent or a collision has none, and
+    // loom.view leaves it null rather than guessing.
+    const link = ghLink(item.url,
+      `Open ${item.subject} in ${item.repo} on GitHub`);
+    if (link) li.append(link);
     list.append(li);
   }
 }
@@ -180,6 +209,8 @@ function renderPrs(box, repo) {
     if (p.updated_at) {
       li.append(text("span", `, updated ${p.updated_at.slice(0, 10)}`, "c-time"));
     }
+    const prLink = ghLink(p.url, `Open PR #${p.number} on GitHub`);
+    if (prLink) li.append(prLink);
     list.append(li);
   }
   for (const i of repo.issues) {
@@ -189,6 +220,8 @@ function renderPrs(box, repo) {
     if (i.labels && i.labels.length) {
       li.append(text("span", ` [${i.labels.join(", ")}]`, "issue-label"));
     }
+    const issueLink = ghLink(i.url, `Open issue #${i.number} on GitHub`);
+    if (issueLink) li.append(issueLink);
     list.append(li);
   }
   if (repo.prs.length === 0 && repo.issues.length === 0) {

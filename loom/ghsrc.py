@@ -56,6 +56,28 @@ class Issue:
     assignees: list[str]
 
 
+def github_url(issue_repo: str | None, kind: str, number: int | None) -> str | None:
+    """A github.com URL, or None when one cannot be built honestly.
+
+    `issue_repo` is the `owner/repo` already passed to every `gh` call -- NOT the
+    worktree's directory name. Those differ (`launchpad-26/serina-learning` against a
+    directory called `serina-learning`), and using the directory would produce a
+    plausible URL pointing at a repository that does not exist. A link to a 404 is worse
+    than no link, which is why this returns None rather than guessing.
+
+    `kind` is github.com's path segment: "pull" or "issues". They are NOT
+    interchangeable -- getting them the wrong way round silently redirects for some
+    numbers and 404s for others.
+
+    None on a missing repo or number, for the same reason `ahead` is None when git could
+    not be asked (finding H3): a value that could not be determined is absent, not
+    blanked.
+    """
+    if not issue_repo or number is None:
+        return None
+    return f"https://github.com/{issue_repo}/{kind}/{number}"
+
+
 def origin_repo(runner: Runner, root: str) -> str | None:
     """owner/repo from the origin remote. Never asks gh to guess."""
     r = runner.run(["git", "remote", "get-url", "origin"], cwd=root)

@@ -75,12 +75,16 @@ def needs_you(repo: dict) -> list[dict]:
         if p.get("checks") == "failing":
             pr_number = p.get("number", "?")
             items.append({"rank": 4, "kind": "pr_failing", "subject": f"PR #{pr_number}",
-                          "detail": "checks are failing"})
+                          # `pr` is the number as DATA. `subject` is a display string, and
+                          # scraping digits back out of it in the page is the string
+                          # handling finding H8 moved into Python.
+                          "pr": pr_number, "detail": "checks are failing"})
         elif p.get("review") in AWAITING_REVIEW:
             # "none" (no CI configured) counts as not failing, or this never fires.
             pr_number = p.get("number", "?")
             items.append({"rank": 2, "kind": "pr_awaiting_review",
-                          "subject": f"PR #{pr_number}", "detail": "no review yet"})
+                          "subject": f"PR #{pr_number}", "pr": pr_number,
+                          "detail": "no review yet"})
 
     for c in repo.get("collisions", []):
         branches = c.get("branches", [])
@@ -124,6 +128,11 @@ def needs_you(repo: dict) -> list[dict]:
         flag_kind = f.get("kind", "<unknown kind>")
         flag_subject = f.get("subject", "<no subject>")
         items.append({"rank": 6, "kind": flag_kind, "subject": flag_subject,
+                      # An `orphan_pr` flag names a real pull request and carries its
+                      # number, so it earns a link like any other PR row. A `stale_dir`
+                      # flag has no number and gets None -- .get, not [], because most
+                      # flag kinds have nothing to link to.
+                      "pr": f.get("pr"),
                       "detail": f.get("detail", "")})
 
     return sorted(items, key=lambda i: (i["rank"], _natural_sort_key(i["subject"])))
