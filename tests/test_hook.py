@@ -230,5 +230,61 @@ class TestInstall(unittest.TestCase):
         self.assertEqual(written["env"], {"SOME_FLAG": "1"})
 
 
+class TestStateWriteFailureIsVisible(unittest.TestCase):
+    """A hook that cannot write its state must SAY so, not exit 0 and vanish.
+
+    There was no control here, and the handler shipped with a comment asserting
+    the opposite of the platform's behaviour: it printed to stderr and returned
+    0, "visible in the transcript, so the failure isn't hidden". Measured
+    2026-08-06 -- stderr from a hook exiting 0 does not reach the transcript at
+    all, so Loom could stop recording state and nothing would say so.
+
+    Exit 2 would be wrong in the other direction: that is the BLOCKING code, and
+    a state-recorder must never stop a tool call. Any other non-zero is
+    non-blocking and shows its first stderr line, which is what the original
+    comment was reaching for. Both halves are asserted below, because a fix that
+    made this visible by blocking would be worse than the bug.
+    """
+
+    def _run_with_unwritable_state(self):
+        import os
+        import sys
+        from unittest import mock
+        from hooks import loom_hook
+        payload = json.dumps({"session_id": "t", "hook_event_name": "Stop"})
+        err = io.StringIO()
+        with mock.patch.object(loom_hook, "handle", side_effect=OSError("read-only file system")), \
+             mock.patch.object(sys, "argv", ["loom_hook.py", "Stop"]), \
+             mock.patch.object(sys, "stdin", io.StringIO(payload)), \
+             contextlib.redirect_stderr(err):
+            rc = loom_hook.main()
+        return rc, err.getvalue()
+
+    def test_returns_nonzero_so_the_message_reaches_the_transcript(self):
+        rc, _ = self._run_with_unwritable_state()
+        self.assertNotEqual(rc, 0, "exit 0 is non-blocking but SILENT; the failure would vanish")
+
+    def test_does_not_return_2_because_it_must_never_block_a_tool_call(self):
+        rc, _ = self._run_with_unwritable_state()
+        self.assertNotEqual(rc, 2, "exit 2 blocks the triggering tool call; a state recorder must not")
+
+    def test_says_what_went_wrong_on_stderr(self):
+        _, err = self._run_with_unwritable_state()
+        self.assertIn("could not write state", err)
+        self.assertIn("read-only file system", err, "the underlying reason must survive into the message")
+
+    def test_a_successful_run_still_exits_zero(self):
+        """The positive control. Without it, a handler that always failed would
+        satisfy every assertion above."""
+        import sys
+        from unittest import mock
+        from hooks import loom_hook
+        payload = json.dumps({"session_id": "t", "hook_event_name": "Stop"})
+        with mock.patch.object(loom_hook, "handle", return_value=None), \
+             mock.patch.object(sys, "argv", ["loom_hook.py", "Stop"]), \
+             mock.patch.object(sys, "stdin", io.StringIO(payload)):
+            self.assertEqual(loom_hook.main(), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
