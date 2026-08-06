@@ -8,7 +8,8 @@ from contextlib import redirect_stdout
 from loom.collect import SCHEMA_VERSION
 from loom.rank import rank_snapshot
 from loom.runner import ReplayRunner
-from loom_cli import main, discover_repos, repo_roots, parse_port, build_snapshot, render_text
+from loom_cli import (main, discover_repos, repo_roots, parse_port, build_snapshot,
+                      render_text, read_allow_list, allow_list_config)
 
 
 class TestDiscoverRepos(unittest.TestCase):
@@ -47,6 +48,155 @@ class TestDiscoverRepos(unittest.TestCase):
         result = discover_repos("/base", listdir)
         self.assertEqual(result, ["/base/repo"])
         self.assertEqual(sorted(calls), ["/base", "/base/repo"])
+
+
+class TestAllowList(unittest.TestCase):
+    """Which repositories the board shows. Spec: 2026-08-06-allow-list-design.md.
+
+    `--all` showed every `.git` child of ~/Launchpad with no filter, so three completed
+    challenges occupied the board and 4 subprocess spawns per tick each. An allow list
+    was chosen over a deny list because it stays four lines as Launchpad accumulates
+    challenges, and over activity-based filtering because recency provably cannot
+    separate the two sets -- `skills` is as stale as the repos being excluded and is
+    wanted; `worktrees-challenge` is fresher and is not.
+
+    The two absence cases are the part that matters: a missing file and an empty file
+    must BOTH mean every repository, never none. A config that silently empties the
+    board is the empty-versus-broken confusion this project exists to refuse.
+    """
+
+    TREE = {"/base": ["loom", "serina-learning", "skills", "nextjs-project", "loosefile"],
+            "/base/loom": [".git"], "/base/serina-learning": [".git"],
+            "/base/skills": [".git"], "/base/nextjs-project": [".git"],
+            "/base/loosefile": []}
+
+    def _listdir(self, d):
+        if d not in self.TREE:
+            raise NotADirectoryError(d)
+        return self.TREE[d]
+
+    def _names(self, allow):
+        return [p.rsplit("/", 1)[-1]
+                for p in discover_repos("/base", self._listdir, allow=allow)]
+
+    # ---------------------------------------------------------- the absences
+    def test_no_allow_list_shows_every_repository(self):
+        # Absent config must never mean an empty board.
+        self.assertEqual(self._names(None),
+                         ["loom", "nextjs-project", "serina-learning", "skills"])
+
+    def test_an_empty_allow_list_shows_every_repository(self):
+        # Approved explicitly: an empty file is far likelier to be a truncated write
+        # than a request for a blank board.
+        self.assertEqual(self._names([]),
+                         ["loom", "nextjs-project", "serina-learning", "skills"])
+
+    # ---------------------------------------------------------- the filtering
+    def test_only_the_named_repositories_are_returned(self):
+        self.assertEqual(self._names(["loom", "skills"]), ["loom", "skills"])
+
+    def test_a_repository_absent_from_the_list_is_excluded(self):
+        # The negative control for the test above.
+        self.assertNotIn("nextjs-project", self._names(["loom", "skills"]))
+
+    def test_a_name_that_matches_nothing_does_not_remove_the_good_ones(self):
+        # A typo must not silently shrink the board to nothing.
+        self.assertEqual(self._names(["loom", "serina-skils"]), ["loom"])
+
+    def test_a_non_repository_directory_is_still_excluded_even_if_listed(self):
+        # `loosefile` has no .git; naming it must not conjure a repository.
+        self.assertEqual(self._names(["loom", "loosefile"]), ["loom"])
+
+
+class TestConfigField(unittest.TestCase):
+    """The honesty channel. Spec: a name matching no repository is REPORTED, never
+    silently dropped -- the same failure as `gh` returning empty with exit code 0.
+
+    `config` is present on EVERY snapshot, including single-repo runs, because a field
+    that appears and disappears is a field consumers get wrong.
+    """
+
+    TREE = {"/base": ["loom", "skills"], "/base/loom": [".git"], "/base/skills": [".git"]}
+
+    def _listdir(self, d):
+        if d not in self.TREE:
+            raise NotADirectoryError(d)
+        return self.TREE[d]
+
+    def test_a_missing_name_is_reported(self):
+        cfg = allow_list_config("/p/repos", ["loom", "serina-skils"], "/base", self._listdir)
+        self.assertEqual(cfg["missing"], ["serina-skils"])
+        self.assertEqual(cfg["listed"], 2)
+        self.assertEqual(cfg["source"], "/p/repos")
+
+    def test_names_that_all_exist_report_nothing_missing(self):
+        # The negative control: `missing` must be able to come back empty.
+        cfg = allow_list_config("/p/repos", ["loom", "skills"], "/base", self._listdir)
+        self.assertEqual(cfg["missing"], [])
+
+    def test_no_file_reports_a_null_source_and_nothing_listed(self):
+        cfg = allow_list_config(None, None, "/base", self._listdir)
+        self.assertIsNone(cfg["source"])
+        self.assertEqual(cfg["listed"], 0)
+        self.assertEqual(cfg["missing"], [])
+
+    def test_an_empty_file_still_reports_its_source(self):
+        # The file EXISTS and names nothing -- distinguishable from no file at all.
+        cfg = allow_list_config("/p/repos", [], "/base", self._listdir)
+        self.assertEqual(cfg["source"], "/p/repos")
+        self.assertEqual(cfg["listed"], 0)
+
+    def test_render_text_says_so_when_a_name_matched_nothing(self):
+        snap = {"schema": SCHEMA_VERSION, "repos": [], "needs_you": [],
+                "config": {"source": "/p/repos", "listed": 2, "missing": ["serina-skils"]}}
+        text = render_text(snap)
+        self.assertIn("serina-skils", text)
+
+    def test_render_text_is_silent_when_nothing_is_missing(self):
+        # Negative control: it must not print a warning on a healthy config.
+        snap = {"schema": SCHEMA_VERSION, "repos": [], "needs_you": [],
+                "config": {"source": "/p/repos", "listed": 2, "missing": []}}
+        self.assertNotIn("not found", render_text(snap).lower())
+
+
+class TestReadAllowList(unittest.TestCase):
+    """Parsing the file. The reader is injected so ABSENCE can be tested -- the v1
+    design's rule that a hardcoded path cannot be negative-tested."""
+
+    def _read(self, text):
+        def reader(path):
+            if text is None:
+                raise FileNotFoundError(path)
+            return text
+        return read_allow_list("/nowhere/repos", reader)
+
+    def test_a_missing_file_reads_as_none_not_an_empty_list(self):
+        # None and [] both mean "show everything", but they are different FACTS and the
+        # `config` field reports them differently.
+        self.assertIsNone(self._read(None))
+
+    def test_one_name_per_line(self):
+        self.assertEqual(self._read("loom\nskills\n"), ["loom", "skills"])
+
+    def test_comments_and_blank_lines_are_ignored(self):
+        self.assertEqual(
+            self._read("# which repos\n\nloom\n\n# done with this one\nskills\n"),
+            ["loom", "skills"])
+
+    def test_an_inline_comment_is_stripped(self):
+        self.assertEqual(self._read("loom  # the dashboard itself\n"), ["loom"])
+
+    def test_surrounding_whitespace_is_stripped(self):
+        self.assertEqual(self._read("  loom\t\n\tskills  \n"), ["loom", "skills"])
+
+    def test_a_file_of_only_comments_reads_as_an_empty_list(self):
+        # Empty list, not None: the file EXISTS. `config.source` should say so.
+        self.assertEqual(self._read("# nothing here yet\n\n"), [])
+
+    def test_an_unreadable_file_reads_as_none_rather_than_raising(self):
+        def reader(path):
+            raise PermissionError(path)
+        self.assertIsNone(read_allow_list("/nowhere/repos", reader))
 
 
 class TestCli(unittest.TestCase):
