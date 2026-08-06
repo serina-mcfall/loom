@@ -112,13 +112,31 @@ def main() -> int:
     try:
         handle(event, payload, DEFAULT_STATE_DIR, now, os.getppid())
     except OSError as exc:
-        # Per the Claude Code hooks docs: exit 2 is a blocking error, any other
-        # non-zero exit is non-blocking (the triggering tool call proceeds
-        # regardless), and Notification hooks cannot block at all. So a crash
-        # here would never break anything -- it would just spam the transcript
-        # with a traceback on every single firing. Print one line to stderr
-        # (visible in the transcript, so the failure isn't hidden) and exit 0.
+        # Per the Claude Code hooks docs: exit 2 is a blocking error, ANY OTHER
+        # non-zero exit is non-blocking -- the triggering tool call proceeds --
+        # and the first line of stderr is shown in the transcript. Exit 0 is the
+        # one code that is both non-blocking AND silent: its stdout is parsed as
+        # JSON for a decision, and its stderr goes nowhere.
+        #
+        # THIS RETURNED 0, AND THE COMMENT CLAIMED THAT WAS VISIBLE. It was not.
+        # Measured 2026-08-06 with two identical UserPromptSubmit hooks in one
+        # run, differing only in exit code:
+        #
+        #   echo CANARY >&2 ; exit 0   -> 0 occurrences in the transcript
+        #   echo CANARY >&2 ; exit 1   -> 1 occurrence
+        #
+        # and guarded against the vacuous reading -- that the exit-0 hook simply
+        # never fired -- by having it also write a witness file. The witness was
+        # written; its stderr still never appeared. So the hook ran and its
+        # complaint vanished.
+        #
+        # The intent was "visible but non-blocking", which is exactly what a
+        # non-zero, non-2 exit gives. Exit 0 gave silent-and-non-blocking: if
+        # Loom could not write its state, the board quietly stopped updating and
+        # nothing said so. Returning 1 keeps every property the original wanted
+        # and adds the one it thought it already had.
         print(f"loom hook: could not write state: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 
