@@ -3,5 +3,17 @@ __pycache__/
 *.pyc
 .venv/
 
-# Verification stamp written by verify-gate.sh — local state, never shared.
+# Session-local state written by the global hooks in ~/.claude/hooks/. Every one of
+# these is regenerated per session and means nothing to anyone else's checkout.
+#
+# DELIBERATELY NARROW, NEVER A BLANKET `.claude/` RULE. `.claude/skills/` and
+# `.claude/agents/` are project content in other repos here and stay tracked; a
+# directory-wide ignore would silently hide them the day this repo grows one. Same
+# convention as worktrees-challenge and serina-learning, and for the same reason.
 .claude/.verified
+.claude/.session-tracker
+.claude/.sid-*
+.claude/.worklog.lock
+.claude/.edit-count
+.claude/session-journal.md
+.claude/worklog.md
