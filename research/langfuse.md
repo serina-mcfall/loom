@@ -173,7 +173,16 @@ it also carried `span.type`, `speed`, `duration_ms`, `stop_reason`, `request_id`
 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
 model, gen_ai.system, gen_ai.request.model, gen_ai.response.id,
 gen_ai.response.finish_reasons
+session.id
 ```
+
+**`session.id` is on the list because the design depends on it.** It appeared on *both*
+spans, the same UUID on each, and it is the join key back to Loom's hook state files. The
+first version of this block omitted it — having been rewritten specifically to stop reading
+as exhaustive, it enumerated eight incidental attributes and left out the one load-bearing
+one. Verified in shape only: both are UUIDs and `session.id` is stable across the run, but
+no hook state file from that same run was captured, so the join has not been demonstrated
+end to end.
 
 All four of the buckets issue #11 needs, priced differently from each other, plus a
 *partial* GenAI semantic-convention set.

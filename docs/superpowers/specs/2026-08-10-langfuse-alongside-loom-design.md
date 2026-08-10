@@ -1,5 +1,15 @@
 # Loom and Langfuse — history beside the live board
 
+- **Date:** 2026-08-10
+- **Status:** **proposed — NOT approved. Do not build from this.** Its author has not yet
+  signed it off. The two sibling specs in this directory are `approved` and `built and
+  merged`; this one is neither, and the absence of this line was itself a review finding —
+  the "not approved" signal previously lived only in a pull-request description, which is
+  not what a reader of `main` opens.
+- **Author:** Claude, at Serina McFall's request
+- **Supersedes:** nothing. Fills the "Cost, tokens and model spend" item the v1 design
+  deferred at [`2026-08-03-loom-design.md`](2026-08-03-loom-design.md)
+
 Loom answers *what needs me now*. It is stateless by design: one snapshot, no history,
 no datastore. That is why it is a stdlib-only project with zero dependencies.
 
@@ -48,18 +58,25 @@ Claude Code  ──OTLP/HTTP──▶  otelcol-contrib (local)  ──OTLP/HTTP�
 Loom  ──reads hook state + transcripts──▶  live board (UNCHANGED)
 ```
 
-The collector exists because of one measured fact: **Claude Code's spans carry token
-counts under names Langfuse does not read.** Observed on a real span, verbatim:
+The collector exists because of one measured fact and one documented one. **Measured:
+Claude Code's spans carry token counts under bare names.** The four token keys, verbatim
+— a selection of that span's attributes, not all of them:
 
 ```
 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
 ```
 
-Langfuse reads usage from `gen_ai.usage.*`, `llm.token_count.*` or
+**Documented, not measured: Langfuse does not say it reads those names.** It documents
+reading usage from `gen_ai.usage.*`, `llm.token_count.*` or
 `langfuse.observation.usage_details`. Claude Code emits some GenAI attributes
 (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.response.id`) but not the usage ones.
-A direct export would therefore land traces with **no tokens and no cost** — most of the
-value, silently absent.
+So a direct export would *probably* land traces with **no tokens and no cost** — most of
+the value, silently absent.
+
+*Probably*, because the receiving side was never tested. That distinction is load-bearing
+and it is the first open question below: if Langfuse happens to accept bare names by
+heuristic, this collector's rename is unnecessary and so is the section calling it a trust
+boundary.
 
 One thing needs no help: *"Any span with a `model` attribute is tracked as a
 `generation`."* The `claude_code.llm_request` span has `model`, so classification is free.
@@ -77,6 +94,13 @@ Self-hosting means installing Docker and running four services to evaluate a too
 collector removes the reason to fear hosting, because identity never leaves the machine.
 **If the constraint later becomes "nothing leaves at all", self-hosting is the exit, and
 nothing in this design has to change but the exporter endpoint.**
+
+**What the free tier costs this spec's own purpose.** It opens by promising *"what did
+this cost yesterday"* and *"is this run getting slower"*. Thirty days of access answers the
+first and only a month of the second: **no trend longer than a month is available on this
+tier, ever.** And the exit above is true for configuration but false for data — moving to
+self-hosted later does not recover expired history. So the free tier is right for learning
+the tool and wrong for a quarterly trend, and choosing it is choosing the first.
 
 ## The collector is the trust boundary
 
@@ -162,16 +186,27 @@ The config file may be committed; the environment file must not be, and goes in
 path, landing on Langfuse's documented `/api/public/otel/v1/traces`. Getting this wrong
 produces silent 404s, so stage 4 below checks for exactly that.
 
-## The one open question, and it is a spike not a guess
+## Two open questions, in this order, and both are spikes not guesses
 
-Whether `gen_ai.usage.*` understands **cache** buckets is unverified — Langfuse's docs
-give the wildcard and never enumerate it. `langfuse.observation.usage_details` accepts
-arbitrary keys as a JSON string and certainly would, but building JSON from four integer
-attributes in OTTL is awkward.
+**Zero — is the collector needed at all?** Nothing has tested whether Langfuse reads the
+bare `input_tokens` / `output_tokens` names. The research note says so plainly: *"Still
+unverified on the receiving side: Langfuse may accept bare names by heuristic. Only sending
+one span to a real instance settles that."*
 
-**So: send one span mapped both ways and look at the UI.** Whichever renders all four
-buckets becomes the config; the other is deleted. This is one step, before any of the
-rest is trusted, because everything downstream of it inherits the answer.
+This is first because it is the cheapest possible test and it can invalidate everything
+after it: **export one span with no collector in the path and look at the UI.** If tokens
+appear, the rename is unnecessary — and the identity-stripping the collector also does
+would need somewhere else to live, because that part is still required. Running the spikes
+in the other order means building a collector before knowing whether the rename it exists
+for is needed.
+
+**One — does `gen_ai.usage.*` understand cache buckets?** Unverified — Langfuse's docs give
+the wildcard and never enumerate it. `langfuse.observation.usage_details` accepts arbitrary
+keys as a JSON string and certainly would, but building JSON from four integer attributes
+in OTTL is awkward.
+
+**Send one span mapped both ways and look at the UI.** Whichever renders all four buckets
+becomes the config; the other is deleted. Everything downstream inherits the answer.
 
 ## Cost is not money owed, here either
 
@@ -195,14 +230,25 @@ ss -ltn | grep 4318
 
 # stage 3 — the negative check; anything but 0 is a leak
 grep -cE 'user\.(email|id|account)|organization\.id' debug.log
+
+# stage 3b — the POSITIVE check; anything but 1-or-more means the join key was lost
+grep -c 'session\.id' debug.log
 ```
 
 | Stage | Method | Pass |
 |---|---|---|
 | 0 | the two commands above | config valid, port listening |
 | 1–2 | add `debug` exporter with `verbosity: detailed` to the **same** pipeline | span printed, and `gen_ai.usage.input_tokens` present in it |
-| 3 | the `grep` above, against the debug log | **0** |
+| 3 | the identity `grep`, against the debug log | **0** |
+| 3b | the `session.id` `grep`, against the same log | **1 or more** |
 | 4 | one real turn, then the Langfuse UI | trace present, tokens non-zero |
+
+**Stage 3b exists because a review found every other stage can pass with the join key
+gone.** Stage 3 wants identity absent, stage 1–2 wants usage present, stage 4 wants tokens
+non-zero — none of them notices if `session.id` was stripped along with the identity
+attributes it sits beside. And without it the pairing has lost its point while looking
+entirely healthy. A rule that deletes five keys and must preserve a sixth needs a test for
+the sixth.
 
 Stage 1–2 works because `debug` sits at the end of the pipeline, so what it prints is
 **post-processing** — one look proves arrival and rename together.
@@ -254,3 +300,7 @@ That constraint applies to Loom's own panel and **not** to this work, which chan
 nothing in Loom and cannot make its board more convincing. This can proceed independently
 of #3 and #9. Stated explicitly so nobody has to guess whether the ordering was
 overlooked or considered.
+
+**And in any case both #3 and #9 are already closed**, so the constraint is satisfied
+rather than argued around. Worth saying: without it, this section reads as reasoning past
+two live prerequisites, which is a much weaker position than the one it is actually in.
