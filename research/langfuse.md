@@ -104,9 +104,9 @@ much heavier than "run a container".
 ## Open questions
 
 1. **Do Claude Code's spans actually carry the attributes Langfuse maps to usage and
-   cost?** Langfuse reads `langfuse.observation.usage_details` or `gen_ai.usage.*`
-   for tokens, and `langfuse.observation.cost_details` or `gen_ai.usage.cost` for
-   cost. Claude Code documents its *metric* names (`claude_code.token.usage`,
+   cost?** Langfuse reads `langfuse.observation.usage_details`, `gen_ai.usage.*` or
+   `llm.token_count.*` for tokens, and `langfuse.observation.cost_details` or
+   `gen_ai.usage.cost` for cost. Claude Code documents its *metric* names (`claude_code.token.usage`,
    `claude_code.cost.usage`) but the span attribute names were not on the page I
    read. **This is the load-bearing unknown** — if the spans carry usage under other
    names, Langfuse will show traces with no tokens and no cost, which is most of the
@@ -164,16 +164,26 @@ claude -p --model claude-haiku-4-5-20251001 "Reply with exactly the word: ok"
 `claude_code.interaction` (root) and a child `claude_code.llm_request` — under
 instrumentation scope `com.anthropic.claude_code.tracing` v1.0.0.
 
-**Token usage IS on the span — under bare names, not `gen_ai.usage.*`.** Observed
-attribute keys on `claude_code.llm_request`, verbatim:
+**Token usage IS on the span — under bare names, not `gen_ai.usage.*`.** The keys below
+are a **selection** of what `claude_code.llm_request` carried, not an exhaustive dump —
+it also carried `span.type`, `speed`, `duration_ms`, `stop_reason`, `request_id`,
+`ttft_ms`, `attempt` and `client_request_id`. Quoted verbatim, the ones that matter here:
 
 ```
 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+model, gen_ai.system, gen_ai.request.model, gen_ai.response.id,
+gen_ai.response.finish_reasons
 ```
 
-All four of the buckets issue #11 needs, and priced differently from each other.
-Alongside them, a *partial* GenAI semantic-convention set: `gen_ai.system`,
-`gen_ai.request.model`, `gen_ai.response.id`, `gen_ai.response.finish_reasons`.
+All four of the buckets issue #11 needs, priced differently from each other, plus a
+*partial* GenAI semantic-convention set.
+
+**Note `model` and `gen_ai.request.model` are BOTH present**, carrying the same value.
+That matters: Langfuse's mapping page says *"Any span with a `model` attribute is tracked
+as a `generation`"*, so classification needs no rename. Recorded explicitly because an
+earlier version of this section listed only `gen_ai.request.model` and read as if it were
+the complete set — which led a reviewer to file a Blocker on the reasonable inference that
+no bare `model` key existed. The list was a selection; the wording did not say so.
 
 **There is no cost attribute on the span at all.** No `gen_ai.usage.cost`, no
 `langfuse.observation.cost_details`. Cost appears only as the separate
@@ -205,6 +215,13 @@ Anything shipped to a hosted Langfuse carries those with it.
 3. **The units arithmetic assumed tool and hook spans.** This turn used no tools and
    produced two spans, not thirty. The 1,500–2,000-turns estimate holds only for
    tool-heavy work; a quiet session is far cheaper. Incomplete, not wrong.
+
+4. **The usage-mapping list dropped one key, and the attribute dump read as exhaustive.**
+   Both found by the `review-docs` pass on PR #22, and both fixed above: the fetch
+   returned three usage sources and this note recorded two, and the observed-attributes
+   block did not say it was a selection. Neither made a false claim — but the second one
+   cost a competent reviewer a Blocker filed on a true statement, which is a real cost
+   even when the document is technically correct.
 
 ## Check these first
 
