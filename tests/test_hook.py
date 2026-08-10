@@ -246,14 +246,13 @@ class TestStateWriteFailureIsVisible(unittest.TestCase):
     made this visible by blocking would be worse than the bug.
     """
 
-    def _run_with_unwritable_state(self):
-        import os
+    def _run_with_unwritable_state(self, reason="read-only file system"):
         import sys
         from unittest import mock
         from hooks import loom_hook
         payload = json.dumps({"session_id": "t", "hook_event_name": "Stop"})
         err = io.StringIO()
-        with mock.patch.object(loom_hook, "handle", side_effect=OSError("read-only file system")), \
+        with mock.patch.object(loom_hook, "handle", side_effect=OSError(reason)), \
              mock.patch.object(sys, "argv", ["loom_hook.py", "Stop"]), \
              mock.patch.object(sys, "stdin", io.StringIO(payload)), \
              contextlib.redirect_stderr(err):
@@ -272,6 +271,22 @@ class TestStateWriteFailureIsVisible(unittest.TestCase):
         _, err = self._run_with_unwritable_state()
         self.assertIn("could not write state", err)
         self.assertIn("read-only file system", err, "the underlying reason must survive into the message")
+
+    def test_the_reason_is_the_real_exception_not_a_fixed_string(self):
+        """Two DIFFERENT reasons through the same path, because one is not a test.
+
+        A review mutated the handler to print a hardcoded string that happened to
+        match this class's own fixture, and all four assertions above still
+        passed -- the expected substring and the mocked message were the same
+        literal, so nothing proved `{exc}` was interpolated at all. No single
+        hardcoded message can satisfy both halves of this one.
+        """
+        _, first = self._run_with_unwritable_state("disk quota exceeded")
+        _, second = self._run_with_unwritable_state("errno 30 on /home/x/.loom/state")
+        self.assertIn("disk quota exceeded", first)
+        self.assertNotIn("errno 30", first)
+        self.assertIn("errno 30 on /home/x/.loom/state", second)
+        self.assertNotIn("disk quota", second)
 
     def test_a_successful_run_still_exits_zero(self):
         """The positive control. Without it, a handler that always failed would

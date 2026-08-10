@@ -131,10 +131,18 @@ def main() -> int:
         # complaint vanished.
         #
         # The intent was "visible but non-blocking", which is exactly what a
-        # non-zero, non-2 exit gives. Exit 0 gave silent-and-non-blocking: if
-        # Loom could not write its state, the board quietly stopped updating and
-        # nothing said so. Returning 1 keeps every property the original wanted
-        # and adds the one it thought it already had.
+        # non-zero, non-2 exit gives. Exit 0 gave silent-and-non-blocking: when
+        # the state write failed, the board quietly stopped updating and nothing
+        # said so. Returning 1 keeps every property the original wanted and adds
+        # the one it thought it already had.
+        #
+        # SCOPE, so this is not read as a general guarantee: it covers an OSError
+        # raised by the write, and nothing else. A malformed payload still no-ops
+        # in silence -- json.load fails above, payload becomes {}, handle()
+        # returns None on the missing session_id, and this returns 0. Left that
+        # way deliberately: Claude Code sends valid JSON, so a decode failure
+        # means something stranger than a full disk and wants its own diagnosis,
+        # not this message. The board can still go stale for that reason.
         print(f"loom hook: could not write state: {exc}", file=sys.stderr)
         return 1
     return 0
