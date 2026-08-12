@@ -150,7 +150,7 @@ processors:
     trace_statements:
       - set(span.attributes["gen_ai.usage.input_tokens"],  span.attributes["input_tokens"])
       - set(span.attributes["gen_ai.usage.output_tokens"], span.attributes["output_tokens"])
-      # cache buckets: see "The one open question" below
+      # cache buckets: see "Two open questions" below (question one)
 
   attributes/strip_identity:
     actions:
@@ -193,12 +193,30 @@ bare `input_tokens` / `output_tokens` names. The research note says so plainly: 
 unverified on the receiving side: Langfuse may accept bare names by heuristic. Only sending
 one span to a real instance settles that."*
 
-This is first because it is the cheapest possible test and it can invalidate everything
-after it: **export one span with no collector in the path and look at the UI.** If tokens
-appear, the rename is unnecessary — and the identity-stripping the collector also does
-would need somewhere else to live, because that part is still required. Running the spikes
-in the other order means building a collector before knowing whether the rename it exists
-for is needed.
+This is first because it can invalidate everything after it. **Run it with a strip-only
+collector: the `attributes/strip_identity` processor above and nothing else, no
+`transform/usage` in the pipeline.** Then look at the Langfuse UI. If tokens appear, the
+rename is unnecessary and the collector shrinks to identity stripping alone.
+
+**Do NOT run this by exporting straight to Langfuse with no collector.** An earlier draft of
+this section said to do exactly that, and a review caught it as a Blocker: every span carries
+`user.email`, `user.id`, `organization.id`, `user.account_uuid` and `user.account_id` — all
+five on **both** spans of the measured turn, verified by count against the raw exporter dump.
+So a bare export ships real identity to a third-party vendor, irreversibly, in the one
+document whose central claim is that identity never leaves the machine. The precaution has to
+sit in the instruction, not be assumed by the reader.
+
+**And it cannot be solved at source.** Claude Code's `OTEL_METRICS_INCLUDE_ACCOUNT_UUID` and
+`OTEL_METRICS_INCLUDE_SESSION_ID` switches apply to **metrics only, not spans**, and its docs
+say `organization.id`, `user.id` and `user.email` are *"always included"* — not controlled by
+any flag. There is no emitter-side way to withhold them, which is precisely why the collector
+is a trust boundary rather than a convenience.
+
+**The ordering argument survives, narrowed.** The point was never "no collector"; it was *do
+not build the rename before testing whether the rename is needed*. A strip-only pipeline is
+one processor this spec already specifies, reused unchanged, and it leaves the token names
+untouched — so the spike still answers exactly the question it was written to answer, while
+the part actually under test stays unbuilt.
 
 **One — does `gen_ai.usage.*` understand cache buckets?** Unverified — Langfuse's docs give
 the wildcard and never enumerate it. `langfuse.observation.usage_details` accepts arbitrary

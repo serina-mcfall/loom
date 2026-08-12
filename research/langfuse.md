@@ -208,6 +208,14 @@ included `user.email`, `user.id`, `organization.id`, `user.account_uuid` and
 `user.account_id` as attributes (values deliberately not reproduced in this note).
 Anything shipped to a hosted Langfuse carries those with it.
 
+**And the emitter cannot be asked to withhold them.** `OTEL_METRICS_INCLUDE_ACCOUNT_UUID`
+and `OTEL_METRICS_INCLUDE_SESSION_ID` exist, but the docs scope them to **metrics, not
+spans**, and say `organization.id`, `user.id` and `user.email` are *"always included"* —
+not controlled by any flag. The `OTEL_LOG_*` switches do reach spans, but they govern
+prompt, response and tool **content**, which is already off by default. So identity can
+only be removed downstream, which is what makes a collector a trust boundary rather than a
+convenience. Checked 2026-08-12 against the Claude Code monitoring docs.
+
 ## Corrections — what this note got wrong
 
 **Nothing in the note was false.** The rules held. Three things were incomplete:
