@@ -3,6 +3,12 @@
 Researched 2026-08-10 · findings apply to Langfuse **v4** (the version the
 self-hosting page documents) and to Claude Code's telemetry docs as of the same date.
 
+**Two dates, deliberately.** Everything below is as of 2026-08-10 unless a passage carries
+its own later date inline — one addition, about whether identity can be suppressed at
+source, was checked 2026-08-12. Dated in place rather than by bumping this header, because
+re-dating the whole note would silently claim the older claims were re-checked when they
+were not.
+
 **Read this caveat first.** Every quote below was retrieved by a fetch tool that
 renders a page through a summarising model. The wording is therefore *reported* as
 verbatim, not *proven* verbatim. Before depending on any exact string — an
@@ -173,7 +179,16 @@ it also carried `span.type`, `speed`, `duration_ms`, `stop_reason`, `request_id`
 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
 model, gen_ai.system, gen_ai.request.model, gen_ai.response.id,
 gen_ai.response.finish_reasons
+session.id
 ```
+
+**`session.id` is on the list because the design depends on it.** It appeared on *both*
+spans, the same UUID on each, and it is the join key back to Loom's hook state files. The
+first version of this block omitted it — having been rewritten specifically to stop reading
+as exhaustive, it enumerated eight incidental attributes and left out the one load-bearing
+one. Verified in shape only: both are UUIDs and `session.id` is stable across the run, but
+no hook state file from that same run was captured, so the join has not been demonstrated
+end to end.
 
 All four of the buckets issue #11 needs, priced differently from each other, plus a
 *partial* GenAI semantic-convention set.
@@ -198,6 +213,14 @@ without a masking callback.
 included `user.email`, `user.id`, `organization.id`, `user.account_uuid` and
 `user.account_id` as attributes (values deliberately not reproduced in this note).
 Anything shipped to a hosted Langfuse carries those with it.
+
+**And the emitter cannot be asked to withhold them.** `OTEL_METRICS_INCLUDE_ACCOUNT_UUID`
+and `OTEL_METRICS_INCLUDE_SESSION_ID` exist, but the docs scope them to **metrics, not
+spans**, and say `organization.id`, `user.id` and `user.email` are *"always included"* —
+not controlled by any flag. The `OTEL_LOG_*` switches do reach spans, but they govern
+prompt, response and tool **content**, which is already off by default. So identity can
+only be removed downstream, which is what makes a collector a trust boundary rather than a
+convenience. Checked 2026-08-12 against the Claude Code monitoring docs.
 
 ## Corrections — what this note got wrong
 

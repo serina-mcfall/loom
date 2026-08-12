@@ -13,11 +13,24 @@ what the code did. This is that enumeration.
 |---|---|
 | [`../README.md`](../README.md) | How to run Loom, and its one requirement (Python 3.10+) |
 | [`superpowers/specs/2026-08-03-loom-design.md`](superpowers/specs/2026-08-03-loom-design.md) | The design: architecture, the snapshot contract, error honesty, ranking, accessibility requirements, threat model — **and a corrections list recording every place execution proved the original wrong** |
+| [`superpowers/specs/2026-08-06-allow-list-design.md`](superpowers/specs/2026-08-06-allow-list-design.md) | Which repositories the board shows: an allow list, not a deny list, and why a missing name is reported rather than dropped |
+| [`../research/langfuse.md`](../research/langfuse.md) | What Langfuse is, what Claude Code's OTEL spans actually carry, and what stays unverified. A research note, so it describes **external** behaviour rather than this code — dated, sourced, and carrying its own corrections |
 
 **The corrections list is the load-bearing part.** A spec that quietly matches whatever
 got built teaches nobody anything, so when the code and the document disagree the
 document records *why* rather than being rewritten to match. Nine corrections so far;
 three were added by the 2026-08-05 audit.
+
+## Proposed — designs not yet approved, and NOT to be built from
+
+| Document | What it is |
+|---|---|
+| [`superpowers/specs/2026-08-10-langfuse-alongside-loom-design.md`](superpowers/specs/2026-08-10-langfuse-alongside-loom-design.md) | Pairing Langfuse with Loom through a local OTEL collector, so history and trends live outside Loom. **Status: proposed, not approved.** Two open spikes: the first can retire the collector's attribute *rename*, though not its identity stripping, which is required either way |
+
+This section exists because the index had nowhere to file a design that was written,
+reviewed and merged but **not** approved. Without it the only home was *Authoritative*,
+which would have been a lie, and a reader comparing an unapproved spec against the code
+would log every difference as drift.
 
 ## Findings — a snapshot in time, not a description of the code
 
