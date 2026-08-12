@@ -25,7 +25,7 @@ three were added by the 2026-08-05 audit.
 
 | Document | What it is |
 |---|---|
-| [`superpowers/specs/2026-08-10-langfuse-alongside-loom-design.md`](superpowers/specs/2026-08-10-langfuse-alongside-loom-design.md) | Pairing Langfuse with Loom through a local OTEL collector, so history and trends live outside Loom. **Status: proposed, not approved.** Two open spikes, the first of which can invalidate the design's central component |
+| [`superpowers/specs/2026-08-10-langfuse-alongside-loom-design.md`](superpowers/specs/2026-08-10-langfuse-alongside-loom-design.md) | Pairing Langfuse with Loom through a local OTEL collector, so history and trends live outside Loom. **Status: proposed, not approved.** Two open spikes: the first can retire the collector's attribute *rename*, though not its identity stripping, which is required either way |
 
 This section exists because the index had nowhere to file a design that was written,
 reviewed and merged but **not** approved. Without it the only home was *Authoritative*,

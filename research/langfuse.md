@@ -3,6 +3,12 @@
 Researched 2026-08-10 · findings apply to Langfuse **v4** (the version the
 self-hosting page documents) and to Claude Code's telemetry docs as of the same date.
 
+**Two dates, deliberately.** Everything below is as of 2026-08-10 unless a passage carries
+its own later date inline — one addition, about whether identity can be suppressed at
+source, was checked 2026-08-12. Dated in place rather than by bumping this header, because
+re-dating the whole note would silently claim the older claims were re-checked when they
+were not.
+
 **Read this caveat first.** Every quote below was retrieved by a fetch tool that
 renders a page through a summarising model. The wording is therefore *reported* as
 verbatim, not *proven* verbatim. Before depending on any exact string — an

@@ -75,8 +75,14 @@ the value, silently absent.
 
 *Probably*, because the receiving side was never tested. That distinction is load-bearing
 and it is the first open question below: if Langfuse happens to accept bare names by
-heuristic, this collector's rename is unnecessary and so is the section calling it a trust
-boundary.
+heuristic, **the rename is unnecessary — and nothing else here is.**
+
+**The identity stripping stays either way, and this sentence used to say otherwise.** It
+read "and so is the section calling it a trust boundary", which pointed at the identity
+section and told a reader a positive spike result made identity stripping moot. It does
+not: identity cannot be withheld at source (see below), so the strip is unconditional and
+the only thing the spike can retire is the rename. A review filed that as a Blocker,
+correctly — it reintroduced the leak two paragraphs above the warning about it.
 
 One thing needs no help: *"Any span with a `model` attribute is tracked as a
 `generation`."* The `claude_code.llm_request` span has `model`, so classification is free.
@@ -319,6 +325,8 @@ nothing in Loom and cannot make its board more convincing. This can proceed inde
 of #3 and #9. Stated explicitly so nobody has to guess whether the ordering was
 overlooked or considered.
 
-**And in any case both #3 and #9 are already closed**, so the constraint is satisfied
+**And in any case both #3 and #9 are already closed** — checked 2026-08-12 with
+`gh issue view 3` and `gh issue view 9`, both `CLOSED`: the green-badge-over-frozen-data
+bug and the live-agent-reports-`stale` bug respectively. So the constraint is satisfied
 rather than argued around. Worth saying: without it, this section reads as reasoning past
 two live prerequisites, which is a much weaker position than the one it is actually in.
