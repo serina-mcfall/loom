@@ -194,7 +194,13 @@ produces silent 404s, so stage 4 below checks for exactly that.
 
 ## Two open questions, in this order, and both are spikes not guesses
 
-**Zero — is the collector needed at all?** Nothing has tested whether Langfuse reads the
+**Zero — is the *rename* needed, or does Langfuse already accept bare token names?**
+Not "is the collector needed at all": no outcome of this spike can retire the collector,
+because the identity stripping is unconditional. The heading said otherwise from the commit
+that introduced it until this one — the third and last appearance of the conflation behind
+both Blockers on this branch, and a heading carries more weight than the prose walking it
+back.
+Nothing has tested whether Langfuse reads the
 bare `input_tokens` / `output_tokens` names. The research note says so plainly: *"Still
 unverified on the receiving side: Langfuse may accept bare names by heuristic. Only sending
 one span to a real instance settles that."*
