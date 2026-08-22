@@ -1,6 +1,7 @@
 Issue #11 — Add a tokens-and-cost panel, read from local transcripts
 Stated size: no `Size` line on the issue → directed by Serina at planning time (2026-08-17) to treat as more than an hour → cap: 12 steps
 Reviewed 2026-08-23 (review-plan) → 1 Blocker, 4 High, 1 Medium, all in the plan and none yet built. Amended in place the same day; the corrections and the evidence behind them are recorded inline rather than only in the review, so a builder reading this file alone still sees why each rule is what it is.
+Reviewed again 2026-08-23 (review-final, on the amendment) → 2 Blocker, 7 High, 5 Medium, 2 Low. The first amendment had reintroduced its own Blocker in a new place: it keyed a test fixture on the model id `claude-haiku-4-5`, which exists nowhere on disk — the real id is `claude-haiku-4-5-20251001` — so a pricing table built to pass that test would have blanked loom's own worktree forever. Twice now the same failure class: a rule derived from a plausible NAME rather than from what is actually written, wrong against real data, failing silently to `unknown`, guarded by a test built from the same wrong assumption. Every id-derivation rule in this plan is now stated against a count taken from disk, and no fixture takes its expected value from the rule under test.
 
 ALREADY TRUE  (verified against git and a live run, not notes)
   collect() assembles each worktree dict from gitsrc + agents + ghsrc, one call
@@ -23,10 +24,24 @@ ALREADY TRUE  (verified against git and a live run, not notes)
     where the real directory is `-home-serina--buzz-dev`, no such file exists,
     locate_transcript returns None, and every worktree reports cost `unknown`
     forever with every honesty check passing
+  the hook DELIBERATELY does not record the transcript path, and must not start
+    — hooks/loom_hook.py:3-4: "Deliberately records no prompt, no output, no
+    tool input and no transcript path. A local web server must never become a
+    place a transcript can leak from." The Claude Code hook payload carries
+    `transcript_path` verbatim, so every bit of slug-derivation machinery in
+    step 1 exists ONLY because that rule says no. Recorded here because the
+    shortcut is obvious and looks like a simplification: the hook writes six
+    fields (loom_hook.py:71-101) and it must not gain a seventh.
   a transcript line carries top-level `sessionId`, `cwd`, and
     `message.model` + `message.usage.{input_tokens, cache_creation_input_tokens,
     cache_read_input_tokens, output_tokens}` — verified live by reading key
     names off ~/.claude/projects/-home-serina-Launchpad-loom/7033de3a-*.jsonl
+  `message.usage` ALSO carries a nested `cache_creation` object splitting the
+    cache-write total by TTL: {ephemeral_5m_input_tokens,
+    ephemeral_1h_input_tokens}. Present on 699 of 699 usage-bearing lines
+    checked 2026-08-23. Step 3 prices from these two sub-keys, not from the
+    flat cache_creation_input_tokens, so the evidence is recorded here rather
+    than left implicit in the step
   view.py is the sole place display DECISIONS are made (badge, aggregate_needs,
     announcement); loom.js only paints what it is handed — stated as the
     module's own boundary rule (loom/view.py:1-18)
@@ -71,7 +86,36 @@ STEP 3  cost.py: pricing table + sum_cost(usage_records) -> cost dict   [needs 2
         5-minute rate would have printed ~$129 where the honest figure is ~$155,
         roughly 16% low — a wrong number, confidently, which is the one outcome
         #11 says this panel exists to refuse.
-        Plus a "prices_as_of" date constant beside the table (per OPEN-4).
+        THE TABLE IS KEYED ON THE MODEL IDS THAT ACTUALLY APPEAR ON DISK, NOT
+        ON THE FRIENDLY ALIASES. Counted 2026-08-23 across every transcript in
+        ~/.claude/projects/, on usage-bearing lines only — seven distinct ids,
+        not two:
+            claude-opus-5              x36670      claude-fable-5     x257
+            claude-sonnet-5            x19278      claude-opus-4-8    x79
+            claude-opus-4-7             x8569      <synthetic>        x62
+            claude-haiku-4-5-20251001    x477
+        Note `claude-haiku-4-5-20251001`, dated. An earlier draft of this step
+        keyed its fixture on the bare `claude-haiku-4-5`, which exists nowhere
+        on disk — the same class of defect as the slug rule above, and it would
+        have failed the same silent way. So: normalise a trailing `-\d{8}` off
+        the id before lookup, and price the six real models.
+        `<synthetic>` is NOT a model and carries no cost — it is what a local
+        API-error message is tagged with. Skip those records explicitly rather
+        than letting them fall through the unrecognised-model branch, which
+        would blank a whole worktree over one transient error.
+        RATES, from platform.claude.com pricing as of 2026-08-23, USD per
+        million tokens, input/output. Keyed on the NORMALISED id — the table
+        says `claude-haiku-4-5` and the lookup strips the `-20251001` first:
+            claude-fable-5   10 / 50     claude-opus-4-8    5 / 25
+            claude-opus-5     5 / 25     claude-opus-4-7    5 / 25
+            claude-sonnet-5   3 / 15     claude-haiku-4-5   1 /  5
+        Cache multipliers apply to that model's INPUT rate: read 0.1x,
+        5-minute write 1.25x, 1-hour write 2x.
+        These live in the plan rather than only in the code so step 3's test can
+        assert against a figure with a stated source. `prices_as_of` is the
+        constant beside the table holding that date (OPEN-4), and it is carried
+        all the way to the label in step 6 — a date that stops at the module
+        boundary implements nothing.
         Cost is summed PER RECORD at that record's own model's rates and then
         totalled — never one model's rate applied to a mixed-model list (OPEN-6).
         sum_cost() returns {"tokens": {5 buckets}, "model": <the model carrying
@@ -79,46 +123,93 @@ STEP 3  cost.py: pricing table + sum_cost(usage_records) -> cost dict   [needs 2
         "notional_cost_usd": float|None, "prices_as_of": <date string>}.
         An unrecognised model in ANY record, or a bucket absent from every
         record, returns notional_cost_usd=None — never a number from a guess.
-        done when: `python3 -c "from loom.cost import sum_cost; ..."` against a
-        fixture whose bucket values are known by hand prints the EXACT expected
-        notional_cost_usd. Not merely a numeric one — "a number appeared" is
-        true of every wrong rate as well as the right one. A second fixture
-        mixing claude-opus-5 and claude-haiku-4-5 records prints a populated
-        "model" and both entries in "models"; a third fixture with an
-        unrecognised model name prints notional_cost_usd: None
+        done when: a fixture of 1,000,000 output tokens on claude-opus-5 prints
+        notional_cost_usd 25.00 exactly, and 1,000,000 1-hour cache-write tokens
+        on the same model prints 10.00 (2x the 5/MTok input rate) where the
+        5-minute rate would print 6.25 — an assertion tied to the published
+        rates above, not re-derived from whatever table the code happens to
+        hold. A second fixture mixing claude-opus-5 with the DATED
+        claude-haiku-4-5-20251001 prints a populated "model" and both entries
+        in "models". A third containing a `<synthetic>` record prices the rest
+        and still returns a number. A fourth with a genuinely unknown model id
+        prints notional_cost_usd: None. And every distinct model id present in
+        ~/.claude/projects/ today resolves to a rate — assert that list, so a
+        new model shows up as a failing test rather than a blank panel
                                                                       ← RUNS HERE
 
 STEP 4  cost.py: worktree_cost(state_dir, worktree_path, home, now)   [needs 1,2,3]
         Matches every session whose cwd is the worktree or inside it (the
         same prefix rule as agent_for, loom/agents.py:129-147), resolves and
         reads each one's transcript, and combines them.
+        Match on the session's RAW `cwd` for slug purposes, not the realpath.
+        agent_for realpaths before comparing (loom/agents.py:132-136) and that
+        is right for matching, but the slug must be built from the string Claude
+        Code itself saw — feed it a resolved path and any symlinked worktree
+        derives a directory that does not exist, returns None, and reports
+        unknown. Match on realpath; build the slug from the raw string.
         STALE SESSIONS ARE INCLUDED IN THE SUM AND COUNTED — never dropped,
-        and never folded in unlabelled (OPEN-5). A session is stale by the
-        rule agent_for already uses: WORKING_STALE_SECONDS / PARKED_STALE_SECONDS
-        against `since` (loom/agents.py:16-35, 177-196). That is why `now` is a
-        REQUIRED argument here rather than defaulted, for the same reason
-        agent_for requires it (loom/agents.py:133-137) — staleness must never
-        depend on an invisible clock. The result carries "stale_sessions": <count>
-        and "live_sessions": <count>, so the panel can say which part of a figure
-        is history rather than current burn.
+        and never folded in unlabelled (OPEN-5). Staleness here is THREE-WAY,
+        not two, because that is what agent_for actually does:
+          - terminal: state not in ACTIVE_STATES (agents.py:180-182 — "stopped/
+            unknown are already terminal"). reap() keeps stopped records for 24h
+            (collect.py:101-121), so without this branch a session that ended ten
+            minutes ago counts as live and its whole history reads as current
+            burn — precisely what OPEN-5 exists to prevent.
+          - stale: active, but aged out by WORKING_STALE_SECONDS /
+            PARKED_STALE_SECONDS against `since` (agents.py:16-35, 183-187).
+          - live: active and fresh.
+        A fourth outcome is NOT a state but the absence of one: `_age_seconds`
+        returns None when the timestamp is missing, unreadable, naive or in the
+        future, and agents.py:183-185 says "cannot tell: never conclude death".
+        Carry it as its own count, never silently as live — this module's whole
+        convention is that cannot-tell is never folded into a number.
+        That is why `now` is a REQUIRED argument here rather than defaulted, for
+        the same reason agent_for requires it (agents.py:133-137).
+        The result carries "live_sessions", "stale_sessions", "stopped_sessions"
+        and "undated_sessions" as counts, plus "model" and "models" passed
+        through from sum_cost — WITHOUT those two, issue #11's first-named
+        per-worktree field never reaches a renderer at all.
         If ANY matched session's transcript cannot be located or read, or a
-        bucket is missing after combining, the WHOLE worktree result is {"tokens":
-        None, "notional_cost_usd": None, "unknown_reason": <why>} — never a
-        partial sum presented as complete.
-        done when: five fixture cases (transcript found and complete; transcript
+        bucket is missing after combining, the WHOLE worktree result is
+        {"tokens": None, "notional_cost_usd": None, "model": None,
+        "unknown_reason": <one of the enumerated values below>} — never a
+        partial sum presented as complete. THE FOUR SESSION COUNTS APPEAR ON
+        THE UNKNOWN SHAPE TOO, not only the populated one: step 6 sums them
+        across every worktree including unknown ones, and a shape that omits
+        them there either raises or silently undercounts.
+        `unknown_reason` is an ENUMERATED value, not free prose, because two
+        later steps must discriminate on it rather than pattern-match English:
+            "no-session"          no matching session — NOT an error
+            "transcript-missing"  matched a session, found no transcript file
+            "unreadable"          transcript exists but could not be read
+            "missing-bucket"      a token bucket absent after combining
+            "unknown-model"       a model id with no rate
+        done when: six fixture cases (transcript found and complete; transcript
         missing for one of two matching sessions; a bucket absent from a summed
-        record; one live session beside one stale session; zero matching
-        sessions) each produce the shape the honesty requirement demands —
-        populated only in the first and fourth, and the fourth additionally
-        asserts the sum covers BOTH sessions and that stale_sessions == 1
+        record; one live session beside one stale session; one stopped session
+        eight hours old, asserting stopped_sessions == 1 and live_sessions == 0;
+        zero matching sessions returning unknown_reason "no-session") each
+        produce the shape the honesty requirement demands — populated only in
+        the first and fourth, the fourth additionally asserting the sum covers
+        BOTH sessions and that stale_sessions == 1, and every unknown case
+        still carrying all four counts
 
 STEP 5  Wire worktree_cost into collect()   [needs 4]
-        Call it once per worktree beside the existing ahead/behind and
-        status calls (loom/collect.py:141-151); attach the result under a
-        new "cost" key on each worktree dict; add a "cost" SourceStatus
-        entry to `sources` reporting ok=False with a reason only when a
-        worktree's cost is unknown because a transcript was unreadable
-        (never for a worktree with simply no active session — not an error).
+        Call it once per worktree and attach the result under a new "cost" key
+        on each worktree dict.
+        CALL IT IN THE LOOP AT collect.py:179-183, NOT THE ONE AT :141-151.
+        Step 4 now requires `now`, and collect() does not create one until
+        line 178 — a call placed at :141-151 is a NameError, and the obvious
+        local fix (a second datetime.now()) breaks the invariant stated at
+        collect.py:180: "One clock for the whole snapshot: two worktrees must
+        never be aged against different instants." Reuse that clock; do not
+        make a second one.
+        Add a "cost" SourceStatus entry to `sources` reporting ok=False only
+        for unknown_reason in {"transcript-missing", "unreadable"} — the two
+        that mean something broke. "no-session" is NOT an error and must never
+        set ok=False: most worktrees have no agent most of the time, and a
+        source that reports failure for the normal case is a source nobody
+        reads.
         THIS IS THE STEP THAT PUTS A MULTI-MEGABYTE FILE READ INSIDE A TWO-
         SECOND LOOP. collect() is not only the CLI's one-shot path: `loom serve`
         calls it every FAST_SECONDS = 2 (loom/serve.py:16, 226-248), and
@@ -137,34 +228,61 @@ STEP 5  Wire worktree_cost into collect()   [needs 4]
         worktree; and every existing test in tests/test_collect.py still passes
         unmodified
 
-STEP 6  view.py: fleet_total(repos), wired into finalise()   [needs 5]
+STEP 6  view.py: fleet_total(snap), wired into finalise()   [needs 5]
+        Takes the SNAPSHOT, not a repo list — every other decision function in
+        this module does (aggregate_needs(snap) at view.py:122, badge(snap, now)
+        at view.py:66, finalise(snap, now) at view.py:180). A lone signature
+        here is a thing the next reader has to check.
         Follows the aggregate_needs/badge pattern (loom/view.py:122-147) —
         sums notional_cost_usd across every worktree with a known cost, and
         reports the unknown ones by count in the label text itself (per
         Serina's OPEN-2 decision above — "N worktrees excluded", never a
-        silent gap), never folding an unknown into the sum as zero. It also
-        carries the fleet-wide stale-session count through into the label
-        (OPEN-5), so a total inflated by dead sessions says so rather than
-        reading as live burn. Called from finalise() (loom/view.py:180-197) to
-        attach snap["cost"] at the top level. The label also carries the
-        "list-price equivalent, not a bill" caveat, so the frontend only paints.
-        done when: a test with three worktrees (one priced and live, one priced
-        but carrying a stale session, one unknown) asserts the total equals both
-        priced figures, and the label text contains the caveat, "1" as the
-        excluded count, and the stale-session count; `loom snapshot --json`
-        shows the same shape for real
+        silent gap), never folding an unknown into the sum as zero.
+        COUNT AS EXCLUDED ONLY unknown_reason in {"transcript-missing",
+        "unreadable", "missing-bucket", "unknown-model"}. "no-session" is the
+        normal state of most worktrees most of the time; counting it would put
+        a permanent "18 worktrees excluded" on the label and drown the signal
+        the count exists to give.
+        It also carries the fleet-wide stale-session count through into the
+        label (OPEN-5), so a total inflated by dead sessions says so rather
+        than reading as live burn, and the `prices_as_of` date (OPEN-4) — a
+        date that reaches the module boundary and stops has implemented
+        nothing.
+        Called from finalise() (loom/view.py:180-197) to attach snap["cost"]
+        at the top level. Note finalise() runs on BOTH CLI paths
+        (loom_cli.py:241) and in serve (serve.py:164, 198, 207), so a
+        single-repo `loom snapshot` also gets this. #11 scopes the fleet total
+        to `--all`; label it for what it covers rather than saying "fleet" over
+        one repo. The label also carries the "list-price equivalent, not a
+        bill" caveat, so the frontend only paints.
+        done when: a test with four worktrees (one priced and live; one priced
+        but carrying a stale session; one unknown for "unreadable"; one unknown
+        for "no-session") asserts the total equals both priced figures, the
+        label's excluded count is "1" and NOT "2", and the label text contains
+        the caveat, the stale-session count and the prices_as_of date;
+        `loom snapshot --json` shows the same shape for real
 
 STEP 7  loom_cli.py: add the cost line to render_text()   [needs 5]
-        loom_cli.py:201-219.
-        done when: `loom snapshot` (no --json) prints a cost line per repo
-        that has any worktree with a known cost
+        loom_cli.py:201-219. render_text() currently emits a per-repo header
+        and needs-you rows and NO per-worktree rows at all, so this step is
+        where issue #11's per-worktree ask lands: "input / cache-write /
+        cache-read / output tokens, the model, and a notional cost".
+        done when: `loom snapshot` (no --json) prints, for each worktree with a
+        known cost, a row naming all FOUR token buckets, the model, and the
+        notional figure — and a repo-level line for the total. A worktree whose
+        cost is unknown prints its unknown_reason rather than being omitted
 
 STEP 8  loom/static: render snap.cost on the dashboard   [needs 6]
         Paint-only per view.py's own boundary rule — the same way the badge
         and needs-you panels already render their view.py-computed fields.
-        done when: `loom serve`, viewed in a browser, shows a cost panel
-        whose text matches what view.py computed, and grep of loom.js for
-        arithmetic on token counts finds none
+        Renders BOTH the top-level total from step 6 and the per-worktree
+        breakdown attached by step 5 — the per-worktree model and buckets are
+        what #11 asks for first, and a panel showing only a fleet dollar figure
+        does not answer "which agent is burning the most".
+        done when: `loom serve`, viewed in a browser, shows the total AND a
+        per-worktree row carrying the four buckets and the model, whose text
+        matches what view.py computed; and grep of loom.js for arithmetic on
+        token counts finds none
 
 STEP 9  Accessibility pass on the new panel   [needs 8]
         Keyboard reachability, and whether it needs its own live-region
@@ -183,13 +301,24 @@ STEP 10 tests/test_cost.py: full-module suite for cost.py   [needs 1,2,3,4]
         Plus the four cases the 2026-08-23 review found would otherwise have
         shipped green, every one of them a test that could not fail:
           - a literal-path slug test over a cwd containing "." and "_" (step 1)
-          - an exact-figure cost assertion that separates 5-minute from 1-hour
-            cache writes, so a wrong rate fails rather than "a number" passing
-            (step 3)
-          - a session spanning claude-opus-5 and claude-haiku-4-5, asserting a
-            populated "model" (step 3)
+          - an exact-figure cost assertion tied to the published rates recorded
+            in step 3, separating 5-minute from 1-hour cache writes, so a wrong
+            rate fails rather than "a number" passing (step 3)
+          - a session spanning claude-opus-5 and the DATED
+            claude-haiku-4-5-20251001, asserting a populated "model" (step 3)
           - a stale session beside a live one, asserting both are summed and
             stale_sessions == 1 (step 4)
+        And the four the 2026-08-23 review of the amendment found, all of them
+        the same shape — a rule derived from a name, wrong against real data,
+        failing silently to unknown:
+          - every model id present in ~/.claude/projects/ today resolves to a
+            rate; a new one fails this test rather than blanking a panel (step 3)
+          - a `<synthetic>` record does not blank the worktree it appears in
+            (step 3)
+          - a session stopped eight hours ago counts as stopped, not live, so a
+            reaped-but-not-yet-removed record cannot read as current burn (step 4)
+          - a symlinked worktree still resolves its transcript, proving the slug
+            was built from the raw cwd and not the realpath (steps 1 and 4)
         done when: `python3 -m unittest tests.test_cost` passes and
         `python3 scripts/check_stdlib_only.py` still passes (no new import)
 
@@ -212,7 +341,19 @@ PARALLEL  Steps 1-4 all edit loom/cost.py and are sequential regardless of
           done. Step 8 needs step 6 specifically (the label text), not step
           7, so it cannot start in that same parallel batch.
 
-GATES     review-code and review-tests apply to the whole diff once step 10
+GATES     UNRESOLVED, NEEDS SERINA — two gates disagree about this plan's
+          heading shape. check-plan.sh reads `STEP N` and passes (11 steps,
+          within cap). check-ledger.sh, which review-final runs to prove no
+          built step went unreviewed, refuses this file outright:
+            "found NO task headings — expected lines like '### Task 3:'.
+             Refusing to report clean on zero tasks."  EXIT=1
+          So the gate that proves every step was reviewed cannot run over this
+          feature once it is built. Renaming the headings would satisfy the
+          ledger and may break the planner's own checker, which is why this is
+          flagged rather than silently changed. Resolve before step 1, not
+          after step 10 — a ledger adopted late has no history to check.
+
+          review-code and review-tests apply to the whole diff once step 10
           is done. review-a11y applies specifically to steps 8-9 (the new
           panel) before either is called finished. review-docs applies to
           step 11's spec file. If this PR is routed through Serina's
@@ -230,7 +371,15 @@ BUDGET    Step 4 (worktree_cost's honesty propagation) is the step most
           wrongness but cost. A transcript re-read that looks free from the CLI
           is two thousand JSON parses a second under `loom serve`, and the
           CLI-only done-when this step originally carried could never have seen
-          it. Budget for the mtime cache, not just the wiring.
+          it. Budget for the mtime cache, not just the wiring. The cache needs
+          a stated home — module-level in cost.py — and a reset hook, or it
+          leaks between tests and the suite starts depending on run order.
+          Step 3 is the third, and it is the one this plan has now got wrong
+          twice: every identifier it derives — slug, model id — has been wrong
+          against real data on a first pass, and wrong in a way tests written
+          alongside it could not see. Before writing the table, run the counts
+          in step 3 again. The population changes as new models ship, and a
+          rate table is only as honest as the day someone last looked.
 
 OPEN      Six resolved by Serina — four on 2026-08-17, two more on 2026-08-23
           after this plan was reviewed — recorded here rather than only in
@@ -273,7 +422,7 @@ OPEN      Six resolved by Serina — four on 2026-08-17, two more on 2026-08-23
              Reasoning: the rule this plan carried until the review — "model is
              None if records span >1 model" — would have blanked the field on
              essentially every real session. This repo's own transcripts run
-             623 claude-opus-5 records beside 2 claude-haiku-4-5 background
+             623 claude-opus-5 records beside 2 claude-haiku-4-5-20251001
              calls, and two records out of 625 would have collapsed the field.
              #11 asks for the model explicitly, so None is not an answer.
              (Step 3 updated above.)
