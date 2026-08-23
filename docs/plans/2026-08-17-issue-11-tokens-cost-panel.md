@@ -1,13 +1,14 @@
 Issue #11 — Add a tokens-and-cost panel, read from local transcripts
 Stated size: no `Size` line on the issue → directed by Serina at planning time (2026-08-17) to treat as more than an hour → cap: 12 steps
 Reviewed 2026-08-23 (review-plan) → 1 Blocker, 4 High, 1 Medium, all in the plan and none yet built. Amended in place the same day; the corrections and the evidence behind them are recorded inline rather than only in the review, so a builder reading this file alone still sees why each rule is what it is.
+Reviewed a third time 2026-08-24 (review-final, clean session, genuinely independent) → 2 Blocker, 4 High, 5 Medium, 2 Low, all fixed here. One of its Blockers was a GATES paragraph asserting that check-ledger.sh could not parse this plan. It parses it fine — check-ledger.sh:54 accepts `STEP N` explicitly and prints PASS. That claim came from the previous review, was quoted into this file truncated at the clause disproving it, and was never checked against the script. A finding taken on trust from another agent and written into a permanent document is the same defect class as a rule taken on trust from a plausible name: verify, then record.
 Reviewed again 2026-08-23 (review-final, on the amendment) → 2 Blocker, 7 High, 5 Medium, 2 Low. The first amendment had reintroduced its own Blocker in a new place: it keyed a test fixture on the model id `claude-haiku-4-5`, which exists nowhere on disk — the real id is `claude-haiku-4-5-20251001` — so a pricing table built to pass that test would have blanked loom's own worktree forever. Twice now the same failure class: a rule derived from a plausible NAME rather than from what is actually written, wrong against real data, failing silently to `unknown`, guarded by a test built from the same wrong assumption. Every id-derivation rule in this plan is now stated against a count taken from disk, and no fixture takes its expected value from the rule under test.
 
 ALREADY TRUE  (verified against git and a live run, not notes)
   collect() assembles each worktree dict from gitsrc + agents + ghsrc, one call
     per source per worktree (loom/collect.py:125-246)
   agents.read_state_dir() reads ~/.loom/state/*.json; each record carries
-    session_id, cwd, state, since, pid — six fields, written by
+    session_id, cwd, state, tool, since, pid — six fields, written by
     hooks/loom_hook.py:71-101 (confirmed: hooks/loom_hook.py:71 docstring,
     tests/test_agents.py:33-34)
   agents.agent_for() matches sessions to a worktree by realpath prefix on
@@ -97,20 +98,47 @@ STEP 3  cost.py: pricing table + sum_cost(usage_records) -> cost dict   [needs 2
         Note `claude-haiku-4-5-20251001`, dated. An earlier draft of this step
         keyed its fixture on the bare `claude-haiku-4-5`, which exists nowhere
         on disk — the same class of defect as the slug rule above, and it would
-        have failed the same silent way. So: normalise a trailing `-\d{8}` off
-        the id before lookup, and price the six real models.
+        have failed the same silent way.
+        RESOLVE IDS THROUGH AN EXPLICIT ALIAS MAP, NOT A SUFFIX REGEX. The
+        obvious repair — strip a trailing `-\d{8}` — was inferred from the one
+        dated id on disk and does not generalise. Two currently-active models
+        break it: `claude-opus-4-20250514` strips to `claude-opus-4` whose
+        real alias is `claude-opus-4-0`, and `claude-sonnet-4-20250514` strips
+        to `claude-sonnet-4` whose alias is `claude-sonnet-4-0`. Neither
+        stripped form is in the rate table, so both would fall through to the
+        unrecognised-model branch and blank a whole worktree.
+        Neither appears on this machine today, which is exactly why the
+        on-disk-today assertion below cannot catch it: that test asserts a
+        snapshot of the present population, while a regex makes a claim about
+        every population. Write the map, not the rule.
         `<synthetic>` is NOT a model and carries no cost — it is what a local
         API-error message is tagged with. Skip those records explicitly rather
         than letting them fall through the unrecognised-model branch, which
         would blank a whole worktree over one transient error.
         RATES, from platform.claude.com pricing as of 2026-08-23, USD per
-        million tokens, input/output. Keyed on the NORMALISED id — the table
-        says `claude-haiku-4-5` and the lookup strips the `-20251001` first:
+        million tokens, input/output. Keyed on the canonical id the alias map
+        resolves to — the table says `claude-haiku-4-5`, and the map sends
+        `claude-haiku-4-5-20251001` there:
             claude-fable-5   10 / 50     claude-opus-4-8    5 / 25
             claude-opus-5     5 / 25     claude-opus-4-7    5 / 25
             claude-sonnet-5   3 / 15     claude-haiku-4-5   1 /  5
         Cache multipliers apply to that model's INPUT rate: read 0.1x,
         5-minute write 1.25x, 1-hour write 2x.
+        claude-sonnet-5 carries INTRODUCTORY pricing of 2 / 10 through
+        2026-08-31, reverting to the 3 / 15 above on 2026-09-01. It is the
+        second-largest population on this machine (19,278 records), so this is
+        not a footnote. `prices_as_of` records when someone last looked, which
+        is not the same as when a number expires — a table stamped 2026-08-23
+        still reads fresh the day sonnet-5 gets 50% more expensive. If the
+        build crosses 2026-08-31, re-check before shipping the table.
+        PRICE FIVE BUCKETS, DISPLAY FOUR. The two cache-write TTLs are priced
+        separately and then presented as a single `cache_write` figure equal to
+        5m + 1h. Steps 7 and 8 render that combined bucket, so "all four
+        buckets" there means input / cache-write / cache-read / output. Without
+        this rule a builder rendering "four buckets" picks one TTL arbitrarily:
+        on this machine 5-minute writes are zero, so picking that one displays
+        the largest real bucket as 0 while the row's own cost figure — computed
+        from all five — silently disagrees with the numbers beside it.
         These live in the plan rather than only in the code so step 3's test can
         assert against a figure with a stated source. `prices_as_of` is the
         constant beside the table holding that date (OPEN-4), and it is carried
@@ -141,12 +169,21 @@ STEP 4  cost.py: worktree_cost(state_dir, worktree_path, home, now)   [needs 1,2
         Matches every session whose cwd is the worktree or inside it (the
         same prefix rule as agent_for, loom/agents.py:129-147), resolves and
         reads each one's transcript, and combines them.
-        Match on the session's RAW `cwd` for slug purposes, not the realpath.
-        agent_for realpaths before comparing (loom/agents.py:132-136) and that
-        is right for matching, but the slug must be built from the string Claude
-        Code itself saw — feed it a resolved path and any symlinked worktree
-        derives a directory that does not exist, returns None, and reports
-        unknown. Match on realpath; build the slug from the raw string.
+        Match on realpath (agent_for does, at loom/agents.py:139 and :145) but
+        build the slug from the session's RAW `cwd`.
+        UNVERIFIED — MEASURE THIS BEFORE STEP 1. Every other id-derivation rule
+        in this plan is stated against a count taken from disk; this one is
+        reasoning alone, and reasoning is what produced the two Blockers this
+        plan has already had. The 42/42 slug sample contains no symlinked
+        worktree, so it cannot distinguish whether Claude Code slugifies the
+        raw cwd or a resolved one. If it resolves first, this rule is exactly
+        backwards and every symlinked worktree reports transcript-missing
+        forever, with every honesty check passing.
+        The measurement is one observation: create a symlinked worktree, start
+        a session inside it, and read which directory name appears under
+        ~/.claude/projects/. Do that before writing locate_transcript, and
+        record the result here. A test cannot settle it — planting a fixture
+        proves only that loom's code agrees with itself.
         STALE SESSIONS ARE INCLUDED IN THE SUM AND COUNTED — never dropped,
         and never folded in unlabelled (OPEN-5). Staleness here is THREE-WAY,
         not two, because that is what agent_for actually does:
@@ -172,11 +209,20 @@ STEP 4  cost.py: worktree_cost(state_dir, worktree_path, home, now)   [needs 1,2
         If ANY matched session's transcript cannot be located or read, or a
         bucket is missing after combining, the WHOLE worktree result is
         {"tokens": None, "notional_cost_usd": None, "model": None,
-        "unknown_reason": <one of the enumerated values below>} — never a
-        partial sum presented as complete. THE FOUR SESSION COUNTS APPEAR ON
-        THE UNKNOWN SHAPE TOO, not only the populated one: step 6 sums them
-        across every worktree including unknown ones, and a shape that omits
-        them there either raises or silently undercounts.
+        "models": [], "prices_as_of": <date string>,
+        "unknown_reason": <one of the enumerated values below>,
+        plus the four session counts} — never a partial sum presented as
+        complete.
+        THE UNKNOWN SHAPE CARRIES EVERY KEY THE POPULATED ONE DOES. Only the
+        numbers go None; no key disappears. Step 6 reads the session counts and
+        `prices_as_of` off every worktree including unknown ones, and a shape
+        that drops keys on the unknown branch either raises or silently
+        omits them.
+        This matters more than it looks: "no-session" is the NORMAL state of
+        most worktrees most of the time, so all-worktrees-unknown is not an
+        edge case, it is the ordinary reading of a quiet fleet. A field that
+        only survives the populated branch is a field missing exactly when the
+        panel is most often looked at.
         `unknown_reason` is an ENUMERATED value, not free prose, because two
         later steps must discriminate on it rather than pattern-match English:
             "no-session"          no matching session — NOT an error
@@ -267,10 +313,27 @@ STEP 7  loom_cli.py: add the cost line to render_text()   [needs 5]
         and needs-you rows and NO per-worktree rows at all, so this step is
         where issue #11's per-worktree ask lands: "input / cache-write /
         cache-read / output tokens, the model, and a notional cost".
+        THE TOTAL IS PRINTED ONCE, AFTER THE REPO LOOP — not inside it.
+        Step 6 attaches it at snap["cost"], top level, while render_text()
+        iterates `for repo in snapshot["repos"]`. A top-level value read from
+        inside that loop prints once per repo and reads as that repo's spend,
+        so `loom snapshot --all` over two repos would show the same fleet
+        figure twice, each time attached to the wrong thing — under `--all`,
+        which is the case #11 scopes the total to.
+        Per-worktree rows go inside the loop; the total goes after it.
+        Alongside the total, print ALL FOUR session counts — live, stale,
+        stopped and cannot-tell. Step 4 computes four; step 6's label carries
+        only the stale one; without this the other three are produced with care
+        and read by nothing. `undated_sessions` is the sharpest case: a
+        cannot-tell that reaches no display is cannot-tell folded into nothing,
+        which is the exact failure agents.py:183-185 exists to refuse.
         done when: `loom snapshot` (no --json) prints, for each worktree with a
-        known cost, a row naming all FOUR token buckets, the model, and the
-        notional figure — and a repo-level line for the total. A worktree whose
-        cost is unknown prints its unknown_reason rather than being omitted
+        known cost, a row naming the four DISPLAY buckets (cache-write being
+        5m + 1h combined per step 3), the model, and the notional figure; the
+        total appears exactly once per invocation, after the last repo, even
+        with `--all` over two repos; the session counts appear beside it; and a
+        worktree whose cost is unknown prints its unknown_reason rather than
+        being omitted
 
 STEP 8  loom/static: render snap.cost on the dashboard   [needs 6]
         Paint-only per view.py's own boundary rule — the same way the badge
@@ -279,8 +342,14 @@ STEP 8  loom/static: render snap.cost on the dashboard   [needs 6]
         breakdown attached by step 5 — the per-worktree model and buckets are
         what #11 asks for first, and a panel showing only a fleet dollar figure
         does not answer "which agent is burning the most".
+        Where a worktree's `models` list holds more than one entry, the row
+        shows the breakdown rather than only the winning model — that list was
+        created by OPEN-6 precisely so a mixed-model session is not reported as
+        if it ran on one model, and a breakdown no renderer reads would leave
+        OPEN-6 resolved in prose and unimplemented in fact.
         done when: `loom serve`, viewed in a browser, shows the total AND a
-        per-worktree row carrying the four buckets and the model, whose text
+        per-worktree row carrying the four DISPLAY buckets and the model, with
+        a multi-model worktree showing every entry in `models`; the text
         matches what view.py computed; and grep of loom.js for arithmetic on
         token counts finds none
 
@@ -317,8 +386,11 @@ STEP 10 tests/test_cost.py: full-module suite for cost.py   [needs 1,2,3,4]
             (step 3)
           - a session stopped eight hours ago counts as stopped, not live, so a
             reaped-but-not-yet-removed record cannot read as current burn (step 4)
-          - a symlinked worktree still resolves its transcript, proving the slug
-            was built from the raw cwd and not the realpath (steps 1 and 4)
+          - a symlinked worktree still resolves its transcript, ONCE step 4's
+            measurement has established which way Claude Code actually builds
+            the slug. This test locks in the answer; it cannot discover it,
+            because a planted fixture only ever proves loom agrees with itself
+            (steps 1 and 4)
         done when: `python3 -m unittest tests.test_cost` passes and
         `python3 scripts/check_stdlib_only.py` still passes (no new import)
 
@@ -328,9 +400,16 @@ STEP 11 docs/superpowers/specs: design note for this panel   [needs 9]
         — records the pricing table's source and staleness handling, the
         per-worktree vs fleet-total unknown rule, and the OPEN items below
         once Serina has resolved them.
-        done when: docs/superpowers/specs/<date>-tokens-cost-design.md
-        exists and README.md's Design bullet links it the way it links the
-        other two specs
+        done when: docs/superpowers/specs/<date>-tokens-cost-design.md exists
+        and is listed in docs/README.md's spec table — a row in the same shape
+        as the existing entries at docs/README.md:15-16, path link plus a prose
+        description of what the spec decides.
+        NOT README.md. The root README's Design bullet (README.md:6) links
+        exactly ONE spec, the 2026-08-03 loom design, and is not the index; the
+        allow-list and Langfuse specs this step cites as precedent are not
+        there. A builder who satisfies an earlier draft of this done-when by
+        adding a root-README bullet marks the step complete while the project's
+        actual spec index stays wrong.
 
 PARALLEL  Steps 1-4 all edit loom/cost.py and are sequential regardless of
           logical independence. Step 10 (tests/test_cost.py) touches a
@@ -341,17 +420,12 @@ PARALLEL  Steps 1-4 all edit loom/cost.py and are sequential regardless of
           done. Step 8 needs step 6 specifically (the label text), not step
           7, so it cannot start in that same parallel batch.
 
-GATES     UNRESOLVED, NEEDS SERINA — two gates disagree about this plan's
-          heading shape. check-plan.sh reads `STEP N` and passes (11 steps,
-          within cap). check-ledger.sh, which review-final runs to prove no
-          built step went unreviewed, refuses this file outright:
-            "found NO task headings — expected lines like '### Task 3:'.
-             Refusing to report clean on zero tasks."  EXIT=1
-          So the gate that proves every step was reviewed cannot run over this
-          feature once it is built. Renaming the headings would satisfy the
-          ledger and may break the planner's own checker, which is why this is
-          flagged rather than silently changed. Resolve before step 1, not
-          after step 10 — a ledger adopted late has no history to check.
+GATES     Both gates parse this plan as written. check-ledger.sh:54 accepts
+          `STEP N` alongside `### Task N:` by design, and prints "PASS plan
+          declares 11 task(s)". The ledger itself appears once step 1 is built.
+          Keep the `STEP N` headings: check-plan.sh:81 counts steps with
+          `grep '^STEP '` and fails without them, so renaming would break the
+          checker that passes to satisfy one that already passes.
 
           review-code and review-tests apply to the whole diff once step 10
           is done. review-a11y applies specifically to steps 8-9 (the new
@@ -378,8 +452,11 @@ BUDGET    Step 4 (worktree_cost's honesty propagation) is the step most
           twice: every identifier it derives — slug, model id — has been wrong
           against real data on a first pass, and wrong in a way tests written
           alongside it could not see. Before writing the table, run the counts
-          in step 3 again. The population changes as new models ship, and a
-          rate table is only as honest as the day someone last looked.
+          in step 3 again AND re-check the rates themselves. The population
+          changes as new models ship, and the prices change on their own
+          schedule: claude-sonnet-5's introductory rate expires 2026-08-31.
+          Re-running the id counts but trusting a week-old price is the same
+          mistake wearing the other face.
 
 OPEN      Six resolved by Serina — four on 2026-08-17, two more on 2026-08-23
           after this plan was reviewed — recorded here rather than only in
