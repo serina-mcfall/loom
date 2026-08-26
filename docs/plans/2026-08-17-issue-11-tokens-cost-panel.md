@@ -1,6 +1,8 @@
 Issue #11 — Add a tokens-and-cost panel, read from local transcripts
 Stated size: no `Size` line on the issue → directed by Serina at planning time (2026-08-17) to treat as more than an hour → cap: 12 steps
 Reviewed 2026-08-23 (review-plan) → 1 Blocker, 4 High, 1 Medium, all in the plan and none yet built. Amended in place the same day; the corrections and the evidence behind them are recorded inline rather than only in the review, so a builder reading this file alone still sees why each rule is what it is.
+Reviewed a fourth time 2026-08-24 against 302cdc4 → 3 Blocker, 1 High, 4 Medium; the three Blockers fixed here on 2026-08-27, and the recorded verdict names only those four in detail, so the Mediums must be re-surfaced by re-running the gate rather than assumed closed. All three Blockers were the SAME defect class this file has now recorded four times, and this round it appeared as a test that could not fail (an assertion over `~/.claude/projects/` that is empty on CI, so vacuously true), a rule with no owner (5m+1h cache-write addition described in prose and assigned to no step), and a done-when contradicting its own step's rule (a stopped session asserted unknown where the rule includes it in the sum). Recorded because the pattern is now the finding: prose that states a rule is not the same as a step that owns it, and a test written the way this project reads directories (agents.py:58-68 returns [] when absent) passes hardest exactly where nobody is watching.
+Re-measured 2026-08-27 before fixing, and the measurement is itself the evidence: the id corpus went from seven ids to six in four days — `claude-opus-4-7` fell from 8,569 records to absent entirely, `claude-haiku-4-5-20251001` 477→408, `claude-opus-4-8` 79→7, while `claude-opus-5` grew 36,670→44,116. Counts move in BOTH directions because transcripts are rotated and deleted, so the on-disk population is not a stable basis for any assertion. The rates and cache multipliers in step 3 were re-checked the same day against current published pricing and are correct as written.
 Reviewed a third time 2026-08-24 (review-final, clean session, genuinely independent) → 2 Blocker, 4 High, 5 Medium, 2 Low, all fixed here. One of its Blockers was a GATES paragraph asserting that check-ledger.sh could not parse this plan. It parses it fine — check-ledger.sh:54 accepts `STEP N` explicitly and prints PASS. That claim came from the previous review, was quoted into this file truncated at the clause disproving it, and was never checked against the script. A finding taken on trust from another agent and written into a permanent document is the same defect class as a rule taken on trust from a plausible name: verify, then record.
 Reviewed again 2026-08-23 (review-final, on the amendment) → 2 Blocker, 7 High, 5 Medium, 2 Low. The first amendment had reintroduced its own Blocker in a new place: it keyed a test fixture on the model id `claude-haiku-4-5`, which exists nowhere on disk — the real id is `claude-haiku-4-5-20251001` — so a pricing table built to pass that test would have blanked loom's own worktree forever. Twice now the same failure class: a rule derived from a plausible NAME rather than from what is actually written, wrong against real data, failing silently to `unknown`, guarded by a test built from the same wrong assumption. Every id-derivation rule in this plan is now stated against a count taken from disk, and no fixture takes its expected value from the rule under test.
 
@@ -126,19 +128,37 @@ STEP 3  cost.py: pricing table + sum_cost(usage_records) -> cost dict   [needs 2
         5-minute write 1.25x, 1-hour write 2x.
         claude-sonnet-5 carries INTRODUCTORY pricing of 2 / 10 through
         2026-08-31, reverting to the 3 / 15 above on 2026-09-01. It is the
-        second-largest population on this machine (19,278 records), so this is
-        not a footnote. `prices_as_of` records when someone last looked, which
-        is not the same as when a number expires — a table stamped 2026-08-23
-        still reads fresh the day sonnet-5 gets 50% more expensive. If the
-        build crosses 2026-08-31, re-check before shipping the table.
-        PRICE FIVE BUCKETS, DISPLAY FOUR. The two cache-write TTLs are priced
-        separately and then presented as a single `cache_write` figure equal to
-        5m + 1h. Steps 7 and 8 render that combined bucket, so "all four
-        buckets" there means input / cache-write / cache-read / output. Without
-        this rule a builder rendering "four buckets" picks one TTL arbitrarily:
-        on this machine 5-minute writes are zero, so picking that one displays
-        the largest real bucket as 0 while the row's own cost figure — computed
-        from all five — silently disagrees with the numbers beside it.
+        second-largest population on this machine (23,983 records as of
+        2026-08-27), so this is not a footnote. `prices_as_of` records when
+        someone last looked, which is not the same as when a number expires — a
+        table stamped 2026-08-27 still reads fresh the day sonnet-5 gets 50%
+        more expensive.
+        THAT DATE IS NOW DAYS AWAY. This plan was written 2026-08-17 and
+        re-checked 2026-08-27; the intro rate expires 2026-08-31. Any build
+        starting after that date ships a table that is wrong on its second-
+        largest population from the moment it lands, and wrong in the quiet
+        direction — a plausible number, 33% low, with every honesty check
+        passing. Re-read the rate before writing the table, not after.
+        The rates and the cache multipliers below were verified 2026-08-27
+        against current published pricing and are correct as written; it is
+        only the expiry that moves.
+        PRICE FIVE BUCKETS, DISPLAY FOUR — AND THIS STEP OWNS THE ADDITION.
+        The two cache-write TTLs are priced separately and then presented as a
+        single `cache_write` figure equal to 5m + 1h. sum_cost() PERFORMS that
+        addition and returns `cache_write` as a SIXTH key in the tokens dict
+        alongside the five it prices from. Steps 7 and 8 read that key; neither
+        adds anything, which is what makes step 8's no-arithmetic-in-loom.js
+        gate satisfiable rather than contradictory.
+        This ownership is stated because the previous three revisions of this
+        plan all described the combined figure in prose and assigned it to no
+        step. A rule with no owner is not a rule: the builder either violates
+        step 8's done-when or picks one TTL, and on this machine 5-minute
+        writes are zero, so picking that one displays the largest real bucket
+        as 0 while the row's own cost figure — computed from all five —
+        silently disagrees with the numbers beside it.
+        The derived key is redundant by design. Deriving it in two renderers
+        instead is how the two displays drift apart, and deriving it in
+        loom.js is the thing step 8 forbids outright.
         These live in the plan rather than only in the code so step 3's test can
         assert against a figure with a stated source. `prices_as_of` is the
         constant beside the table holding that date (OPEN-4), and it is carried
@@ -146,9 +166,14 @@ STEP 3  cost.py: pricing table + sum_cost(usage_records) -> cost dict   [needs 2
         boundary implements nothing.
         Cost is summed PER RECORD at that record's own model's rates and then
         totalled — never one model's rate applied to a mixed-model list (OPEN-6).
-        sum_cost() returns {"tokens": {5 buckets}, "model": <the model carrying
-        the most tokens>, "models": <every model seen, with its token share>,
+        sum_cost() returns {"tokens": {input, cache_write_5m, cache_write_1h,
+        cache_write, cache_read, output}, "model": <the model carrying the most
+        tokens>, "models": <every model seen, with its token share>,
         "notional_cost_usd": float|None, "prices_as_of": <date string>}.
+        SIX token keys: the five that carry rates, plus the derived
+        `cache_write` = cache_write_5m + cache_write_1h that steps 7 and 8
+        render. Both TTL keys survive into the output rather than being
+        collapsed, so a reader can still see which TTL the spend came from.
         An unrecognised model in ANY record, or a bucket absent from every
         record, returns notional_cost_usd=None — never a number from a guess.
         done when: a fixture of 1,000,000 output tokens on claude-opus-5 prints
@@ -160,9 +185,37 @@ STEP 3  cost.py: pricing table + sum_cost(usage_records) -> cost dict   [needs 2
         claude-haiku-4-5-20251001 prints a populated "model" and both entries
         in "models". A third containing a `<synthetic>` record prices the rest
         and still returns a number. A fourth with a genuinely unknown model id
-        prints notional_cost_usd: None. And every distinct model id present in
-        ~/.claude/projects/ today resolves to a rate — assert that list, so a
-        new model shows up as a failing test rather than a blank panel
+        prints notional_cost_usd: None.
+        A fifth fixture carries BOTH cache-write TTLs non-zero — 400,000
+        five-minute and 600,000 one-hour tokens on claude-opus-5 — and asserts
+        tokens["cache_write"] == 1,000,000 while both TTL keys survive at their
+        own values, and notional_cost_usd == 8.50 (400k at 1.25x plus 600k at
+        2x of the 5/MTok input rate).
+        BOTH TTLs MUST BE NON-ZERO IN THIS FIXTURE. With either at zero the
+        assertion passes under "pick one TTL" as readily as under addition,
+        which is precisely the bug it exists to catch — and zero is the real
+        value on this machine, so a fixture copied from live data would be the
+        broken one.
+        A SIXTH asserts every id in a FROZEN LITERAL LIST written into the test
+        resolves to a rate: claude-opus-5, claude-sonnet-5, claude-opus-4-7,
+        claude-haiku-4-5-20251001, claude-fable-5, claude-opus-4-8. That list is
+        the union of every id observed on disk on 2026-08-23 and 2026-08-27, and
+        it is a CONSTANT — never re-derived from ~/.claude/projects/ at run time.
+        A test that reads that directory finds nothing on CI, where it does not
+        exist and this project's own idiom returns [] rather than raising
+        (agents.py:58-68), so the assertion is vacuously true on the one machine
+        that gates every PR. It is also non-deterministic where it does run: the
+        corpus lost claude-opus-4-7 entirely between those two dates. The live
+        check still exists, as a separate and explicitly-skipping test — step 10.
+        claude-opus-4-7 stays in both the list and the rate table though it is
+        absent from disk today. A rate for a model nobody is running costs
+        nothing; a missing rate blanks a worktree.
+        A SEVENTH is pure consistency with no fixture at all: every canonical id
+        the alias map resolves TO is a key in the rate table. The map exists
+        because a suffix regex sends claude-opus-4-20250514 and
+        claude-sonnet-4-20250514 to table keys that do not exist — a map with
+        the same dead ends is the same bug spelled longhand. This one needs no
+        corpus and fails the moment the two structures disagree.
                                                                       ← RUNS HERE
 
 STEP 4  cost.py: worktree_cost(state_dir, worktree_path, home, now)   [needs 1,2,3]
@@ -230,15 +283,30 @@ STEP 4  cost.py: worktree_cost(state_dir, worktree_path, home, now)   [needs 1,2
             "unreadable"          transcript exists but could not be read
             "missing-bucket"      a token bucket absent after combining
             "unknown-model"       a model id with no rate
+        A STOPPED SESSION WITH A READABLE TRANSCRIPT IS POPULATED, NOT UNKNOWN.
+        This is stated because the done-when below asserted the opposite for
+        three revisions: it listed the stopped-session case among the unknown
+        ones, while the rule above includes every matched session in the sum and
+        no enumerated unknown_reason fits a session whose transcript reads fine.
+        Reconciled the other way it silently drops real spend and locks that in
+        with a test — the exact outcome OPEN-5 was resolved to prevent, since a
+        stopped session is where most of a quiet fleet's history lives. The
+        `stopped_sessions` count is what marks it as history; the None shape is
+        for cannot-measure, never for did-not-like-the-state.
         done when: six fixture cases (transcript found and complete; transcript
         missing for one of two matching sessions; a bucket absent from a summed
         record; one live session beside one stale session; one stopped session
-        eight hours old, asserting stopped_sessions == 1 and live_sessions == 0;
-        zero matching sessions returning unknown_reason "no-session") each
-        produce the shape the honesty requirement demands — populated only in
-        the first and fourth, the fourth additionally asserting the sum covers
-        BOTH sessions and that stale_sessions == 1, and every unknown case
-        still carrying all four counts
+        eight hours old; zero matching sessions returning unknown_reason
+        "no-session") each produce the shape the honesty requirement demands —
+        POPULATED IN THE FIRST, FOURTH AND FIFTH, unknown in the second, third
+        and sixth.
+        The fourth additionally asserts the sum covers BOTH sessions and that
+        stale_sessions == 1. The fifth asserts a POPULATED tokens dict and a
+        non-None notional_cost_usd drawn from that stopped session's transcript,
+        with stopped_sessions == 1, live_sessions == 0 and unknown_reason absent
+        or None — a case that would pass just as well if the sum were empty, so
+        assert the figure, not merely the shape. Every unknown case still
+        carries all four counts.
 
 STEP 5  Wire worktree_cost into collect()   [needs 4]
         Call it once per worktree and attach the result under a new "cost" key
@@ -289,11 +357,21 @@ STEP 6  view.py: fleet_total(snap), wired into finalise()   [needs 5]
         normal state of most worktrees most of the time; counting it would put
         a permanent "18 worktrees excluded" on the label and drown the signal
         the count exists to give.
-        It also carries the fleet-wide stale-session count through into the
-        label (OPEN-5), so a total inflated by dead sessions says so rather
-        than reading as live burn, and the `prices_as_of` date (OPEN-4) — a
-        date that reaches the module boundary and stops has implemented
-        nothing.
+        THIS STEP OWNS AGGREGATING ALL FOUR SESSION COUNTS TO FLEET LEVEL, not
+        just the stale one. Step 4 produces live / stale / stopped / undated per
+        worktree and step 7 prints four at fleet level; without an owner in
+        between, three of them are computed with care and read by nothing, and
+        step 7 has no fleet-level value to print. So snap["cost"] carries all
+        four summed across every worktree — including the unknown ones, whose
+        counts survive precisely because the unknown shape keeps every key.
+        `undated_sessions` is the one that matters most and is easiest to drop:
+        a cannot-tell that reaches no display is cannot-tell folded into
+        nothing, which is the failure agents.py:183-185 exists to refuse.
+        The LABEL still carries only the stale count (OPEN-5), so a total
+        inflated by dead sessions says so rather than reading as live burn; the
+        other three are attached as fields for step 7 and step 8 to render. The
+        label also carries the `prices_as_of` date (OPEN-4) — a date that
+        reaches the module boundary and stops has implemented nothing.
         Called from finalise() (loom/view.py:180-197) to attach snap["cost"]
         at the top level. Note finalise() runs on BOTH CLI paths
         (loom_cli.py:241) and in serve (serve.py:164, 198, 207), so a
@@ -302,11 +380,15 @@ STEP 6  view.py: fleet_total(snap), wired into finalise()   [needs 5]
         one repo. The label also carries the "list-price equivalent, not a
         bill" caveat, so the frontend only paints.
         done when: a test with four worktrees (one priced and live; one priced
-        but carrying a stale session; one unknown for "unreadable"; one unknown
-        for "no-session") asserts the total equals both priced figures, the
-        label's excluded count is "1" and NOT "2", and the label text contains
-        the caveat, the stale-session count and the prices_as_of date;
-        `loom snapshot --json` shows the same shape for real
+        but carrying a stale session; one unknown for "unreadable" and carrying
+        an undated session; one unknown for "no-session") asserts the total
+        equals both priced figures, the label's excluded count is "1" and NOT
+        "2", and the label text contains the caveat, the stale-session count and
+        the prices_as_of date. It further asserts all FOUR fleet-level counts
+        are present and correct, with undated_sessions == 1 — a count sourced
+        from an UNKNOWN worktree, so the test fails if the unknown branch drops
+        keys or the aggregation skips unknown worktrees. `loom snapshot --json`
+        shows the same shape for real
 
 STEP 7  loom_cli.py: add the cost line to render_text()   [needs 5]
         loom_cli.py:201-219. render_text() currently emits a per-repo header
@@ -322,14 +404,17 @@ STEP 7  loom_cli.py: add the cost line to render_text()   [needs 5]
         which is the case #11 scopes the total to.
         Per-worktree rows go inside the loop; the total goes after it.
         Alongside the total, print ALL FOUR session counts — live, stale,
-        stopped and cannot-tell. Step 4 computes four; step 6's label carries
-        only the stale one; without this the other three are produced with care
-        and read by nothing. `undated_sessions` is the sharpest case: a
-        cannot-tell that reaches no display is cannot-tell folded into nothing,
-        which is the exact failure agents.py:183-185 exists to refuse.
+        stopped and cannot-tell — reading the fleet-level figures step 6
+        aggregated onto snap["cost"]. This step does not sum them itself; step 6
+        owns that, and two places summing the same counts is how the CLI and the
+        dashboard come to disagree.
+        The per-worktree cache-write figure is likewise READ, not computed:
+        tokens["cache_write"] already holds 5m + 1h from step 3. This step adds
+        nothing up.
         done when: `loom snapshot` (no --json) prints, for each worktree with a
-        known cost, a row naming the four DISPLAY buckets (cache-write being
-        5m + 1h combined per step 3), the model, and the notional figure; the
+        known cost, a row naming the four DISPLAY buckets (reading
+        tokens["cache_write"] for the combined one, per step 3), the model, and
+        the notional figure; the
         total appears exactly once per invocation, after the last repo, even
         with `--all` over two repos; the session counts appear beside it; and a
         worktree whose cost is unknown prints its unknown_reason rather than
@@ -347,11 +432,19 @@ STEP 8  loom/static: render snap.cost on the dashboard   [needs 6]
         created by OPEN-6 precisely so a mixed-model session is not reported as
         if it ran on one model, and a breakdown no renderer reads would leave
         OPEN-6 resolved in prose and unimplemented in fact.
+        The four DISPLAY buckets come straight off the tokens dict — input,
+        cache_write, cache_read, output. `cache_write` is already the 5m + 1h
+        sum computed in step 3, so this step reads one key rather than adding
+        two, which is what makes the no-arithmetic gate below satisfiable.
+        Render the fleet-level session counts step 6 attached, so the four
+        counts reach the dashboard and not only the CLI.
         done when: `loom serve`, viewed in a browser, shows the total AND a
         per-worktree row carrying the four DISPLAY buckets and the model, with
-        a multi-model worktree showing every entry in `models`; the text
-        matches what view.py computed; and grep of loom.js for arithmetic on
-        token counts finds none
+        a multi-model worktree showing every entry in `models`; the fleet-level
+        session counts appear; the text matches what view.py computed; and grep
+        of loom.js for arithmetic on token counts finds none — which passes
+        because step 3 already did the one addition this feature needs, not
+        because the combined bucket was quietly dropped
 
 STEP 9  Accessibility pass on the new panel   [needs 8]
         Keyboard reachability, and whether it needs its own live-region
@@ -380,12 +473,29 @@ STEP 10 tests/test_cost.py: full-module suite for cost.py   [needs 1,2,3,4]
         And the four the 2026-08-23 review of the amendment found, all of them
         the same shape — a rule derived from a name, wrong against real data,
         failing silently to unknown:
-          - every model id present in ~/.claude/projects/ today resolves to a
-            rate; a new one fails this test rather than blanking a panel (step 3)
+          - every id in step 3's FROZEN LITERAL list resolves to a rate, and
+            every id the alias map resolves to is a table key (step 3)
+          - the live-corpus check, as a test that ANNOUNCES when it did not run.
+            Guard it with unittest.skipUnless(~/.claude/projects exists), and on
+            the machines where it does run, assert the id set is NON-EMPTY
+            before asserting every member resolves. Both halves are load-bearing:
+            the skip stops it passing green on CI where the directory is absent,
+            and the non-empty assertion stops it passing where the directory
+            exists but holds nothing readable. This is a local alarm for a new
+            model id, not a CI gate — a gate over a corpus that lost an entire
+            model in four days would fail for reasons no PR caused
           - a `<synthetic>` record does not blank the worktree it appears in
             (step 3)
           - a session stopped eight hours ago counts as stopped, not live, so a
-            reaped-but-not-yet-removed record cannot read as current burn (step 4)
+            reaped-but-not-yet-removed record cannot read as current burn — AND
+            its spend is still summed, since a stopped session with a readable
+            transcript is populated, not unknown (step 4)
+          - a fixture with BOTH cache-write TTLs non-zero, asserting the
+            combined `cache_write` equals their sum. Zero in either TTL makes
+            the test pass under "pick one", and zero is the real value on this
+            machine (step 3)
+          - all four session counts survive to fleet level, with the undated
+            count sourced from a worktree whose cost is unknown (step 6)
           - a symlinked worktree still resolves its transcript, ONCE step 4's
             measurement has established which way Claude Code actually builds
             the slug. This test locks in the answer; it cannot discover it,
@@ -457,6 +567,13 @@ BUDGET    Step 4 (worktree_cost's honesty propagation) is the step most
           schedule: claude-sonnet-5's introductory rate expires 2026-08-31.
           Re-running the id counts but trusting a week-old price is the same
           mistake wearing the other face.
+          Note what the re-count on 2026-08-27 actually showed: the corpus went
+          from seven ids to six in four days, losing claude-opus-4-7's 8,569
+          records entirely, and every other count moved. So re-running the
+          counts is for discovering NEW ids to add — never for deriving the
+          frozen test list, and never for deciding which rates to drop. Ids
+          only ever get added to that list; a model absent from disk today is
+          one an agent could run tomorrow.
 
 OPEN      Six resolved by Serina — four on 2026-08-17, two more on 2026-08-23
           after this plan was reviewed — recorded here rather than only in
