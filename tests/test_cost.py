@@ -316,6 +316,9 @@ class TestWorktreeCost(unittest.TestCase):
         self.assertEqual(result["stale_sessions"], 1)
         self.assertEqual(result["live_sessions"], 1)
         self.assertEqual(result["tokens"]["output"], 3_000)
+        # unknown_reason is PRESENT and None on every populated branch,
+        # never omitted -- one shape, asserted the same way everywhere.
+        self.assertIsNone(result["unknown_reason"])
 
     def test_stopped_session_eight_hours_old_is_populated_not_unknown(self):
         cwd = os.path.join(self.state_dir, "wt")
@@ -370,6 +373,88 @@ class TestWorktreeCost(unittest.TestCase):
         # changed.
         self.assertEqual(parent_result["tokens"]["output"], 1_000)
         self.assertEqual(nested_result["tokens"]["output"], 9_000)
+        # unknown_reason is PRESENT and None on every populated branch,
+        # never omitted -- one shape, asserted the same way everywhere.
+        self.assertIsNone(parent_result["unknown_reason"])
+        self.assertIsNone(nested_result["unknown_reason"])
+
+    def test_synthetic_record_does_not_blank_the_worktree(self):
+        cwd = os.path.join(self.state_dir, "wt")
+        os.makedirs(cwd)
+        write_session(self.state_dir, "s1", cwd, "idle", ago(10))
+        write_transcript(self.home, cwd, "s1", [
+            ("claude-opus-5", usage(output=1_000)),
+            ("<synthetic>", {"error": "transient API error"}),
+        ])
+
+        result = worktree_cost(self.state_dir, cwd, [cwd], self.home, NOW)
+
+        self.assertIsNotNone(result["notional_cost_usd"])
+        self.assertIsNone(result["unknown_reason"])
+
+    def test_unrecognized_model_is_the_unknown_model_reason(self):
+        cwd = os.path.join(self.state_dir, "wt")
+        os.makedirs(cwd)
+        write_session(self.state_dir, "s1", cwd, "idle", ago(10))
+        write_transcript(self.home, cwd, "s1",
+                         [("totally-unheard-of-model", usage(input=100))])
+
+        result = worktree_cost(self.state_dir, cwd, [cwd], self.home, NOW)
+
+        self.assertIsNone(result["notional_cost_usd"])
+        self.assertEqual(result["unknown_reason"], "unknown-model")
+
+    def test_symlinked_worktree_still_resolves_its_transcript(self):
+        # Locks in the raw-vs-resolved measurement recorded in the plan's
+        # step 4: Claude Code resolves cwd BEFORE slugifying, so a session
+        # whose recorded cwd is the raw symlink path must still resolve --
+        # worktree_cost must realpath() it before matching AND before
+        # deriving the slug. A planted fixture cannot discover this; it can
+        # only lock in what the live measurement already established.
+        real_dir = os.path.join(self.state_dir, "real-target")
+        os.makedirs(real_dir)
+        link_dir = os.path.join(self.state_dir, "wt-link")
+        os.symlink(real_dir, link_dir)
+
+        write_session(self.state_dir, "s1", link_dir, "idle", ago(10))
+        write_transcript(self.home, os.path.realpath(real_dir), "s1",
+                         [("claude-opus-5", usage(output=1_000))])
+
+        result = worktree_cost(self.state_dir, link_dir, [link_dir], self.home, NOW)
+
+        self.assertIsNotNone(result["notional_cost_usd"])
+        self.assertIsNone(result["unknown_reason"])
+
+
+class TestLiveCorpusIds(unittest.TestCase):
+    """A LOCAL ALARM for a new model id, not a CI gate: reads every id
+    actually on THIS machine's disk and asserts each resolves through
+    resolve_model(). Both halves below are load-bearing -- skipUnless stops
+    this passing vacuously on CI, where ~/.claude/projects does not exist,
+    and the non-empty assertion stops it passing just as vacuously on a
+    machine where the directory exists but holds nothing readable. Never
+    used to derive the FROZEN list in TestSumCost -- ids only ever get added
+    there, since a model absent from disk today may run tomorrow.
+    """
+
+    _PROJECTS_DIR = Path(os.path.expanduser("~/.claude/projects"))
+
+    @unittest.skipUnless(_PROJECTS_DIR.is_dir(),
+                         "~/.claude/projects does not exist on this machine")
+    def test_every_id_on_disk_resolves_to_a_rate(self):
+        ids: set[str] = set()
+        for transcript in self._PROJECTS_DIR.glob("*/*.jsonl"):
+            try:
+                for model, _usage in read_usage(transcript):
+                    if model != "<synthetic>":
+                        ids.add(model)
+            except OSError:
+                continue
+        self.assertTrue(ids, "the directory exists but held nothing readable")
+        for model_id in sorted(ids):
+            with self.subTest(model_id=model_id):
+                self.assertIsNotNone(resolve_model(model_id),
+                                     f"{model_id} has no rate table entry")
 
 
 class TestTranscriptCache(unittest.TestCase):
