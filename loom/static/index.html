@@ -46,9 +46,30 @@
   </section>
 
   <!-- Issue #11: fleet-wide notional token cost, from loom.view.fleet_total.
-       Whether this needs its own live-region entry, or folds into the
-       existing #needs-announce sentence, is step 9's decision -- left plain
-       text here, consistent with this step being paint-only. -->
+       STEP 9 DECISION -- explicitly OUT OF SCOPE for a live-region
+       announcement, neither its own entry nor folded into #needs-announce.
+       Reasoning:
+         * #needs-announce exists for the "needs you" triage strip, whose
+           debounce (at most every 15s, per loom/view.py's announcement())
+           is built around discrete, actionable STATE CHANGES -- a PR
+           starting to fail its checks, a review landing. The cost figure
+           has no such event: it drifts upward on nearly every tick as
+           tokens accumulate, so a periodic read-out would announce "the
+           number changed" over and over with nothing to act on -- noise
+           in the one region this app deliberately keeps rate-limited and
+           single-purpose.
+         * The figure is comparative and notional (LEFT OUT: "a real
+           amount owed" framing is explicitly out of scope for this whole
+           feature), not an alert. It does not compete with rank-1..6 items
+           for a human's immediate attention.
+         * It is fully DISCOVERABLE without a live region: the <h2> below
+           is an ordinary heading landmark, reachable the same way "Data
+           sources" or "Worktrees" already are -- neither of those gets a
+           live region either, and this panel is not more urgent than they
+           are.
+       Non-interactive: no control here needs Tab to reach it (verified --
+       no <a>/<button>/<input>/<select>/tabindex was added by this or the
+       previous step), so a keyboard user's Tab order is unaffected. -->
   <section aria-labelledby="cost-h" class="panel panel--cost">
     <h2 id="cost-h">Token cost</h2>
     <p id="cost-total" class="cost-total"></p>

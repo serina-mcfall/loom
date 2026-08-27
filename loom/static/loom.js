@@ -485,8 +485,8 @@ function renderConfigWarning(config) {
 }
 
 /** The fleet-wide total loom.view.fleet_total computed, and its four session
- *  counts. Plain text, no live-region behaviour yet -- that decision belongs
- *  to step 9's accessibility pass, not to this paint-only step. */
+ *  counts. Plain text, deliberately no live-region behaviour -- step 9
+ *  decided against one; see index.html's comment on #cost-h for why. */
 function renderCostTotal(cost) {
   const totalEl = el("cost-total");
   const sessionsEl = el("cost-sessions");

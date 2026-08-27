@@ -123,8 +123,9 @@ tbody tr:nth-child(even) { background: #1b212a; }
 .sources { display: flex; gap: 1.2rem; flex-wrap: wrap; }
 .summary { margin: 0; color: var(--dim); }
 /* The fleet-wide total (loom/view.py's fleet_total) and its session counts,
-   both plain text -- whether either needs its own live-region entry is
-   decided in step 9's accessibility pass, not here. */
+   both plain text. Step 9 decided against a live region for either -- see
+   index.html's comment on #cost-h for the reasoning; this stays plain
+   styling, no aria-live. */
 .cost-total { margin: 0; }
 .cost-sessions { margin: .2rem 0 0; color: var(--dim); font-size: .8rem; }
 /* The repo identity line, below the heading. The heading stays the bare name
