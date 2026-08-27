@@ -318,8 +318,12 @@ STEP 4  cost.py: worktree_cost(state_dir, worktree_path, sibling_paths, home, no
         Matches every session whose cwd is the worktree or inside it (the
         same prefix rule as agent_for, loom/agents.py:129-147), resolves and
         reads each one's transcript, and combines them.
-        Match on realpath (agent_for does, at loom/agents.py:139 and :145) but
-        build the slug from the session's RAW `cwd`.
+        Match on realpath (agent_for does, at loom/agents.py:139 and :145) AND
+        build the slug from the session's RESOLVED (realpath) `cwd` — corrected
+        2026-08-27 from an earlier "build from the RAW cwd" claim, which the
+        measurement below disproved. Both the transcript directory name AND the
+        `cwd` field recorded inside the transcript itself are the resolved path;
+        there is no raw-cwd form to build a slug from.
         A SESSION BELONGS TO THE NEAREST ENCLOSING WORKTREE, NOT EVERY
         ENCLOSING ONE. `agent_for`'s prefix rule is correct for what it does —
         pick the one agent that owns a worktree's badge — because a session
@@ -342,19 +346,30 @@ STEP 4  cost.py: worktree_cost(state_dir, worktree_path, sibling_paths, home, no
         (by realpath) than `worktree_path` itself. A session inside a nested
         worktree is therefore counted once, by the nested worktree, and
         excluded from every ancestor's sum.
-        UNVERIFIED — MEASURE THIS BEFORE STEP 1. Every other id-derivation rule
-        in this plan is stated against a count taken from disk; this one is
-        reasoning alone, and reasoning is what produced the two Blockers this
-        plan has already had. The 42/42 slug sample contains no symlinked
-        worktree, so it cannot distinguish whether Claude Code slugifies the
-        raw cwd or a resolved one. If it resolves first, this rule is exactly
-        backwards and every symlinked worktree reports transcript-missing
-        forever, with every honesty check passing.
-        The measurement is one observation: create a symlinked worktree, start
-        a session inside it, and read which directory name appears under
-        ~/.claude/projects/. Do that before writing locate_transcript, and
-        record the result here. A test cannot settle it — planting a fixture
-        proves only that loom's code agrees with itself.
+        MEASURED 2026-08-27, BEFORE STEP 1 WAS WRITTEN — result: Claude Code
+        RESOLVES cwd BEFORE slugifying. The earlier "build the slug from the
+        RAW cwd" claim in this step was reasoning alone and is EXACTLY BACKWARDS.
+        Evidence: created a real symlink,
+        .../scratchpad/measure-link -> .../scratchpad/measure-real (both under
+        this machine's own filesystem, not a fixture), cd'd into the symlink
+        path, and ran a real `claude -p` session from inside it. The raw and
+        resolved paths slugify to two DIFFERENT directory names
+        (...-measure-link vs ...-measure-real, diverging exactly at the
+        symlinked component, the same divergence a symlinked worktree would
+        produce). The transcript was written under the RESOLVED slug
+        (...-measure-real) only — no directory for the raw/link slug was ever
+        created. Read back from inside the transcript itself, the top-level
+        `cwd` field also holds the resolved path
+        (.../scratchpad/measure-real), not the symlink path
+        (.../scratchpad/measure-link) that was actually the process's cwd.
+        So the rule is: slug and match, BOTH, from realpath(cwd) — never the
+        raw cwd. Built the other way, every symlinked worktree slugifies to a
+        directory that is never created, locate_transcript returns None for
+        every session inside it, and the worktree reports transcript-missing
+        forever with every honesty check passing — the exact failure this
+        measurement exists to rule out. A test cannot settle it — planting a
+        fixture proves only that loom's code agrees with itself; this was a
+        live `claude -p` session against a real symlink, not a planted file.
         STALE SESSIONS ARE INCLUDED IN THE SUM AND COUNTED — never dropped,
         and never folded in unlabelled (OPEN-5). Staleness here is THREE-WAY,
         not two, because that is what agent_for actually does:
