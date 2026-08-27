@@ -12,6 +12,20 @@ const STATE_LABEL = {
   stale: "✕ stale", stopped: "■ stopped", unknown: "? unknown", none: "– none",
 };
 
+// Display text for loom/cost.py's enumerated unknown_reason values -- a
+// fixed, machine-shaped set (loom/cost.py's UNKNOWN_REASONS), same as
+// STATE_LABEL above: the DECISION of what unknown_reason IS was already
+// made in Python; this only formats it for reading, same as glyph+word
+// does for a session state.
+const REASON_LABEL = {
+  "no-session": "no matching session",
+  "transcript-missing": "transcript not found",
+  "unreadable": "transcript could not be read",
+  "no-usage-records": "no usage records yet",
+  "missing-bucket": "a token bucket was missing",
+  "unknown-model": "unrecognised model",
+};
+
 const BADGE_CLASS = {
   live: "src--ok", connecting: "", stale: "src--warn", error: "src--bad",
   disconnected: "src--bad", incompatible: "src--bad",
@@ -99,12 +113,15 @@ function renderNeeds(items) {
 /** Issue #11's per-worktree ask: the model, four token buckets, and a
  *  notional cost. `cost.unknown_reason` means every number in it is None
  *  (loom/cost.py's own contract -- one shape, only the numbers go missing),
- *  so this prints the REASON itself in one spanning cell, never a bare "?"
- *  that would say something is missing without saying why. */
+ *  so this prints the reason IN WORDS (via REASON_LABEL) in one spanning
+ *  cell, never a bare "?" or a raw developer-facing slug like
+ *  "missing-bucket" that would say something is missing without saying
+ *  why in a sentence a reader can act on. */
 function appendCostCells(tr, cost) {
   if (!cost || cost.unknown_reason) {
     const reason = (cost && cost.unknown_reason) || "?";
-    const td = text("td", reason, "n--unknown");
+    const label = REASON_LABEL[reason] || reason;
+    const td = text("td", label, "n--unknown");
     td.colSpan = 6;
     tr.append(td);
     return;
@@ -361,13 +378,20 @@ function buildRepoSection(repo, i) {
   const panels = document.createElement("div");
   panels.className = "panels";
 
-  // Both tables get double width: six columns, and one column per branch, do not
-  // fit a 20rem cell. Widening beats abbreviating the headers to glyphs.
+  // Both tables get double width: thirteen columns now (seven git-state
+  // columns plus issue #11's six cost columns), and one column per branch
+  // do not fit a 20rem cell. Widening beats abbreviating the headers to
+  // glyphs.
   // The last six columns are issue #11's per-worktree ask (step 8): model,
-  // the four DISPLAY token buckets, and a notional cost.
+  // the four DISPLAY token buckets, and a notional cost. "tokens" is named
+  // in the caption, not repeated per header, because a screen reader
+  // announces the caption once for the table and then every header on
+  // every cell -- "Input tokens" on every row would be read as often as
+  // there are rows.
   const treesTable = tableWith(
       ["Tree", "Branch", "PR", "Agent", "Ahead", "Behind", "Dirty",
-       "Model", "Input", "Cache write", "Cache read", "Output", "Cost"]);
+       "Model", "Input", "Cache write", "Cache read", "Output", "Cost"],
+      "Worktrees — git state, plus notional token cost from local transcripts");
   const treesPanel = panel(`repo-${i}-trees-h`, "Worktrees", "h3",
                            scrollBox(`repo-${i}-trees-h`, treesTable));
   treesPanel.classList.add("panel--wide");
@@ -488,18 +512,25 @@ function renderConfigWarning(config) {
  *  counts. Plain text, deliberately no live-region behaviour -- step 9
  *  decided against one; see index.html's comment on #cost-h for why. */
 function renderCostTotal(cost) {
+  const section = el("cost-h").closest("section");
   const totalEl = el("cost-total");
   const sessionsEl = el("cost-sessions");
   if (!cost) {
-    totalEl.textContent = "";
-    sessionsEl.textContent = "";
+    // Hide rather than leave a named region holding an empty heading and
+    // two empty paragraphs -- a landmark a reader enters to nothing looks
+    // like a rendering failure, not an unmeasured state.
+    section.hidden = true;
     return;
   }
+  section.hidden = false;
   totalEl.textContent = cost.label || "";
   // Read straight off snap["cost"] -- loom.view.fleet_total already summed
   // these across every worktree. This file does not sum them again.
+  // "sessions:" names the subject of the four bare numbers that follow --
+  // matching loom_cli.py's own "  sessions: live=... " line, which a
+  // screen-reader user hears the same way a terminal reader does.
   sessionsEl.textContent =
-    `live ${cost.live_sessions}, stale ${cost.stale_sessions}, ` +
+    `sessions: live ${cost.live_sessions}, stale ${cost.stale_sessions}, ` +
     `stopped ${cost.stopped_sessions}, undated ${cost.undated_sessions}`;
 }
 

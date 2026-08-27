@@ -242,7 +242,10 @@ class TestWorktreeCost(unittest.TestCase):
 
         result = worktree_cost(self.state_dir, cwd, [cwd], self.home, NOW)
 
-        self.assertIsNotNone(result["notional_cost_usd"])
+        # Assert the figure, not merely IsNotNone -- a hardcoded-wrong-
+        # constant return would otherwise pass this test.
+        self.assertEqual(result["tokens"]["output"], 1_000)
+        self.assertEqual(result["notional_cost_usd"], 0.025)
         self.assertIsNone(result["unknown_reason"])
 
     def test_transcript_missing_for_one_of_two_sessions_is_unknown(self):
@@ -329,8 +332,12 @@ class TestWorktreeCost(unittest.TestCase):
 
         result = worktree_cost(self.state_dir, cwd, [cwd], self.home, NOW)
 
-        self.assertIsNotNone(result["tokens"])
-        self.assertIsNotNone(result["notional_cost_usd"])
+        # The plan's own step-4 done-when calls this out explicitly: "a case
+        # that would pass just as well if the sum were empty, so assert the
+        # figure, not merely the shape." IsNotNone alone would pass under a
+        # hardcoded-wrong-constant return from sum_cost.
+        self.assertEqual(result["tokens"]["output"], 1_000)
+        self.assertEqual(result["notional_cost_usd"], 0.025)
         self.assertEqual(result["stopped_sessions"], 1)
         self.assertEqual(result["live_sessions"], 0)
         self.assertIsNone(result["unknown_reason"])
@@ -422,7 +429,11 @@ class TestWorktreeCost(unittest.TestCase):
 
         result = worktree_cost(self.state_dir, link_dir, [link_dir], self.home, NOW)
 
-        self.assertIsNotNone(result["notional_cost_usd"])
+        # The exact figure, not just non-None -- proves the transcript's
+        # actual content made it through resolution, not merely that
+        # resolution avoided "transcript-missing".
+        self.assertEqual(result["tokens"]["output"], 1_000)
+        self.assertEqual(result["notional_cost_usd"], 0.025)
         self.assertIsNone(result["unknown_reason"])
 
 

@@ -192,9 +192,11 @@ def resolve_model(model_id: str) -> str | None:
 
 # Fails at import time, not at some later call site, if the map ever points
 # at a table entry that does not exist -- "a map with a dead end is the same
-# bug as the regex it replaced, spelled longhand."
-assert all(target in RATES for target in ALIAS_MAP.values()), \
-    "ALIAS_MAP resolves to a model id with no RATES entry"
+# bug as the regex it replaced, spelled longhand." A plain if/raise, not
+# assert: assert is stripped under -O/PYTHONOPTIMIZE, which would silently
+# drop this guarantee rather than fail loudly.
+if not all(target in RATES for target in ALIAS_MAP.values()):
+    raise RuntimeError("ALIAS_MAP resolves to a model id with no RATES entry")
 
 
 def _extract_buckets(usage: dict) -> dict[str, int | None]:
