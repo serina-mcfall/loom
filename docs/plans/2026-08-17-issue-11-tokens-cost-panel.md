@@ -200,9 +200,24 @@ STEP 3  cost.py: pricing table + sum_cost(usage_records) -> cost dict   [needs 2
         boundary implements nothing.
         Cost is summed PER RECORD at that record's own model's rates and then
         totalled — never one model's rate applied to a mixed-model list (OPEN-6).
+        "model" IS THE MODEL WITH THE HIGHEST PER-MODEL NOTIONAL COST, NOT THE
+        MOST TOKENS. "Most tokens" was never stated against a dimension, and
+        summed across all six buckets it usually means "did the most
+        cache-reading" — measured on this repo's own transcripts, cache-read
+        tokens outweigh output tokens by roughly 213x for claude-opus-5
+        (253,713,753 vs 1,190,779), so a session where one model does the
+        actual work and another merely re-reads a large cached prefix would
+        have its "model" field answer the wrong question. #11 asks this field
+        to answer "who is burning the most", and this panel already computes
+        that in dollars per record — reuse it rather than inventing a second,
+        disagreeing answer in tokens. Since "model" is only read on the
+        POPULATED branch, every record's cost is already computable when this
+        picks a winner, so there is no case where the cost comparison itself
+        is undefined.
         sum_cost() returns {"tokens": {input, cache_write_5m, cache_write_1h,
-        cache_write, cache_read, output}, "model": <the model carrying the most
-        tokens>, "models": <every model seen, with its token share>,
+        cache_write, cache_read, output}, "model": <the model with the
+        highest per-model notional_cost_usd>, "models": <every model seen,
+        each with its own notional_cost_usd share AND its token share>,
         "notional_cost_usd": float|None, "prices_as_of": <date string>}.
         SIX token keys: the five that carry rates, plus the derived
         `cache_write` = cache_write_5m + cache_write_1h that steps 7 and 8
@@ -241,9 +256,8 @@ STEP 3  cost.py: pricing table + sum_cost(usage_records) -> cost dict   [needs 2
         rate) where the 5-minute rate would print 6.25 — an assertion tied to
         the published rates above, not re-derived from whatever table the
         code happens to hold. A second fixture mixing claude-opus-5 with the
-        DATED
-        claude-haiku-4-5-20251001 prints a populated "model" and both entries
-        in "models". A third containing a `<synthetic>` record prices the rest
+        DATED claude-haiku-4-5-20251001 prints a populated "model" and both
+        entries in "models". A third containing a `<synthetic>` record prices the rest
         and still returns a number. A fourth with a genuinely unknown model id
         prints notional_cost_usd: None.
         A fifth fixture carries BOTH cache-write TTLs non-zero — 400,000
@@ -289,6 +303,15 @@ STEP 3  cost.py: pricing table + sum_cost(usage_records) -> cost dict   [needs 2
         and it is the one place in this step where the honest answer is a
         function argument nobody has to construct wrong: the empty list is
         the fixture.
+        A TENTH is what makes "model" mean cost rather than tokens: two
+        records on DIFFERENT models where the token-heaviest model is NOT the
+        cost-heaviest one — claude-haiku-4-5-20251001 with 100,000,000
+        cache-read tokens (its only bucket; cost 1/5 the input rate x 0.1,
+        i.e. $10.00) beside claude-opus-5 with 500,000 output tokens (cost
+        $12.50). Total tokens favour haiku by two orders of magnitude; total
+        cost favours opus-5. Asserts "model" == "claude-opus-5" — the
+        dimension named in the rule above, proven by a case where "most
+        tokens" would have picked the other model.
                                                                       ← RUNS HERE
 
 STEP 4  cost.py: worktree_cost(state_dir, worktree_path, sibling_paths, home, now)   [needs 1,2,3]
@@ -475,6 +498,18 @@ STEP 5  Wire worktree_cost into collect()   [needs 4]
         lines, measured 2026-08-23, and transcripts only ever grow.
         So cache per transcript on (path, mtime, size) and re-read only what
         changed: an unchanged file must cost a stat, not a parse.
+        THE CACHE IS MODULE-LEVEL IN cost.py AND NEEDS A RESET FUNCTION,
+        cost.reset_cache() (or equivalent), CALLED FROM tests/test_cost.py's
+        setUp/tearDown. Named here rather than left in BUDGET prose because a
+        rule that only lives in an advisory section is a rule with no owning
+        step — the same defect class this plan has fixed twice elsewhere.
+        Real risk is small today (this project's own test idiom uses a fresh
+        tempfile.mkdtemp()/TemporaryDirectory() per test, so two tests
+        colliding on the same literal (path, mtime, size) key is unlikely)
+        but a cache with no reset and no eviction is also unaddressed for a
+        long-running `loom serve`, where transcripts accumulate for the life
+        of the process. Add the reset function now, while it is one function,
+        rather than after a flaky test makes it load-bearing.
         done when: a `loom serve` TICK is timed, not a one-shot snapshot — the
         CLI path never enters the refresh loop and so structurally cannot see
         this regression, which is why the CLI-only check this step originally
@@ -484,9 +519,14 @@ STEP 5  Wire worktree_cost into collect()   [needs 4]
         worktree; every existing test in tests/test_collect.py still passes
         unmodified; a fixture with one worktree whose cost is "unreadable"
         asserts the "cost" SourceStatus message names that worktree by
-        directory, not a bare ok=False; and a fixture over two REAL nested
+        directory, not a bare ok=False; a fixture over two REAL nested
         paths (mirroring step 4's seventh fixture) asserts collect() passes
-        the full sibling list to every call, not a partial one
+        the full sibling list to every call, not a partial one; and
+        cost.reset_cache() exists, is called in tests/test_cost.py's own
+        setUp, and a test that mutates a cached transcript's content without
+        changing its mtime/size — then calls reset_cache() — sees the new
+        content, proving the reset actually clears state rather than being a
+        no-op function that merely exists to satisfy this line
 
 STEP 6  view.py: fleet_total(snap), wired into finalise()   [needs 5]
         Takes the SNAPSHOT, not a repo list — every other decision function in
@@ -764,9 +804,9 @@ BUDGET    Step 4 (worktree_cost's honesty propagation) is the step most
           wrongness but cost. A transcript re-read that looks free from the CLI
           is two thousand JSON parses a second under `loom serve`, and the
           CLI-only done-when this step originally carried could never have seen
-          it. Budget for the mtime cache, not just the wiring. The cache needs
-          a stated home — module-level in cost.py — and a reset hook, or it
-          leaks between tests and the suite starts depending on run order.
+          it. Budget for the mtime cache, not just the wiring — step 5's own
+          text now owns the cache's home and its reset function; this is a
+          time-budget flag, not a second copy of that requirement.
           Step 3 is the third, and it is the one this plan has now got wrong
           twice: every identifier it derives — slug, model id — has been wrong
           against real data on a first pass, and wrong in a way tests written
