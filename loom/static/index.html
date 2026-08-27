@@ -45,6 +45,16 @@
     <p id="needs-announce" class="visually-hidden" role="status" aria-live="polite"></p>
   </section>
 
+  <!-- Issue #11: fleet-wide notional token cost, from loom.view.fleet_total.
+       Whether this needs its own live-region entry, or folds into the
+       existing #needs-announce sentence, is step 9's decision -- left plain
+       text here, consistent with this step being paint-only. -->
+  <section aria-labelledby="cost-h" class="panel panel--cost">
+    <h2 id="cost-h">Token cost</h2>
+    <p id="cost-total" class="cost-total"></p>
+    <p id="cost-sessions" class="cost-sessions"></p>
+  </section>
+
   <!-- One <section> per repo, built by loom.js. The skeleton is rebuilt only
        when the set of repo names changes, so focus inside a scroll container
        survives the 2-second refresh. -->

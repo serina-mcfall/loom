@@ -96,6 +96,39 @@ function renderNeeds(items) {
   }
 }
 
+/** Issue #11's per-worktree ask: the model, four token buckets, and a
+ *  notional cost. `cost.unknown_reason` means every number in it is None
+ *  (loom/cost.py's own contract -- one shape, only the numbers go missing),
+ *  so this prints the REASON itself in one spanning cell, never a bare "?"
+ *  that would say something is missing without saying why. */
+function appendCostCells(tr, cost) {
+  if (!cost || cost.unknown_reason) {
+    const reason = (cost && cost.unknown_reason) || "?";
+    const td = text("td", reason, "n--unknown");
+    td.colSpan = 6;
+    tr.append(td);
+    return;
+  }
+  // `models` carries every model a mixed-model session touched (OPEN-6).
+  // More than one entry means the row shows the breakdown rather than only
+  // the winning model, so a mixed-model session is never reported as if it
+  // ran on a single one.
+  const fmt = (v) => (v === null || v === undefined ? "?" : `$${v.toFixed(2)}`);
+  const modelText = cost.models && cost.models.length > 1
+    ? cost.models.map((m) => `${m.model} (${fmt(m.notional_cost_usd)})`).join(", ")
+    : cost.model || "?";
+  tr.append(text("td", modelText, "cost-model"));
+  const t = cost.tokens || {};
+  // The four DISPLAY buckets come straight off the tokens dict. cache_write
+  // is ALREADY the 5m + 1h sum computed in loom/cost.py's sum_cost() -- read
+  // here, never added. No arithmetic on token counts happens in this file.
+  tr.append(cell(num(t.input), t.input, "n--tok"));
+  tr.append(cell(num(t.cache_write), t.cache_write, "n--tok"));
+  tr.append(cell(num(t.cache_read), t.cache_read, "n--tok"));
+  tr.append(cell(num(t.output), t.output, "n--tok"));
+  tr.append(text("td", fmt(cost.notional_cost_usd), "cost-figure"));
+}
+
 function renderTrees(body, trees) {
   body.replaceChildren();
   for (const t of trees) {
@@ -114,6 +147,7 @@ function renderTrees(body, trees) {
     tr.append(cell(num(t.behind), t.behind, "n--behind"));
     const dt = dirtyTotal(t.dirty);
     tr.append(cell(dt, dt === "?" ? null : Number(dt), "n--dirty"));
+    appendCostCells(tr, t.cost);
     body.append(tr);
   }
 }
@@ -329,8 +363,11 @@ function buildRepoSection(repo, i) {
 
   // Both tables get double width: six columns, and one column per branch, do not
   // fit a 20rem cell. Widening beats abbreviating the headers to glyphs.
+  // The last six columns are issue #11's per-worktree ask (step 8): model,
+  // the four DISPLAY token buckets, and a notional cost.
   const treesTable = tableWith(
-      ["Tree", "Branch", "PR", "Agent", "Ahead", "Behind", "Dirty"]);
+      ["Tree", "Branch", "PR", "Agent", "Ahead", "Behind", "Dirty",
+       "Model", "Input", "Cache write", "Cache read", "Output", "Cost"]);
   const treesPanel = panel(`repo-${i}-trees-h`, "Worktrees", "h3",
                            scrollBox(`repo-${i}-trees-h`, treesTable));
   treesPanel.classList.add("panel--wide");
@@ -447,6 +484,25 @@ function renderConfigWarning(config) {
   el_.hidden = !text;
 }
 
+/** The fleet-wide total loom.view.fleet_total computed, and its four session
+ *  counts. Plain text, no live-region behaviour yet -- that decision belongs
+ *  to step 9's accessibility pass, not to this paint-only step. */
+function renderCostTotal(cost) {
+  const totalEl = el("cost-total");
+  const sessionsEl = el("cost-sessions");
+  if (!cost) {
+    totalEl.textContent = "";
+    sessionsEl.textContent = "";
+    return;
+  }
+  totalEl.textContent = cost.label || "";
+  // Read straight off snap["cost"] -- loom.view.fleet_total already summed
+  // these across every worktree. This file does not sum them again.
+  sessionsEl.textContent =
+    `live ${cost.live_sessions}, stale ${cost.stale_sessions}, ` +
+    `stopped ${cost.stopped_sessions}, undated ${cost.undated_sessions}`;
+}
+
 function render(snapshot) {
   // DATA health comes from the snapshot's own badge, decided in loom/view.py.
   // It is NOT inferred from the arrival of a message: a failed refresh is exactly
@@ -476,6 +532,7 @@ function render(snapshot) {
   // The sentence is decided in loom.view.announcement; the page only decides WHEN,
   // which is a timing concern it genuinely owns.
   announce(snapshot.announcement);
+  renderCostTotal(snapshot.cost);
   syncRepos(repos);
 }
 
