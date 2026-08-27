@@ -1,11 +1,44 @@
 import json
 import os
+import re
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from loom.agents import PARKED_STALE_SECONDS, WORKING_STALE_SECONDS
 from loom.cost import (ALIAS_MAP, RATES, locate_transcript, read_usage,
-                       resolve_model, sum_cost)
+                       resolve_model, sum_cost, worktree_cost)
+
+# A fixed clock, the same pattern test_agents.py uses -- worktree_cost
+# requires `now` rather than defaulting it, so no test may depend on an
+# invisible clock.
+NOW = datetime(2026, 8, 27, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def ago(seconds: float) -> str:
+    return (NOW - timedelta(seconds=seconds)).isoformat()
+
+
+def write_session(state_dir: str, session_id: str, cwd: str, state: str,
+                  since: str) -> None:
+    Path(state_dir, f"{session_id}.json").write_text(json.dumps(
+        {"session_id": session_id, "cwd": cwd, "state": state,
+         "since": since, "pid": 1}))
+
+
+def write_transcript(home: str, cwd: str, session_id: str,
+                     records: list[tuple[str, dict]]) -> Path:
+    """A .jsonl transcript at the path locate_transcript would derive for
+    `cwd` (already resolved -- these fixtures use plain tempdir paths with no
+    symlinks, so realpath is the identity)."""
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", cwd)
+    d = Path(home, ".claude", "projects", slug)
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{session_id}.jsonl"
+    lines = [json.dumps({"message": {"model": m, "usage": u}}) for m, u in records]
+    path.write_text("\n".join(lines) + ("\n" if lines else ""))
+    return path
 
 
 def usage(input=0, output=0, cache_read=0, cache_5m=0, cache_1h=0):
@@ -181,6 +214,156 @@ class TestSumCost(unittest.TestCase):
         ]
         result = sum_cost(records)
         self.assertEqual(result["model"], "claude-opus-5")
+
+
+class TestWorktreeCost(unittest.TestCase):
+    def setUp(self):
+        self._state_td = tempfile.TemporaryDirectory()
+        self._home_td = tempfile.TemporaryDirectory()
+        self.state_dir = self._state_td.name
+        self.home = self._home_td.name
+
+    def tearDown(self):
+        self._state_td.cleanup()
+        self._home_td.cleanup()
+
+    def test_transcript_found_and_complete_is_populated(self):
+        cwd = os.path.join(self.state_dir, "wt")
+        os.makedirs(cwd)
+        write_session(self.state_dir, "s1", cwd, "idle", ago(10))
+        write_transcript(self.home, cwd, "s1",
+                         [("claude-opus-5", usage(output=1_000))])
+
+        result = worktree_cost(self.state_dir, cwd, [cwd], self.home, NOW)
+
+        self.assertIsNotNone(result["notional_cost_usd"])
+        self.assertIsNone(result["unknown_reason"])
+
+    def test_transcript_missing_for_one_of_two_sessions_is_unknown(self):
+        cwd = os.path.join(self.state_dir, "wt")
+        os.makedirs(cwd)
+        write_session(self.state_dir, "s1", cwd, "idle", ago(10))
+        write_transcript(self.home, cwd, "s1",
+                         [("claude-opus-5", usage(output=1_000))])
+        # s2 matches the worktree but has no transcript on disk at all.
+        write_session(self.state_dir, "s2", cwd, "idle", ago(10))
+
+        result = worktree_cost(self.state_dir, cwd, [cwd], self.home, NOW)
+
+        self.assertIsNone(result["notional_cost_usd"])
+        self.assertEqual(result["unknown_reason"], "transcript-missing")
+
+    def test_transcript_that_raises_on_open_is_unreadable_not_missing(self):
+        cwd = os.path.join(self.state_dir, "wt")
+        os.makedirs(cwd)
+        write_session(self.state_dir, "s1", cwd, "idle", ago(10))
+        write_transcript(self.home, cwd, "s1",
+                         [("claude-opus-5", usage(output=1_000))])
+        write_session(self.state_dir, "s2", cwd, "idle", ago(10))
+        unreadable_path = write_transcript(self.home, cwd, "s2",
+                                           [("claude-opus-5", usage(output=1_000))])
+        os.chmod(unreadable_path, 0o000)
+        try:
+            result = worktree_cost(self.state_dir, cwd, [cwd], self.home, NOW)
+        finally:
+            os.chmod(unreadable_path, 0o644)
+
+        self.assertIsNone(result["notional_cost_usd"])
+        self.assertEqual(result["unknown_reason"], "unreadable")
+
+    def test_bucket_absent_from_a_summed_record_is_missing_bucket(self):
+        cwd = os.path.join(self.state_dir, "wt")
+        os.makedirs(cwd)
+        write_session(self.state_dir, "s1", cwd, "idle", ago(10))
+        # One record explicitly carries every bucket; the other genuinely
+        # OMITS cache_read_input_tokens -- the two disagree, so the combined
+        # bucket cannot be honestly summed.
+        complete = usage(output=1_000)
+        incomplete = {"input_tokens": 0, "output_tokens": 500,
+                     "cache_creation": {"ephemeral_5m_input_tokens": 0,
+                                        "ephemeral_1h_input_tokens": 0}}
+        write_transcript(self.home, cwd, "s1", [
+            ("claude-opus-5", complete),
+            ("claude-opus-5", incomplete),
+        ])
+
+        result = worktree_cost(self.state_dir, cwd, [cwd], self.home, NOW)
+
+        self.assertIsNone(result["notional_cost_usd"])
+        self.assertEqual(result["unknown_reason"], "missing-bucket")
+
+    def test_one_live_beside_one_stale_sums_both_and_counts_stale(self):
+        cwd = os.path.join(self.state_dir, "wt")
+        os.makedirs(cwd)
+        # working, aged past WORKING_STALE_SECONDS -> stale.
+        write_session(self.state_dir, "s1", cwd, "working",
+                     ago(WORKING_STALE_SECONDS + 60))
+        write_transcript(self.home, cwd, "s1",
+                         [("claude-opus-5", usage(output=1_000))])
+        # idle, fresh -> live.
+        write_session(self.state_dir, "s2", cwd, "idle", ago(5))
+        write_transcript(self.home, cwd, "s2",
+                         [("claude-opus-5", usage(output=2_000))])
+
+        result = worktree_cost(self.state_dir, cwd, [cwd], self.home, NOW)
+
+        self.assertEqual(result["stale_sessions"], 1)
+        self.assertEqual(result["live_sessions"], 1)
+        self.assertEqual(result["tokens"]["output"], 3_000)
+
+    def test_stopped_session_eight_hours_old_is_populated_not_unknown(self):
+        cwd = os.path.join(self.state_dir, "wt")
+        os.makedirs(cwd)
+        write_session(self.state_dir, "s1", cwd, "stopped", ago(8 * 3600))
+        write_transcript(self.home, cwd, "s1",
+                         [("claude-opus-5", usage(output=1_000))])
+
+        result = worktree_cost(self.state_dir, cwd, [cwd], self.home, NOW)
+
+        self.assertIsNotNone(result["tokens"])
+        self.assertIsNotNone(result["notional_cost_usd"])
+        self.assertEqual(result["stopped_sessions"], 1)
+        self.assertEqual(result["live_sessions"], 0)
+        self.assertIsNone(result["unknown_reason"])
+
+    def test_zero_matching_sessions_is_no_session(self):
+        cwd = os.path.join(self.state_dir, "wt")
+        os.makedirs(cwd)
+        # A session for a completely different worktree.
+        other = os.path.join(self.state_dir, "other")
+        os.makedirs(other)
+        write_session(self.state_dir, "s1", other, "idle", ago(5))
+
+        result = worktree_cost(self.state_dir, cwd, [cwd, other], self.home, NOW)
+
+        self.assertEqual(result["unknown_reason"], "no-session")
+        self.assertEqual(result["live_sessions"], 0)
+        self.assertEqual(result["stale_sessions"], 0)
+        self.assertEqual(result["stopped_sessions"], 0)
+        self.assertEqual(result["undated_sessions"], 0)
+
+    def test_nested_worktree_pair_each_counted_once(self):
+        parent = os.path.join(self.state_dir, "r")
+        nested = os.path.join(parent, "__worktrees", "a")
+        os.makedirs(nested)
+        siblings = [parent, nested]
+
+        write_session(self.state_dir, "s-parent", parent, "idle", ago(5))
+        write_transcript(self.home, parent, "s-parent",
+                         [("claude-opus-5", usage(output=1_000))])
+        write_session(self.state_dir, "s-nested", nested, "idle", ago(5))
+        write_transcript(self.home, nested, "s-nested",
+                         [("claude-opus-5", usage(output=9_000))])
+
+        parent_result = worktree_cost(self.state_dir, parent, siblings, self.home, NOW)
+        nested_result = worktree_cost(self.state_dir, nested, siblings, self.home, NOW)
+
+        # Each worktree sums only its OWN session's token count -- neither
+        # sees the other's, so this is compared against the known
+        # single-session totals rather than merely checking that the total
+        # changed.
+        self.assertEqual(parent_result["tokens"]["output"], 1_000)
+        self.assertEqual(nested_result["tokens"]["output"], 9_000)
 
 
 if __name__ == "__main__":

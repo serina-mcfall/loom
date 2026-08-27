@@ -10,8 +10,12 @@ So this module re-derives the transcript's location from the same `cwd` and
 from __future__ import annotations
 
 import json
+import os
 import re
+from datetime import datetime
 from pathlib import Path
+
+from . import agents as agents_mod
 
 
 def locate_transcript(home: str, cwd: str, session_id: str) -> Path | None:
@@ -285,4 +289,155 @@ def sum_cost(usage_records: list[tuple[str, dict]]) -> dict:
         "models": models_out,
         "notional_cost_usd": notional_cost_usd,
         "prices_as_of": PRICES_AS_OF,
+    }
+
+
+# The six values worktree_cost's unknown branch may report -- enumerated
+# rather than free prose, because step 5 and step 6 discriminate on the exact
+# string rather than pattern-matching English.
+#
+#   no-session          no matching session -- NOT an error
+#   transcript-missing  matched a session, found no transcript file
+#   unreadable          transcript exists but could not be read
+#   no-usage-records    matched session(s), zero priceable records
+#   missing-bucket      a token bucket absent after combining
+#   unknown-model       a model id with no rate
+UNKNOWN_REASONS = frozenset({
+    "no-session", "transcript-missing", "unreadable",
+    "no-usage-records", "missing-bucket", "unknown-model",
+})
+
+
+def _session_bucket(state: str | None, since: str | None, now: datetime) -> str:
+    """Which of the four counts one matched session belongs in.
+
+    Mirrors agent_for's own three-way staleness split (loom/agents.py:
+    177-187) plus the fourth "cannot tell" outcome `_age_seconds` already
+    returns -- reused directly rather than re-implemented, so the two
+    modules cannot drift on what counts as stale.
+    """
+    if state not in agents_mod.ACTIVE_STATES:
+        return "stopped"
+    age = agents_mod._age_seconds(since, now)
+    if age is None:
+        return "undated"
+    limit = (agents_mod.WORKING_STALE_SECONDS if state == "working"
+            else agents_mod.PARKED_STALE_SECONDS)
+    return "stale" if age > limit else "live"
+
+
+def _owns(worktree_real: str, session_cwd_real: str, sibling_reals: list[str]) -> bool:
+    """True if `worktree_real` is the NEAREST enclosing worktree for a
+    session at `session_cwd_real`, per step 4's sibling_paths rule.
+
+    A session belongs to the worktree, not every worktree that happens to be
+    an ancestor of its cwd -- reused naively for a SUM (rather than
+    agent_for's one-badge pick), nested worktrees would double-count: a
+    session inside a nested worktree matches both the nested worktree's path
+    prefix and its parent's.
+    """
+    within = (session_cwd_real == worktree_real
+             or session_cwd_real.startswith(worktree_real + os.sep))
+    if not within:
+        return False
+    for sib in sibling_reals:
+        if sib == worktree_real or len(sib) <= len(worktree_real):
+            continue
+        if session_cwd_real == sib or session_cwd_real.startswith(sib + os.sep):
+            return False  # a more specific worktree owns this session instead
+    return True
+
+
+def _unknown_shape(counts: dict[str, int], unknown_reason: str) -> dict:
+    """The unknown-branch result. Carries every key the populated branch does
+    -- only the numbers go None, no key disappears -- so step 6 can read
+    session counts and prices_as_of off every worktree, including this one.
+    """
+    return {
+        "tokens": None, "notional_cost_usd": None, "model": None, "models": [],
+        "prices_as_of": PRICES_AS_OF, "unknown_reason": unknown_reason,
+        **counts,
+    }
+
+
+def worktree_cost(state_dir: str, worktree_path: str, sibling_paths: list[str],
+                  home: str, now: datetime) -> dict:
+    """Every matching session's transcript, summed for one worktree.
+
+    Matches every session whose (resolved) cwd is the worktree or inside it
+    -- the same prefix rule agent_for uses -- but narrowed to the NEAREST
+    enclosing worktree via `sibling_paths`, so a nested worktree's sessions
+    are counted once, by the nested worktree, and excluded from every
+    ancestor's sum.
+
+    `now` is required, never defaulted, for the same reason agent_for
+    requires it: staleness must not depend on an invisible clock.
+
+    EVERY matched session's transcript is summed regardless of its state --
+    stale and stopped sessions are included and counted, never dropped
+    (OPEN-5) -- but a session is EXCLUDED from the sum, and the whole result
+    goes unknown, the moment any one of them cannot be honestly measured:
+    no transcript file, a transcript that raises on open, or a combined
+    usage set sum_cost cannot honestly price.
+    """
+    sessions = agents_mod.read_state_dir(state_dir)
+    worktree_real = os.path.realpath(worktree_path)
+    sibling_reals = [os.path.realpath(p) for p in sibling_paths]
+
+    matching: list[tuple[dict, str]] = []
+    for s in sessions:
+        session_cwd_real = os.path.realpath(s.get("cwd", ""))
+        if _owns(worktree_real, session_cwd_real, sibling_reals):
+            matching.append((s, session_cwd_real))
+
+    counts = {"live_sessions": 0, "stale_sessions": 0,
+             "stopped_sessions": 0, "undated_sessions": 0}
+    for s, _ in matching:
+        bucket = _session_bucket(s.get("state"), s.get("since"), now)
+        counts[f"{bucket}_sessions"] += 1
+
+    if not matching:
+        return _unknown_shape(counts, "no-session")
+
+    transcript_missing = False
+    unreadable = False
+    combined_records: list[tuple[str, dict]] = []
+    for s, session_cwd_real in matching:
+        path = locate_transcript(home, session_cwd_real, s.get("session_id", ""))
+        if path is None:
+            transcript_missing = True
+            continue
+        try:
+            combined_records.extend(read_usage(path))
+        except OSError:
+            unreadable = True
+            continue
+
+    # transcript_missing checked first: an arbitrary but stated precedence
+    # for the (untested, and likely rare) case where both occur among
+    # different matched sessions in the same worktree.
+    if transcript_missing:
+        return _unknown_shape(counts, "transcript-missing")
+    if unreadable:
+        return _unknown_shape(counts, "unreadable")
+
+    priced = sum_cost(combined_records)
+    if priced["notional_cost_usd"] is None:
+        priceable_records = [(m, u) for m, u in combined_records if m != SYNTHETIC_MODEL]
+        if not priceable_records:
+            reason = "no-usage-records"
+        elif any(resolve_model(m) is None for m, _ in priceable_records):
+            reason = "unknown-model"
+        else:
+            reason = "missing-bucket"
+        return _unknown_shape(counts, reason)
+
+    return {
+        "tokens": priced["tokens"],
+        "notional_cost_usd": priced["notional_cost_usd"],
+        "model": priced["model"],
+        "models": priced["models"],
+        "prices_as_of": priced["prices_as_of"],
+        "unknown_reason": None,
+        **counts,
     }
