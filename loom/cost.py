@@ -40,6 +40,48 @@ def locate_transcript(home: str, cwd: str, session_id: str) -> Path | None:
     return path if path.is_file() else None
 
 
+# The bare filesystem root `worktree_cost`'s `home` argument takes in
+# production — the same pattern as agents.DEFAULT_STATE_DIR (agents.py:37)
+# and every other bare-filesystem-root constant this codebase already has
+# (loom_cli.py, hookinstall.py, hooks/loom_hook.py).
+DEFAULT_HOME = os.path.expanduser("~")
+
+# Per-transcript cache, keyed on the path string, holding (mtime, size,
+# records) so an UNCHANGED transcript costs a stat, not a re-parse.
+# `collect()` calls worktree_cost once per worktree every FAST_SECONDS=2
+# under `loom serve` (loom/serve.py), and this repo's own largest transcript
+# is 4.3 MB / 1,918 JSON-parsed lines (measured 2026-08-23) -- transcripts
+# only ever grow, never shrink back down.
+_transcript_cache: dict[str, tuple[float, int, list[tuple[str, dict]]]] = {}
+
+
+def reset_cache() -> None:
+    """Clear the per-transcript cache. Call from tests' setUp/tearDown so one
+    test's cached read cannot leak into another's, and available in
+    principle for a long-running `loom serve` process, where transcripts
+    accumulate for the life of the process.
+    """
+    _transcript_cache.clear()
+
+
+def _read_usage_cached(transcript_path: Path) -> list[tuple[str, dict]]:
+    """Same contract as read_usage(), but re-parses only when the file's own
+    (mtime, size) have changed since the last call. `os.stat` is left
+    unguarded, the same as `read_usage`'s own open() -- an OSError here
+    (deletion mid-race, permissions on the containing directory) is a real
+    "unreadable" failure and must propagate, not be swallowed into a stale
+    cache hit or an empty result.
+    """
+    st = os.stat(transcript_path)
+    key = str(transcript_path)
+    cached = _transcript_cache.get(key)
+    if cached is not None and cached[0] == st.st_mtime and cached[1] == st.st_size:
+        return cached[2]
+    records = read_usage(transcript_path)
+    _transcript_cache[key] = (st.st_mtime, st.st_size, records)
+    return records
+
+
 def read_usage(transcript_path: Path) -> list[tuple[str, dict]]:
     """Every (model, usage_dict) pair a transcript's assistant lines carry.
 
@@ -408,7 +450,7 @@ def worktree_cost(state_dir: str, worktree_path: str, sibling_paths: list[str],
             transcript_missing = True
             continue
         try:
-            combined_records.extend(read_usage(path))
+            combined_records.extend(_read_usage_cached(path))
         except OSError:
             unreadable = True
             continue

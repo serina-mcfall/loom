@@ -7,8 +7,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from loom.agents import PARKED_STALE_SECONDS, WORKING_STALE_SECONDS
+from loom import cost as cost_mod
 from loom.cost import (ALIAS_MAP, RATES, locate_transcript, read_usage,
-                       resolve_model, sum_cost, worktree_cost)
+                       resolve_model, reset_cache, sum_cost, worktree_cost)
 
 # A fixed clock, the same pattern test_agents.py uses -- worktree_cost
 # requires `now` rather than defaulting it, so no test may depend on an
@@ -218,6 +219,10 @@ class TestSumCost(unittest.TestCase):
 
 class TestWorktreeCost(unittest.TestCase):
     def setUp(self):
+        # worktree_cost reads transcripts through cost.py's own module-level
+        # (path, mtime, size) cache -- clear it so one test's cached read
+        # can never leak into another's.
+        reset_cache()
         self._state_td = tempfile.TemporaryDirectory()
         self._home_td = tempfile.TemporaryDirectory()
         self.state_dir = self._state_td.name
@@ -226,6 +231,7 @@ class TestWorktreeCost(unittest.TestCase):
     def tearDown(self):
         self._state_td.cleanup()
         self._home_td.cleanup()
+        reset_cache()
 
     def test_transcript_found_and_complete_is_populated(self):
         cwd = os.path.join(self.state_dir, "wt")
@@ -364,6 +370,49 @@ class TestWorktreeCost(unittest.TestCase):
         # changed.
         self.assertEqual(parent_result["tokens"]["output"], 1_000)
         self.assertEqual(nested_result["tokens"]["output"], 9_000)
+
+
+class TestTranscriptCache(unittest.TestCase):
+    def setUp(self):
+        reset_cache()
+        self._home_td = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._home_td.cleanup()
+        reset_cache()
+
+    def test_reset_cache_clears_a_stale_hit(self):
+        path = Path(self._home_td.name, "sess.jsonl")
+        line_a = json.dumps({"message": {"model": "claude-opus-5",
+                                         "usage": usage(output=1)}})
+        line_b = json.dumps({"message": {"model": "claude-opus-5",
+                                         "usage": usage(output=2)}})
+        # Same length: only the single digit differs, so mtime and size can
+        # be made to agree exactly across the rewrite below.
+        self.assertEqual(len(line_a), len(line_b))
+
+        path.write_text(line_a + "\n")
+        first = cost_mod._read_usage_cached(path)
+        self.assertEqual(first, [("claude-opus-5", usage(output=1))])
+
+        st_before = os.stat(path)
+        path.write_text(line_b + "\n")
+        # Force mtime back to what it was before the rewrite -- proving the
+        # cache is keyed on (mtime, size) and genuinely cannot see this
+        # change on its own, not merely that the test never triggered a
+        # write in practice.
+        os.utime(path, (st_before.st_atime, st_before.st_mtime))
+        st_after = os.stat(path)
+        self.assertEqual(st_after.st_mtime, st_before.st_mtime)
+        self.assertEqual(st_after.st_size, st_before.st_size)
+
+        still_cached = cost_mod._read_usage_cached(path)
+        self.assertEqual(still_cached, first, "cache hit expected: mtime/size unchanged")
+
+        reset_cache()
+        fresh = cost_mod._read_usage_cached(path)
+        self.assertEqual(fresh, [("claude-opus-5", usage(output=2))],
+                         "reset_cache() must clear the stale entry, not no-op")
 
 
 if __name__ == "__main__":

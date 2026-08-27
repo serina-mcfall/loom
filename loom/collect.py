@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import agents as agents_mod
+from . import cost as cost_mod
 from . import ghsrc, gitsrc
 from .runner import Runner
 
@@ -176,17 +177,34 @@ def collect(runner: Runner, root: str,
     tree_by_branch = {t.branch: t.dir for t in trees if t.branch}
     tree_dicts = []
     now = datetime.now(timezone.utc).astimezone()
+    # The full worktree path list this same loop iterates, so worktree_cost's
+    # nearest-enclosing rule (loom/cost.py) has every sibling to compare
+    # against -- without it, a nested worktree's sessions double-count into
+    # both its own sum and its parent's.
+    sibling_paths = [t.path for t in trees]
+    # unknown_reason values that mean something actually broke, distinct from
+    # "no-session" (the normal state of most worktrees most of the time) and
+    # "no-usage-records" (a session that has started but produced nothing
+    # priceable yet) -- neither of those is an error worth a source entry.
+    cost_error_reasons = {"transcript-missing", "unreadable"}
+    cost_unmeasured = []
     for t in trees:
         # One clock for the whole snapshot: two worktrees must never be aged
         # against different instants, or the same session could read live in
         # one row and stale in the next.
         a = agents_mod.agent_for(t.path, sessions, panes, now)
+        c = cost_mod.worktree_cost(state_dir, t.path, sibling_paths,
+                                   cost_mod.DEFAULT_HOME, now)
+        if c["unknown_reason"] in cost_error_reasons:
+            cost_unmeasured.append(t.dir)
         tree_dicts.append({
             "dir": t.dir, "path": t.path, "branch": t.branch,
             "ahead": t.ahead, "behind": t.behind,
             "dirty": asdict(t.dirty) if t.dirty is not None else None,
             "agent": asdict(a), "pr": by_branch.get(t.branch or ""),
+            "cost": c,
         })
+    cost_unmeasured.sort()
 
     # No reverse `worktree` link: each worktree already carries its `pr` number and
     # the page renders that direction. Two mappings for one relationship is a drift
@@ -241,6 +259,16 @@ def collect(runner: Runner, root: str,
                 asdict(ghsrc.SourceStatus("hooks", True)),
                 asdict(ghsrc.SourceStatus("tmux", bool(panes),
                                           None if panes else "no tmux server")),
+                # "no-session" and "no-usage-records" are NOT errors here --
+                # most worktrees have no agent most of the time, and a source
+                # that reports failure for the normal case is a source
+                # nobody reads. Only a transcript that could not be located
+                # or read counts as something actually broke.
+                asdict(ghsrc.SourceStatus(
+                    "cost", not cost_unmeasured,
+                    None if not cost_unmeasured else
+                    f"could not measure token cost for {len(cost_unmeasured)} "
+                    f"worktree(s): {', '.join(cost_unmeasured)}")),
             ],
         }],
     }
