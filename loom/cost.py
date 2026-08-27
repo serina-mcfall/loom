@@ -9,6 +9,7 @@ So this module re-derives the transcript's location from the same `cwd` and
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -33,3 +34,40 @@ def locate_transcript(home: str, cwd: str, session_id: str) -> Path | None:
     slug = re.sub(r"[^a-zA-Z0-9]", "-", cwd)
     path = Path(home, ".claude", "projects", slug, f"{session_id}.jsonl")
     return path if path.is_file() else None
+
+
+def read_usage(transcript_path: Path) -> list[tuple[str, dict]]:
+    """Every (model, usage_dict) pair a transcript's assistant lines carry.
+
+    A malformed LINE (bad JSON, or valid JSON missing `message.model` or
+    `message.usage`) is skipped, not raised — matching read_state_dir's
+    tolerance for a single bad line inside a file that opened fine
+    (loom/agents.py:58-68).
+
+    A FILE THAT CANNOT BE OPENED IS A DIFFERENT FAILURE. The open() below is
+    deliberately NOT wrapped in try/except: an OSError (permissions, a
+    directory where a file should be, a race with deletion) propagates to the
+    caller. Step 4 (worktree_cost) is what turns that exception into
+    `unknown_reason: "unreadable"` for the whole worktree — catching it here
+    would silently turn "unreadable" into "empty transcript" one layer too
+    early.
+    """
+    records: list[tuple[str, dict]] = []
+    with open(transcript_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            message = obj.get("message")
+            if not isinstance(message, dict):
+                continue
+            model = message.get("model")
+            usage = message.get("usage")
+            if model is None or usage is None:
+                continue
+            records.append((model, usage))
+    return records
