@@ -14,6 +14,7 @@ what the code did. This is that enumeration.
 | [`../README.md`](../README.md) | How to run Loom, and its one requirement (Python 3.10+) |
 | [`superpowers/specs/2026-08-03-loom-design.md`](superpowers/specs/2026-08-03-loom-design.md) | The design: architecture, the snapshot contract, error honesty, ranking, accessibility requirements, threat model — **and a corrections list recording every place execution proved the original wrong** |
 | [`superpowers/specs/2026-08-06-allow-list-design.md`](superpowers/specs/2026-08-06-allow-list-design.md) | Which repositories the board shows: an allow list, not a deny list, and why a missing name is reported rather than dropped |
+| [`superpowers/specs/2026-08-27-tokens-cost-design.md`](superpowers/specs/2026-08-27-tokens-cost-design.md) | The tokens-and-cost panel (issue #11): the pricing table's source and staleness handling, the per-worktree vs fleet-total unknown rule, and the six OPEN decisions this feature resolved |
 | [`../research/langfuse.md`](../research/langfuse.md) | What Langfuse is, what Claude Code's OTEL spans actually carry, and what stays unverified. A research note, so it describes **external** behaviour rather than this code — dated, sourced, and carrying its own corrections |
 
 **The corrections list is the load-bearing part.** A spec that quietly matches whatever
