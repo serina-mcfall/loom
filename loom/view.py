@@ -177,6 +177,94 @@ def announcement(snap: dict) -> str:
             f"Top: {subject}, {top.get('detail', '')}".rstrip().rstrip(",") + ".")
 
 
+# unknown_reason values that mean something actually broke, for the purpose
+# of the fleet total's excluded count. "no-session" is the normal state of
+# most worktrees most of the time -- counting it would put a permanent
+# "18 worktrees excluded" on the label and drown the signal the count exists
+# to give. "no-usage-records" is excluded from the excluded-count for the
+# same reason: a session that has started but not yet produced a priced
+# turn is the normal shape of an agent that just began, not a measurement
+# failure.
+COST_EXCLUDED_REASONS = {"transcript-missing", "unreadable",
+                         "missing-bucket", "unknown-model"}
+
+_SESSION_COUNT_KEYS = ("live_sessions", "stale_sessions",
+                      "stopped_sessions", "undated_sessions")
+
+
+def fleet_total(snap: dict) -> dict:
+    """The fleet-wide notional cost, and the four session counts step 4
+    computed per worktree, summed here -- the one place that owns turning
+    per-worktree numbers into a fleet-level answer, the same role
+    aggregate_needs and badge already play for their own fields.
+
+    Sums notional_cost_usd across every worktree with a KNOWN cost, and
+    reports the unknown ones by count in the label text itself (OPEN-2),
+    never folding an unknown into the sum as zero. Only unknown_reason in
+    COST_EXCLUDED_REASONS counts as excluded -- "no-session" and
+    "no-usage-records" are the normal shape of a quiet or just-started
+    worktree, not a measurement failure.
+
+    ZERO WORKTREES IS CANNOT-MEASURE, NOT MEASURED-AND-ZERO: a persistently
+    failing collector and a genuinely empty fleet both hand this zero
+    worktrees (`snap["repos"]` starts `[]` before the first successful
+    collection, and a collection failure re-finalises the previous
+    snapshot), so notional_cost_usd is None with every count at 0 -- a
+    confident $0.00 can only ever mean a fleet that was actually measured
+    and actually spent nothing.
+    """
+    worktrees = [w for repo in snap.get("repos", []) for w in repo.get("worktrees", [])]
+
+    counts = {k: 0 for k in _SESSION_COUNT_KEYS}
+    excluded = 0
+    total = 0.0
+    prices_as_of = None
+
+    for w in worktrees:
+        c = w.get("cost") or {}
+        for key in _SESSION_COUNT_KEYS:
+            counts[key] += c.get(key) or 0
+        if prices_as_of is None:
+            prices_as_of = c.get("prices_as_of")
+        notional = c.get("notional_cost_usd")
+        if notional is not None:
+            total += notional
+        elif c.get("unknown_reason") in COST_EXCLUDED_REASONS:
+            excluded += 1
+
+    if not worktrees:
+        notional_cost_usd = None
+        label = "token cost not yet measured"
+    else:
+        notional_cost_usd = total
+        parts = [f"${notional_cost_usd:.2f} notional "
+                f"(list-price equivalent, not a bill)"]
+        if excluded:
+            plural = "" if excluded == 1 else "s"
+            parts.append(f"{excluded} worktree{plural} excluded")
+        # BOTH stale and stopped fold into the same "history, not current
+        # burn" clause whenever EITHER is non-zero -- OPEN-5 named stale
+        # sessions only, before a stopped session's spend became populated
+        # rather than unknown; reap() keeps a stopped record for 24h, so a
+        # worktree's total can be dominated by a session that died 23 hours
+        # ago, and that must not read as current burn either.
+        if counts["stale_sessions"] or counts["stopped_sessions"]:
+            parts.append(f"{counts['stale_sessions']} stale, "
+                        f"{counts['stopped_sessions']} stopped session(s) "
+                        f"— history, not current burn")
+        if prices_as_of:
+            parts.append(f"prices as of {prices_as_of}")
+        label = "; ".join(parts)
+
+    return {
+        "notional_cost_usd": notional_cost_usd,
+        "excluded_count": excluded,
+        "prices_as_of": prices_as_of,
+        "label": label,
+        **counts,
+    }
+
+
 def finalise(snap: dict, now: datetime | None = None) -> dict:
     """Rank the snapshot and attach its display decisions. Mutates and returns it.
 
@@ -194,4 +282,9 @@ def finalise(snap: dict, now: datetime | None = None) -> dict:
     snap["needs_you"] = aggregate_needs(snap)
     snap["announcement"] = announcement(snap)
     snap["badge"] = badge(snap, now)
+    # #11 scopes the fleet total to --all, but this runs on every finalise()
+    # call, including a single-repo `loom snapshot` (loom_cli.py) -- the
+    # label above describes what it covers rather than claiming "fleet" over
+    # one repo, so it stays honest either way.
+    snap["cost"] = fleet_total(snap)
     return snap
