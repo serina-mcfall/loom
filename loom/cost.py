@@ -147,19 +147,16 @@ ALIAS_MAP: dict[str, str] = {
 }
 
 # USD per million tokens, (input, output). Keyed on the canonical id ALIAS_MAP
-# resolves to. From platform.claude.com pricing, re-verified 2026-08-27.
+# resolves to. From platform.claude.com pricing, re-verified 2026-09-05.
 #
-# claude-sonnet-5 is priced at its INTRODUCTORY rate (2 / 10), in effect
-# through 2026-08-31 and reverting to the standard 3 / 15 on 2026-09-01. This
-# table was built 2026-08-27, inside the introductory window — PRICES_AS_OF
-# below records when someone looked, not when this number expires, so this
-# entry must be re-checked and changed to 3 / 15 on or after 2026-09-01.
+# claude-sonnet-5's introductory rate (2 / 10) expired 2026-08-31; the
+# standard rate (3 / 15) has applied since 2026-09-01.
 RATES: dict[str, tuple[float, float]] = {
     "claude-fable-5": (10, 50),
     "claude-opus-5": (5, 25),
     "claude-opus-4-7": (5, 25),
     "claude-opus-4-8": (5, 25),
-    "claude-sonnet-5": (2, 10),
+    "claude-sonnet-5": (3, 15),
     "claude-haiku-4-5": (1, 5),
 }
 
@@ -171,7 +168,7 @@ CACHE_WRITE_1H_MULTIPLIER = 2.0
 # When these rates and the alias map above were last checked against
 # published pricing (OPEN-4) — carried into the output so a stale table is
 # visible on the panel itself, not just in this comment.
-PRICES_AS_OF = "2026-08-27"
+PRICES_AS_OF = "2026-09-05"
 
 # The five raw usage buckets sum_cost combines, before the sixth (derived)
 # "cache_write" key is added on top.
