@@ -341,6 +341,98 @@ class TestRenderText(unittest.TestCase):
         self.assertNotIn("unavailable", text)
 
 
+class TestRenderTextCost(unittest.TestCase):
+    """Step 7: the per-worktree token/cost rows and the fleet total line."""
+
+    def _wt_cost(self, notional=None, unknown_reason=None, tokens=None, model=None,
+                live=0, stale=0, stopped=0, undated=0):
+        """A single worktree's cost dict, matching loom/cost.py's own shape."""
+        return {
+            "tokens": tokens, "notional_cost_usd": notional, "model": model,
+            "models": [], "prices_as_of": "2026-08-27",
+            "unknown_reason": unknown_reason,
+            "live_sessions": live, "stale_sessions": stale,
+            "stopped_sessions": stopped, "undated_sessions": undated,
+        }
+
+    def _repo(self, name, worktrees):
+        return {"name": name, "worktrees": worktrees, "prs": [], "issues": [],
+                "sources": [], "needs_you": []}
+
+    def _snapshot(self, repos):
+        """Builds snap["cost"] via the REAL fleet_total(), so this test
+        cannot drift from that function's actual shape."""
+        from loom.view import fleet_total
+        snap = {"schema": SCHEMA_VERSION, "repos": repos, "needs_you": []}
+        snap["cost"] = fleet_total(snap)
+        return snap
+
+    def test_a_known_cost_worktree_prints_the_four_buckets_model_and_figure(self):
+        tokens = {"input": 100, "output": 200, "cache_read": 300,
+                 "cache_write_5m": 10, "cache_write_1h": 20, "cache_write": 30}
+        wt = {"dir": "loom", "cost": self._wt_cost(
+            notional=12.5, tokens=tokens, model="claude-opus-5", live=1)}
+        text = render_text(self._snapshot([self._repo("r", [wt])]))
+        self.assertIn("loom", text)
+        self.assertIn("input=100", text)
+        # The COMBINED cache_write bucket, read off tokens["cache_write"] --
+        # never 10 + 20 computed again in this layer.
+        self.assertIn("cache_write=30", text)
+        self.assertIn("cache_read=300", text)
+        self.assertIn("output=200", text)
+        self.assertIn("claude-opus-5", text)
+        self.assertIn("12.50", text)
+
+    def test_an_unknown_cost_worktree_prints_its_reason_not_silence(self):
+        wt = {"dir": "quiet", "cost": self._wt_cost(unknown_reason="no-session")}
+        text = render_text(self._snapshot([self._repo("r", [wt])]))
+        self.assertIn("quiet", text)
+        self.assertIn("no-session", text)
+
+    def test_total_appears_exactly_once_across_two_repos(self):
+        zero_tokens = {"input": 0, "output": 0, "cache_read": 0,
+                      "cache_write_5m": 0, "cache_write_1h": 0, "cache_write": 0}
+        wt1 = {"dir": "a", "cost": self._wt_cost(
+            notional=1.0, tokens=zero_tokens, model="claude-opus-5", live=1)}
+        wt2 = {"dir": "b", "cost": self._wt_cost(
+            notional=2.0, tokens=zero_tokens, model="claude-opus-5", live=1)}
+        text = render_text(self._snapshot(
+            [self._repo("one", [wt1]), self._repo("two", [wt2])]))
+        self.assertEqual(text.count("notional (list-price equivalent"), 1,
+                         "the fleet total must print once per invocation, "
+                         "not once per repo")
+        self.assertIn("$3.00", text)  # 1.0 + 2.0, summed once
+
+    def test_session_counts_appear_beside_the_total(self):
+        tokens = {"input": 0, "output": 0, "cache_read": 0,
+                 "cache_write_5m": 0, "cache_write_1h": 0, "cache_write": 0}
+        wts = [
+            {"dir": "live1", "cost": self._wt_cost(notional=0.0, tokens=tokens, live=1)},
+            {"dir": "stale1", "cost": self._wt_cost(notional=0.0, tokens=tokens, stale=2)},
+            {"dir": "stopped1", "cost": self._wt_cost(notional=0.0, tokens=tokens, stopped=3)},
+            {"dir": "undated1", "cost": self._wt_cost(unknown_reason="unreadable", undated=4)},
+        ]
+        text = render_text(self._snapshot([self._repo("r", wts)]))
+        self.assertIn("live=1", text)
+        self.assertIn("stale=2", text)
+        self.assertIn("stopped=3", text)
+        self.assertIn("undated=4", text)
+
+    def test_excluded_worktree_count_appears_beside_the_total(self):
+        tokens = {"input": 0, "output": 0, "cache_read": 0,
+                 "cache_write_5m": 0, "cache_write_1h": 0, "cache_write": 0}
+        wts = [
+            {"dir": "known", "cost": self._wt_cost(notional=1.0, tokens=tokens, live=1)},
+            {"dir": "broken", "cost": self._wt_cost(unknown_reason="unreadable")},
+            {"dir": "quiet", "cost": self._wt_cost(unknown_reason="no-session")},
+        ]
+        text = render_text(self._snapshot([self._repo("r", wts)]))
+        # Two unknown worktrees, but only "unreadable" counts as excluded --
+        # "no-session" is the normal shape of a quiet worktree (view.py's
+        # own COST_EXCLUDED_REASONS), so this must read 1, never 2.
+        self.assertIn("excluded: 1 worktree(s)", text)
+
+
 class TestBuildSnapshot(unittest.TestCase):
     def _recordings(self) -> dict:
         """Every git command `collect()` issues for one worktree, include_gh=False.

@@ -91,6 +91,9 @@ tbody tr:nth-child(even) { background: #1b212a; }
 .n--zero { color: var(--dim); }
 /* An unmeasurable fact reads "?" in italics — never mistakable for a number. */
 .n--unknown { color: var(--dim); font-style: italic; }
+.n--tok { color: var(--text); }
+.cost-model { color: var(--branch); }
+.cost-figure { color: var(--num); font-weight: 700; }
 
 /* Collisions: the word stays, the colour just makes the pattern jump out. */
 .collide { color: var(--bad); font-weight: 700; }
@@ -119,6 +122,12 @@ tbody tr:nth-child(even) { background: #1b212a; }
 .src--warn { color: var(--warn); }
 .sources { display: flex; gap: 1.2rem; flex-wrap: wrap; }
 .summary { margin: 0; color: var(--dim); }
+/* The fleet-wide total (loom/view.py's fleet_total) and its session counts,
+   both plain text. Step 9 decided against a live region for either -- see
+   index.html's comment on #cost-h for the reasoning; this stays plain
+   styling, no aria-live. */
+.cost-total { margin: 0; }
+.cost-sessions { margin: .2rem 0 0; color: var(--dim); font-size: .8rem; }
 /* The repo identity line, below the heading. The heading stays the bare name
    so the section's accessible name does not change every 2 seconds. */
 .repo-meta { margin: 0; color: var(--dim); font-size: .8rem; }

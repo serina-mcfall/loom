@@ -352,5 +352,152 @@ class TestFinalise(unittest.TestCase):
         self.assertEqual(once["repos"][0]["needs_you"], twice["repos"][0]["needs_you"])
 
 
+class TestFleetTotal(unittest.TestCase):
+    """Step 6: aggregates worktree_cost's per-worktree output (loom/cost.py) to
+    fleet level, and is the only place OPEN-2's "N worktrees excluded" and
+    OPEN-5's "history, not current burn" labels are built.
+    """
+
+    def _cost(self, notional=None, unknown_reason=None, tokens=None,
+             prices_as_of="2026-08-27", live=0, stale=0, stopped=0, undated=0):
+        return {
+            "tokens": tokens, "notional_cost_usd": notional, "model": None,
+            "models": [], "prices_as_of": prices_as_of,
+            "unknown_reason": unknown_reason,
+            "live_sessions": live, "stale_sessions": stale,
+            "stopped_sessions": stopped, "undated_sessions": undated,
+        }
+
+    def _wt(self, dir_, cost):
+        return {"dir": dir_, "cost": cost}
+
+    def _snap(self, *worktrees):
+        return {"schema": SCHEMA_VERSION, "collected": True,
+                "repos": [{"name": "r", "worktrees": list(worktrees)}]}
+
+    def test_five_worktrees_totals_excludes_and_counts_correctly(self):
+        from loom.view import fleet_total
+        wts = [
+            self._wt("live", self._cost(notional=10.0, live=1)),
+            self._wt("stale", self._cost(notional=5.0, stale=1)),
+            self._wt("stopped", self._cost(notional=2.5, stopped=1)),
+            self._wt("unreadable",
+                    self._cost(unknown_reason="unreadable", undated=1)),
+            self._wt("quiet", self._cost(unknown_reason="no-session")),
+        ]
+        result = fleet_total(self._snap(*wts))
+
+        self.assertEqual(result["notional_cost_usd"], 17.5)
+        self.assertEqual(result["excluded_count"], 1)
+        self.assertIn("1 worktree excluded", result["label"])
+        self.assertNotIn("2 worktree", result["label"])
+        self.assertIn("list-price equivalent, not a bill", result["label"])
+        self.assertIn("1 stale", result["label"])
+        self.assertIn("1 stopped", result["label"])
+        self.assertIn("2026-08-27", result["label"])
+
+        self.assertEqual(result["live_sessions"], 1)
+        self.assertEqual(result["stale_sessions"], 1)
+        self.assertEqual(result["stopped_sessions"], 1)
+        self.assertEqual(result["undated_sessions"], 1,
+                         "undated must be sourced from an UNKNOWN worktree too")
+
+    def test_nested_worktree_pair_through_real_collect_and_fleet_total(self):
+        # Mirrors step 4's own nested-worktree fixture, but end to end through
+        # collect() -> fleet_total(), the one path that would have caught B1
+        # (the double-counting bug) even if the unit-level rule were right but
+        # step 5 failed to wire sibling_paths through.
+        import json
+        import os
+        import re
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from loom import cost as cost_mod
+        from loom.collect import collect
+        from loom.runner import ReplayRunner
+        from loom.view import fleet_total
+
+        cost_mod.reset_cache()
+        parent, nested = "/r", "/r/__worktrees/a"
+        worktree_stdout = (
+            f"worktree {parent}\nHEAD abc123\nbranch refs/heads/main\n\n"
+            f"worktree {nested}\nHEAD def456\nbranch refs/heads/feature-a\n\n"
+        )
+        recordings = {
+            "git symbolic-ref --short refs/remotes/origin/HEAD":
+                {"returncode": 0, "stdout": "origin/main\n", "stderr": ""},
+            "git worktree list --porcelain":
+                {"returncode": 0, "stdout": worktree_stdout, "stderr": ""},
+            "tmux list-panes -a -F #{pane_current_path}\t#{pane_current_command}\t"
+            "#{pane_pid}\t#{window_name}": {"returncode": 1, "stdout": "", "stderr": ""},
+            "git rev-list --left-right --count main...HEAD":
+                {"returncode": 0, "stdout": "0\t0\n", "stderr": ""},
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git remote get-url origin":
+                {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git log --all --no-merges -n 40 "
+            "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat":
+                {"returncode": 0, "stdout": "", "stderr": ""},
+        }
+        state_dir = tempfile.mkdtemp()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        Path(state_dir, "s-parent.json").write_text(json.dumps(
+            {"session_id": "s-parent", "cwd": parent, "state": "idle",
+             "since": now_iso, "pid": 1}))
+        Path(state_dir, "s-nested.json").write_text(json.dumps(
+            {"session_id": "s-nested", "cwd": nested, "state": "idle",
+             "since": now_iso, "pid": 2}))
+
+        home = tempfile.mkdtemp()
+
+        def write_transcript(cwd, session_id, output_tokens):
+            slug = re.sub(r"[^a-zA-Z0-9]", "-", cwd)
+            d = Path(home, ".claude", "projects", slug)
+            d.mkdir(parents=True)
+            line = json.dumps({"message": {"model": "claude-opus-5",
+                                           "usage": {"input_tokens": 0,
+                                                    "output_tokens": output_tokens,
+                                                    "cache_read_input_tokens": 0,
+                                                    "cache_creation": {
+                                                        "ephemeral_5m_input_tokens": 0,
+                                                        "ephemeral_1h_input_tokens": 0}}}})
+            (d / f"{session_id}.jsonl").write_text(line + "\n")
+
+        # 1,000,000 output tokens on claude-opus-5 (25/MTok) = $25.00 exactly;
+        # 2,000,000 = $50.00 -- round literal figures so the total assertion
+        # below needs no floating-point rounding.
+        write_transcript(parent, "s-parent", 1_000_000)
+        write_transcript(nested, "s-nested", 2_000_000)
+
+        with patch.object(cost_mod, "DEFAULT_HOME", home):
+            runner = ReplayRunner(recordings)
+            snap = collect(runner, "/r", state_dir, include_gh=False)
+
+        result = fleet_total(snap)
+        # The sum of the two sessions' own costs exactly once each -- not the
+        # parent's cost appearing twice (25.00 + 25.00 + 50.00 = 100.00).
+        self.assertEqual(result["notional_cost_usd"], 75.00)
+
+    def test_empty_repos_list_is_cannot_measure_not_measured_and_zero(self):
+        from loom.view import fleet_total
+        result = fleet_total({"schema": SCHEMA_VERSION, "collected": True, "repos": []})
+        self.assertIsNone(result["notional_cost_usd"])
+        self.assertEqual(result["excluded_count"], 0)
+        self.assertEqual(result["live_sessions"], 0)
+        self.assertEqual(result["stale_sessions"], 0)
+        self.assertEqual(result["stopped_sessions"], 0)
+        self.assertEqual(result["undated_sessions"], 0)
+
+    def test_finalise_attaches_cost_at_the_top_level(self):
+        wt = self._wt("live", self._cost(notional=1.0, live=1))
+        snap = finalise(self._snap(wt))
+        self.assertIn("cost", snap)
+        self.assertEqual(snap["cost"]["notional_cost_usd"], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

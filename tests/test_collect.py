@@ -1,14 +1,17 @@
 # tests/test_collect.py
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from loom.gitsrc import Worktree
 from loom.ghsrc import PullRequest
 from loom.runner import ReplayRunner
 from loom.collect import find_flags, reap, collect, SCHEMA_VERSION
+from loom import cost as cost_mod
 
 NOW = datetime(2026, 8, 3, 8, 0, 0, tzinfo=timezone.utc)
 
@@ -434,6 +437,162 @@ class TestCollectPassesARealClock(unittest.TestCase):
     #
     # The naive-clock case IS covered, one layer down, where a clock can actually
     # be injected: tests/test_agents.py::test_a_naive_CLOCK_does_not_crash_the_snapshot.
+
+
+def _single_worktree_recordings(worktree_stdout: str) -> dict:
+    """The full recording set collect() needs for `include_gh=False` over
+    whatever worktree(s) `worktree_stdout` describes. Every per-worktree git
+    command is keyed on its argv alone (loom/runner.py's ReplayRunner), never
+    on cwd, so the SAME entry answers for every worktree in the fixture.
+    """
+    return {
+        "git symbolic-ref --short refs/remotes/origin/HEAD":
+            {"returncode": 0, "stdout": "origin/main\n", "stderr": ""},
+        "git worktree list --porcelain":
+            {"returncode": 0, "stdout": worktree_stdout, "stderr": ""},
+        "tmux list-panes -a -F #{pane_current_path}\t#{pane_current_command}\t"
+        "#{pane_pid}\t#{window_name}":
+            {"returncode": 1, "stdout": "", "stderr": "no server"},
+        "git rev-list --left-right --count main...HEAD":
+            {"returncode": 0, "stdout": "0\t0\n", "stderr": ""},
+        "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
+        "git remote get-url origin":
+            {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
+        "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+        "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+        "git log --all --no-merges -n 40 "
+        "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat":
+            {"returncode": 0, "stdout": "", "stderr": ""},
+    }
+
+
+class TestCollectCost(unittest.TestCase):
+    """Step 5: worktree_cost wired into collect(), under the real caller
+    (never a planted call to worktree_cost directly), so a wiring mistake at
+    the call site is exactly what these can catch.
+    """
+
+    def setUp(self):
+        cost_mod.reset_cache()
+
+    def tearDown(self):
+        cost_mod.reset_cache()
+
+    def test_second_tick_over_an_unchanged_transcript_does_not_reparse(self):
+        # `collect()` is exactly what `loom serve`'s refresh loop calls every
+        # FAST_SECONDS -- calling it twice here exercises the real path a
+        # CLI-only, one-shot check structurally cannot see.
+        state_dir = tempfile.mkdtemp()
+        Path(state_dir, "s1.json").write_text(json.dumps(
+            {"session_id": "s1", "cwd": "/repo", "state": "idle",
+             "since": datetime.now(timezone.utc).isoformat(), "pid": 1}))
+        home = tempfile.mkdtemp()
+        slug_dir = Path(home, ".claude", "projects", "-repo")
+        slug_dir.mkdir(parents=True)
+        (slug_dir / "s1.jsonl").write_text(json.dumps(
+            {"message": {"model": "claude-opus-5",
+                        "usage": {"input_tokens": 0, "output_tokens": 1_000,
+                                 "cache_read_input_tokens": 0,
+                                 "cache_creation": {"ephemeral_5m_input_tokens": 0,
+                                                    "ephemeral_1h_input_tokens": 0}}}}) + "\n")
+        worktree_stdout = "worktree /repo\nHEAD abc123\nbranch refs/heads/main\n\n"
+
+        with patch.object(cost_mod, "DEFAULT_HOME", home), \
+             patch.object(cost_mod, "read_usage", wraps=cost_mod.read_usage) as spy:
+            runner = ReplayRunner(_single_worktree_recordings(worktree_stdout))
+            first = collect(runner, "/repo", state_dir, include_gh=False)
+            second = collect(runner, "/repo", state_dir, include_gh=False)
+
+        self.assertEqual(spy.call_count, 1,
+                         "an unchanged transcript's second tick must cost a "
+                         "stat, not a re-parse")
+        self.assertEqual(
+            first["repos"][0]["worktrees"][0]["cost"]["tokens"]["output"], 1_000)
+        self.assertEqual(
+            second["repos"][0]["worktrees"][0]["cost"]["tokens"]["output"], 1_000)
+
+    def test_unreadable_cost_names_the_worktree_directory_in_the_source(self):
+        state_dir = tempfile.mkdtemp()
+        Path(state_dir, "s1.json").write_text(json.dumps(
+            {"session_id": "s1", "cwd": "/repo", "state": "idle",
+             "since": datetime.now(timezone.utc).isoformat(), "pid": 1}))
+        home = tempfile.mkdtemp()
+        slug_dir = Path(home, ".claude", "projects", "-repo")
+        slug_dir.mkdir(parents=True)
+        transcript = slug_dir / "s1.jsonl"
+        transcript.write_text(json.dumps(
+            {"message": {"model": "claude-opus-5",
+                        "usage": {"input_tokens": 1, "output_tokens": 1,
+                                 "cache_read_input_tokens": 0,
+                                 "cache_creation": {"ephemeral_5m_input_tokens": 0,
+                                                    "ephemeral_1h_input_tokens": 0}}}}) + "\n")
+        os.chmod(transcript, 0o000)
+        worktree_stdout = "worktree /repo\nHEAD abc123\nbranch refs/heads/main\n\n"
+        try:
+            with patch.object(cost_mod, "DEFAULT_HOME", home):
+                runner = ReplayRunner(_single_worktree_recordings(worktree_stdout))
+                snapshot = collect(runner, "/repo", state_dir, include_gh=False)
+        finally:
+            os.chmod(transcript, 0o644)
+
+        sources = {s["name"]: s for s in snapshot["repos"][0]["sources"]}
+        self.assertFalse(sources["cost"]["ok"])
+        self.assertIsNotNone(sources["cost"]["error"])
+        self.assertIn("repo", sources["cost"]["error"],
+                      "the message must name the affected worktree directory, "
+                      "not a bare ok=False")
+
+    def test_nested_worktree_pair_gets_the_full_sibling_list_through_collect(self):
+        # Mirrors step 4's own nested-worktree fixture, but through the REAL
+        # collect() call site -- the one fixture that catches a wiring
+        # mistake (a partial sibling list passed at the call site) that step
+        # 4's own unit-level fixture cannot see, because that fixture calls
+        # worktree_cost directly with sibling_paths already correct.
+        parent = "/repo"
+        nested = "/repo/__worktrees/a"
+        worktree_stdout = (
+            f"worktree {parent}\nHEAD abc123\nbranch refs/heads/main\n\n"
+            f"worktree {nested}\nHEAD def456\nbranch refs/heads/feature-a\n\n"
+        )
+        state_dir = tempfile.mkdtemp()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        Path(state_dir, "s-parent.json").write_text(json.dumps(
+            {"session_id": "s-parent", "cwd": parent, "state": "idle",
+             "since": now_iso, "pid": 1}))
+        Path(state_dir, "s-nested.json").write_text(json.dumps(
+            {"session_id": "s-nested", "cwd": nested, "state": "idle",
+             "since": now_iso, "pid": 2}))
+
+        home = tempfile.mkdtemp()
+
+        def write_transcript(cwd, session_id, output_tokens):
+            import re
+            slug = re.sub(r"[^a-zA-Z0-9]", "-", cwd)
+            d = Path(home, ".claude", "projects", slug)
+            d.mkdir(parents=True)
+            line = json.dumps({"message": {"model": "claude-opus-5",
+                                           "usage": {"input_tokens": 0,
+                                                    "output_tokens": output_tokens,
+                                                    "cache_read_input_tokens": 0,
+                                                    "cache_creation": {
+                                                        "ephemeral_5m_input_tokens": 0,
+                                                        "ephemeral_1h_input_tokens": 0}}}})
+            (d / f"{session_id}.jsonl").write_text(line + "\n")
+
+        write_transcript(parent, "s-parent", 1_000)
+        write_transcript(nested, "s-nested", 9_000)
+
+        with patch.object(cost_mod, "DEFAULT_HOME", home):
+            runner = ReplayRunner(_single_worktree_recordings(worktree_stdout))
+            snapshot = collect(runner, "/repo", state_dir, include_gh=False)
+
+        by_dir = {w["dir"]: w for w in snapshot["repos"][0]["worktrees"]}
+        # Each worktree's own session count, not the total -- if collect()
+        # passed a partial sibling list, the parent's sum would absorb the
+        # nested worktree's tokens too (1_000 + 9_000), the exact
+        # double-counting step 4's nearest-enclosing rule exists to prevent.
+        self.assertEqual(by_dir["repo"]["cost"]["tokens"]["output"], 1_000)
+        self.assertEqual(by_dir["a"]["cost"]["tokens"]["output"], 9_000)
 
 
 if __name__ == "__main__":

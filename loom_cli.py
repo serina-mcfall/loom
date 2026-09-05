@@ -211,11 +211,46 @@ def render_text(snapshot: dict) -> str:
         broken = [s for s in repo["sources"] if not s["ok"]]
         for s in broken:
             lines.append(f"  ! {s['name']} unavailable — {s['error']}")
+        # Per-worktree token/cost rows go INSIDE the loop -- one worktree, one
+        # row -- issue #11's per-worktree ask: input / cache-write /
+        # cache-read / output tokens, the model, and a notional cost.
+        # tokens["cache_write"] is READ, not computed -- step 3 already
+        # summed the 5m and 1h TTL buckets into it.
+        for w in repo["worktrees"]:
+            c = w.get("cost") or {}
+            if c.get("unknown_reason") is None and c.get("tokens") is not None:
+                t = c["tokens"]
+                lines.append(
+                    f"  {w['dir']}: input={t['input']} cache_write={t['cache_write']} "
+                    f"cache_read={t['cache_read']} output={t['output']} "
+                    f"model={c['model']} cost=${c['notional_cost_usd']:.2f}")
+            else:
+                # Unknown prints its reason, never gets silently omitted.
+                lines.append(f"  {w['dir']}: cost unknown ({c.get('unknown_reason')})")
         if not repo["needs_you"]:
             lines.append("  nothing needs you")
         for item in repo["needs_you"]:
             lines.append(f"  [{item['rank']}] {item['subject']} — {item['detail']}")
         lines.append("")
+    # THE TOTAL IS PRINTED ONCE, AFTER THE REPO LOOP -- snap["cost"] is a
+    # top-level, fleet-wide value (step 6); printing it inside the loop above
+    # would show the same figure once per repo, each time attached to the
+    # wrong thing. The four session counts are READ off snap["cost"], not
+    # summed here -- step 6 owns that sum, so the CLI and the dashboard
+    # cannot come to disagree by each doing it themselves.
+    cost = snapshot.get("cost")
+    if cost is not None:
+        lines.append(cost["label"])
+        lines.append(f"  sessions: live={cost['live_sessions']} "
+                     f"stale={cost['stale_sessions']} "
+                     f"stopped={cost['stopped_sessions']} "
+                     f"undated={cost['undated_sessions']}")
+        # excluded_count is already folded into cost["label"]'s prose (OPEN-2);
+        # this line prints it as its own bare figure too -- the same
+        # duplication the four session counts above already have between
+        # the label and this block, not a new pattern.
+        lines.append(f"  excluded: {cost['excluded_count']} worktree(s) "
+                     f"(unknown cost)")
     return "\n".join(lines)
 
 

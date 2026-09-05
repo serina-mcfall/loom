@@ -12,6 +12,20 @@ const STATE_LABEL = {
   stale: "✕ stale", stopped: "■ stopped", unknown: "? unknown", none: "– none",
 };
 
+// Display text for loom/cost.py's enumerated unknown_reason values -- a
+// fixed, machine-shaped set (loom/cost.py's UNKNOWN_REASONS), same as
+// STATE_LABEL above: the DECISION of what unknown_reason IS was already
+// made in Python; this only formats it for reading, same as glyph+word
+// does for a session state.
+const REASON_LABEL = {
+  "no-session": "no matching session",
+  "transcript-missing": "transcript not found",
+  "unreadable": "transcript could not be read",
+  "no-usage-records": "no usage records yet",
+  "missing-bucket": "a token bucket was missing",
+  "unknown-model": "unrecognised model",
+};
+
 const BADGE_CLASS = {
   live: "src--ok", connecting: "", stale: "src--warn", error: "src--bad",
   disconnected: "src--bad", incompatible: "src--bad",
@@ -96,6 +110,50 @@ function renderNeeds(items) {
   }
 }
 
+/** Issue #11's per-worktree ask: the model, four token buckets, and a
+ *  notional cost. `cost.unknown_reason` means every number in it is None
+ *  (loom/cost.py's own contract -- one shape, only the numbers go missing),
+ *  so this prints the reason IN WORDS (via REASON_LABEL) in one spanning
+ *  cell, never a bare "?" or a raw developer-facing slug like
+ *  "missing-bucket" that would say something is missing without saying
+ *  why in a sentence a reader can act on. */
+function appendCostCells(tr, cost) {
+  if (!cost || cost.unknown_reason) {
+    const reason = (cost && cost.unknown_reason) || "?";
+    const label = REASON_LABEL[reason] || reason;
+    const td = text("td", label, "n--unknown");
+    td.colSpan = 6;
+    tr.append(td);
+    return;
+  }
+  // `models` carries every model a mixed-model session touched (OPEN-6),
+  // each with its own notional_cost_usd share AND its token share
+  // (loom/cost.py sum_cost()'s own docstring). More than one entry means
+  // the row shows the breakdown rather than only the winning model, so a
+  // mixed-model session is never reported as if it ran on a single one --
+  // and the breakdown now reads both shares, not only the cost one, so
+  // the token share that was already being computed reaches a reader.
+  const fmt = (v) => (v === null || v === undefined ? "?" : `$${v.toFixed(2)}`);
+  const modelText = cost.models && cost.models.length > 1
+    ? cost.models.map((m) => {
+        const mt = m.tokens || {};
+        return `${m.model} (${fmt(m.notional_cost_usd)}; `
+          + `input=${num(mt.input)} cache_write=${num(mt.cache_write)} `
+          + `cache_read=${num(mt.cache_read)} output=${num(mt.output)})`;
+      }).join(", ")
+    : cost.model || "?";
+  tr.append(text("td", modelText, "cost-model"));
+  const t = cost.tokens || {};
+  // The four DISPLAY buckets come straight off the tokens dict. cache_write
+  // is ALREADY the 5m + 1h sum computed in loom/cost.py's sum_cost() -- read
+  // here, never added. No arithmetic on token counts happens in this file.
+  tr.append(cell(num(t.input), t.input, "n--tok"));
+  tr.append(cell(num(t.cache_write), t.cache_write, "n--tok"));
+  tr.append(cell(num(t.cache_read), t.cache_read, "n--tok"));
+  tr.append(cell(num(t.output), t.output, "n--tok"));
+  tr.append(text("td", fmt(cost.notional_cost_usd), "cost-figure"));
+}
+
 function renderTrees(body, trees) {
   body.replaceChildren();
   for (const t of trees) {
@@ -114,6 +172,7 @@ function renderTrees(body, trees) {
     tr.append(cell(num(t.behind), t.behind, "n--behind"));
     const dt = dirtyTotal(t.dirty);
     tr.append(cell(dt, dt === "?" ? null : Number(dt), "n--dirty"));
+    appendCostCells(tr, t.cost);
     body.append(tr);
   }
 }
@@ -327,10 +386,20 @@ function buildRepoSection(repo, i) {
   const panels = document.createElement("div");
   panels.className = "panels";
 
-  // Both tables get double width: six columns, and one column per branch, do not
-  // fit a 20rem cell. Widening beats abbreviating the headers to glyphs.
+  // Both tables get double width: thirteen columns now (seven git-state
+  // columns plus issue #11's six cost columns), and one column per branch
+  // do not fit a 20rem cell. Widening beats abbreviating the headers to
+  // glyphs.
+  // The last six columns are issue #11's per-worktree ask (step 8): model,
+  // the four DISPLAY token buckets, and a notional cost. "tokens" is named
+  // in the caption, not repeated per header, because a screen reader
+  // announces the caption once for the table and then every header on
+  // every cell -- "Input tokens" on every row would be read as often as
+  // there are rows.
   const treesTable = tableWith(
-      ["Tree", "Branch", "PR", "Agent", "Ahead", "Behind", "Dirty"]);
+      ["Tree", "Branch", "PR", "Agent", "Ahead", "Behind", "Dirty",
+       "Model", "Input", "Cache write", "Cache read", "Output", "Cost"],
+      "Worktrees — git state, plus notional token cost from local transcripts");
   const treesPanel = panel(`repo-${i}-trees-h`, "Worktrees", "h3",
                            scrollBox(`repo-${i}-trees-h`, treesTable));
   treesPanel.classList.add("panel--wide");
@@ -447,6 +516,39 @@ function renderConfigWarning(config) {
   el_.hidden = !text;
 }
 
+/** The fleet-wide total loom.view.fleet_total computed, its four session
+ *  counts, and the excluded-worktree count. Plain text, deliberately no
+ *  live-region behaviour -- step 9 decided against one; see index.html's
+ *  comment on #cost-h for why. */
+function renderCostTotal(cost) {
+  const section = el("cost-h").closest("section");
+  const totalEl = el("cost-total");
+  const sessionsEl = el("cost-sessions");
+  if (!cost) {
+    // Hide rather than leave a named region holding an empty heading and
+    // two empty paragraphs -- a landmark a reader enters to nothing looks
+    // like a rendering failure, not an unmeasured state.
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  totalEl.textContent = cost.label || "";
+  // Read straight off snap["cost"] -- loom.view.fleet_total already summed
+  // these across every worktree. This file does not sum them again.
+  // "sessions:" names the subject of the four bare numbers that follow --
+  // matching loom_cli.py's own "  sessions: live=... " line, which a
+  // screen-reader user hears the same way a terminal reader does.
+  // excluded_count is ALSO already folded into cost.label's prose (OPEN-2)
+  // -- printed again here as its own bare figure is the same duplication
+  // the four session counts already have between the label and this line,
+  // not a new pattern, and it is the only place excluded_count reaches a
+  // reader as a number rather than only inside a sentence.
+  sessionsEl.textContent =
+    `sessions: live ${cost.live_sessions}, stale ${cost.stale_sessions}, ` +
+    `stopped ${cost.stopped_sessions}, undated ${cost.undated_sessions}; ` +
+    `excluded ${cost.excluded_count} worktree(s) (unknown cost)`;
+}
+
 function render(snapshot) {
   // DATA health comes from the snapshot's own badge, decided in loom/view.py.
   // It is NOT inferred from the arrival of a message: a failed refresh is exactly
@@ -476,6 +578,7 @@ function render(snapshot) {
   // The sentence is decided in loom.view.announcement; the page only decides WHEN,
   // which is a timing concern it genuinely owns.
   announce(snapshot.announcement);
+  renderCostTotal(snapshot.cost);
   syncRepos(repos);
 }
 
