@@ -418,6 +418,20 @@ class TestRenderTextCost(unittest.TestCase):
         self.assertIn("stopped=3", text)
         self.assertIn("undated=4", text)
 
+    def test_excluded_worktree_count_appears_beside_the_total(self):
+        tokens = {"input": 0, "output": 0, "cache_read": 0,
+                 "cache_write_5m": 0, "cache_write_1h": 0, "cache_write": 0}
+        wts = [
+            {"dir": "known", "cost": self._wt_cost(notional=1.0, tokens=tokens, live=1)},
+            {"dir": "broken", "cost": self._wt_cost(unknown_reason="unreadable")},
+            {"dir": "quiet", "cost": self._wt_cost(unknown_reason="no-session")},
+        ]
+        text = render_text(self._snapshot([self._repo("r", wts)]))
+        # Two unknown worktrees, but only "unreadable" counts as excluded --
+        # "no-session" is the normal shape of a quiet worktree (view.py's
+        # own COST_EXCLUDED_REASONS), so this must read 1, never 2.
+        self.assertIn("excluded: 1 worktree(s)", text)
+
 
 class TestBuildSnapshot(unittest.TestCase):
     def _recordings(self) -> dict:

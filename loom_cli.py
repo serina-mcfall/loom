@@ -245,6 +245,12 @@ def render_text(snapshot: dict) -> str:
                      f"stale={cost['stale_sessions']} "
                      f"stopped={cost['stopped_sessions']} "
                      f"undated={cost['undated_sessions']}")
+        # excluded_count is already folded into cost["label"]'s prose (OPEN-2);
+        # this line prints it as its own bare figure too -- the same
+        # duplication the four session counts above already have between
+        # the label and this block, not a new pattern.
+        lines.append(f"  excluded: {cost['excluded_count']} worktree(s) "
+                     f"(unknown cost)")
     return "\n".join(lines)
 
 

@@ -126,13 +126,21 @@ function appendCostCells(tr, cost) {
     tr.append(td);
     return;
   }
-  // `models` carries every model a mixed-model session touched (OPEN-6).
-  // More than one entry means the row shows the breakdown rather than only
-  // the winning model, so a mixed-model session is never reported as if it
-  // ran on a single one.
+  // `models` carries every model a mixed-model session touched (OPEN-6),
+  // each with its own notional_cost_usd share AND its token share
+  // (loom/cost.py sum_cost()'s own docstring). More than one entry means
+  // the row shows the breakdown rather than only the winning model, so a
+  // mixed-model session is never reported as if it ran on a single one --
+  // and the breakdown now reads both shares, not only the cost one, so
+  // the token share that was already being computed reaches a reader.
   const fmt = (v) => (v === null || v === undefined ? "?" : `$${v.toFixed(2)}`);
   const modelText = cost.models && cost.models.length > 1
-    ? cost.models.map((m) => `${m.model} (${fmt(m.notional_cost_usd)})`).join(", ")
+    ? cost.models.map((m) => {
+        const mt = m.tokens || {};
+        return `${m.model} (${fmt(m.notional_cost_usd)}; `
+          + `input=${num(mt.input)} cache_write=${num(mt.cache_write)} `
+          + `cache_read=${num(mt.cache_read)} output=${num(mt.output)})`;
+      }).join(", ")
     : cost.model || "?";
   tr.append(text("td", modelText, "cost-model"));
   const t = cost.tokens || {};
@@ -508,9 +516,10 @@ function renderConfigWarning(config) {
   el_.hidden = !text;
 }
 
-/** The fleet-wide total loom.view.fleet_total computed, and its four session
- *  counts. Plain text, deliberately no live-region behaviour -- step 9
- *  decided against one; see index.html's comment on #cost-h for why. */
+/** The fleet-wide total loom.view.fleet_total computed, its four session
+ *  counts, and the excluded-worktree count. Plain text, deliberately no
+ *  live-region behaviour -- step 9 decided against one; see index.html's
+ *  comment on #cost-h for why. */
 function renderCostTotal(cost) {
   const section = el("cost-h").closest("section");
   const totalEl = el("cost-total");
@@ -529,9 +538,15 @@ function renderCostTotal(cost) {
   // "sessions:" names the subject of the four bare numbers that follow --
   // matching loom_cli.py's own "  sessions: live=... " line, which a
   // screen-reader user hears the same way a terminal reader does.
+  // excluded_count is ALSO already folded into cost.label's prose (OPEN-2)
+  // -- printed again here as its own bare figure is the same duplication
+  // the four session counts already have between the label and this line,
+  // not a new pattern, and it is the only place excluded_count reaches a
+  // reader as a number rather than only inside a sentence.
   sessionsEl.textContent =
     `sessions: live ${cost.live_sessions}, stale ${cost.stale_sessions}, ` +
-    `stopped ${cost.stopped_sessions}, undated ${cost.undated_sessions}`;
+    `stopped ${cost.stopped_sessions}, undated ${cost.undated_sessions}; ` +
+    `excluded ${cost.excluded_count} worktree(s) (unknown cost)`;
 }
 
 function render(snapshot) {
