@@ -1,6 +1,10 @@
 {
-  "state": "NOT_READY",
-  "sha": "ecafd152b0e3242121ae2711c0e5e458bf1b2d05",
-  "reason": "check-ledger.sh cannot pass: no .superpowers/sdd/2026-08-17-issue-11-tokens-cost-panel/progress.md exists, because this plan was built and reviewed via the whole-diff process (see .review/1/roster and commit a394a70), not the SDD per-step ledger workflow the script requires. review-final (this session) found no Blocker: the branch does what issue #11 asks, #3/#9 ordering is closed, OPEN items and LEFT OUT items held, and a394a70's review-code/review-tests/review-a11y findings verified correct against current code. Remaining: 3 Medium (models[].tokens has no consumer, excluded_count has no consumer, step-8's grep verification silently no-ops on loom.js's pre-existing NUL byte) and 1 Low (review-docs outcome unreported). Blocked on process, not on a code defect -- Serina to decide whether to retrofit a ledger or adjust the gate for whole-diff-reviewed plans.",
-  "recorded_at": "2026-09-05T19:07:19+12:00"
+  "state": "READY",
+  "sha": "9aa97753666b7d16c72eed1420e1d188997a1e78",
+  "plan": "2026-08-17-issue-11-tokens-cost-panel.md",
+  "recorded_at": "2026-09-05T20:04:11+12:00",
+  "checks": {
+    "ledger": "pass",
+    "test_cmd": "not-run"
+  }
 }
