@@ -1,8 +1,8 @@
 {
   "state": "READY",
-  "sha": "9aa97753666b7d16c72eed1420e1d188997a1e78",
+  "sha": "0a916fcc9af88579366ba79fb218a933f80088a5",
   "plan": "2026-08-17-issue-11-tokens-cost-panel.md",
-  "recorded_at": "2026-09-05T20:04:11+12:00",
+  "recorded_at": "2026-09-06T09:58:52+12:00",
   "checks": {
     "ledger": "pass",
     "test_cmd": "not-run"
