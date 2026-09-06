@@ -195,7 +195,15 @@ class VerdictGateRealRepoTests(unittest.TestCase):
         code, msg = check(self.repo, head)
         self.assertEqual(code, 1)
         self.assertIn("This branch has never been reviewed", msg)
-        self.assertIn("predates this branch's own commits", msg)
+        # CORRECTED (found by an independent review-final pass, 2026-09-06):
+        # this used to assert "predates this branch's own commits" -- but
+        # `later_main` postdates the branch's own cut, it does not predate
+        # it. Asserting the wrong relation here is exactly how the bug
+        # went unnoticed: the fixture already proved the RIGHT branch of
+        # check() fires, and a wrong string assertion on top of a right
+        # code path still goes green.
+        self.assertIn("was never part of this branch's own commits at all", msg)
+        self.assertNotIn("predates this branch's own commits", msg)
         self.assertNotIn("The review does not cover this code", msg)
 
     def test_indeterminate_when_reachability_from_head_cannot_be_computed(self):

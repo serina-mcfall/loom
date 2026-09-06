@@ -28,25 +28,35 @@ import sys
 VERDICT_PATH = ".superpowers/verdict.json"
 
 
-def _resolve_main_ref(repo_root: str) -> str | None:
-    """`origin/main` if it resolves, else bare `main`, else None.
+def _resolve_main_ref(repo_root: str) -> tuple[str | None, str]:
+    """(ref, description) -- `origin/main` if it resolves, else bare `main`,
+    else (None, cause).
 
-    None covers both "neither ref exists" and the rev-parse call itself
-    raising -- both mean there is nothing to compute a divergence point
-    against, and the caller must treat that as indeterminate, not as "no
-    main branch, so nothing to diverge from."
+    CORRECTED (found by an independent review-final pass, 2026-09-06): this
+    used to return a bare `str | None`, discarding whichever exception each
+    failed rev-parse actually raised -- the one git call in this file that
+    did not follow its own siblings' three-outcome convention (`_merge_base`
+    and `_is_ancestor` both surface their real cause). The caller then
+    asserted a specific, possibly wrong reason ("no origin/main or main ref
+    could be resolved") for what could equally be a timeout or a transient
+    git failure with both refs genuinely present -- reproducing the exact
+    failure mode issue #14 is about: a gate message sending someone down the
+    wrong diagnosis.
     """
+    causes: list[str] = []
     for ref in ("origin/main", "main"):
         try:
             proc = subprocess.run(
                 ["git", "rev-parse", "--verify", ref],
                 capture_output=True, text=True, timeout=30, cwd=repo_root,
             )
-        except Exception:
+        except Exception as exc:
+            causes.append(f"{ref}: {exc}")
             continue
         if proc.returncode == 0 and proc.stdout.strip():
-            return ref
-    return None
+            return ref, ""
+        causes.append(f"{ref}: {proc.stderr.strip() or 'not a valid ref'}")
+    return None, "; ".join(causes)
 
 
 def _merge_base(repo_root: str, a: str, b: str) -> tuple[str | None, str]:
@@ -185,12 +195,12 @@ def check(repo_root: str, head_sha: str, verdict_path: str = VERDICT_PATH) -> tu
             # verdict.json wholesale and has never been reviewed at all. The
             # mechanical signal that tells them apart: is `sha` an ancestor
             # of (or equal to) the point THIS branch diverged from main?
-            main_ref = _resolve_main_ref(repo_root)
+            main_ref, main_ref_err = _resolve_main_ref(repo_root)
             if main_ref is None:
                 return block(
                     "could not determine this branch's divergence point from "
-                    "main (no origin/main or main ref could be resolved) — "
-                    "treating as indeterminate, not as reviewed."
+                    f"main ({main_ref_err}) — treating as indeterminate, not "
+                    "as reviewed."
                 )
             divergence, mb_err = _merge_base(repo_root, want, main_ref)
             if divergence is None:
@@ -246,11 +256,38 @@ def check(repo_root: str, head_sha: str, verdict_path: str = VERDICT_PATH) -> tu
                     "indeterminate, not as reviewed."
                 )
             if ancestor or not reachable_from_head:
+                # THE TWO ARMS OF THIS CONDITION NAME DIFFERENT SITUATIONS,
+                # and the message must not claim the wrong one.
+                #
+                # `ancestor` true: sha is at or before the branch's own cut
+                # point -- it genuinely PREDATES this branch's commits.
+                #
+                # `not reachable_from_head` true (found by an independent
+                # review-final pass, 2026-09-06, after the message below
+                # said "predates" unconditionally): sha can also be a commit
+                # main advanced to AFTER this branch was cut -- the exact
+                # merge-ref scenario this fix exists for. That sha POSTDATES
+                # the branch's own history; it never became part of it. A
+                # message calling it "predates" sends a reader who checks the
+                # commit's actual date looking for the wrong explanation --
+                # reproducing, inside the fix, the same wrong-diagnosis
+                # failure issue #14 was filed to remove.
+                if ancestor:
+                    relation = (
+                        "predates this branch's own commits — it is "
+                        "inherited from whatever main's verdict.json "
+                        "happened to say when this branch was cut"
+                    )
+                else:
+                    relation = (
+                        "was never part of this branch's own commits at "
+                        "all — it is inherited from whatever main's "
+                        "verdict.json says now, brought in by the merge "
+                        "checkout, not by anything this branch itself did"
+                    )
                 return block(
                     f"This branch has never been reviewed. The recorded "
-                    f"verdict ({str(sha)[:8]}) predates this branch's own "
-                    "commits — it is inherited from whatever main's "
-                    "verdict.json happened to say when this branch was cut, "
+                    f"verdict ({str(sha)[:8]}) {relation}, "
                     "not a review of anything here."
                 )
             return block(
