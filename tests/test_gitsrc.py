@@ -2,7 +2,7 @@ import unittest
 from loom.runner import ReplayRunner
 from loom.gitsrc import (list_worktrees, ahead_behind, Dirty, recent_commits,
                           touched_files, collisions, Worktree, default_branch,
-                          Status)
+                          Status, worktree_status)
 
 PORCELAIN = (
     "worktree /repo\n"
@@ -234,21 +234,36 @@ class TestWorktreeStatus(unittest.TestCase):
         detected even though both worktrees hold the identical uncommitted
         file.
 
-        ReplayRunner keys on argv alone, not cwd (loom/runner.py:42-43), so
-        one shared runner cannot give two worktrees two different outputs for
-        the identical git-status command -- each worktree's Status is
-        hand-built instead of derived through worktree_status().
+        CORRECTED -- an earlier draft hand-built both Status objects as
+        literals, so this test passed unchanged with -uall reverted in the
+        real code (confirmed by two independent review-code/review-tests
+        passes, 2026-09-06: reverting the flag left this test green). Each
+        worktree's runner now registers BOTH the pre-fix and post-fix
+        command keys with REAL captured output, and Status is derived
+        through the REAL worktree_status() -- so whichever key the current
+        code actually requests is what this test sees, and reverting the
+        flag changes worktree B's real result, not just a comment's claim.
+        Worktree A's directory is already tracked, so its real output is
+        identical either way; only B's differs.
         """
-        status_a = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/thing.ts"}))
-        status_b_post_fix = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/thing.ts"}))
-        runner = ReplayRunner({
+        runner_a = ReplayRunner({
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "?? shared/thing.ts\0", "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": "?? shared/thing.ts\0", "stderr": ""},
+        })
+        runner_b = ReplayRunner({
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "?? shared/\0", "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": "?? shared/thing.ts\0", "stderr": ""},
+        })
+        status_a = worktree_status(runner_a, "/t/a")
+        status_b = worktree_status(runner_b, "/t/b")  # real code path -- reverting -uall changes this
+        merge_runner = ReplayRunner({
             "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
             "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
         })
         trees = [Worktree("/t/a", "a", "has-shared-dir", "ha"),
                  Worktree("/t/b", "b", "wt-b-fresh", "hb")]
-        statuses = {"/t/a": status_a, "/t/b": status_b_post_fix}
-        result, undetermined = collisions(runner, trees, "main", statuses)
+        statuses = {"/t/a": status_a, "/t/b": status_b}
+        result, undetermined = collisions(merge_runner, trees, "main", statuses)
         self.assertEqual([c["file"] for c in result], ["shared/thing.ts"])
         self.assertEqual(result[0]["branches"], ["has-shared-dir", "wt-b-fresh"])
         self.assertEqual(undetermined, [])
@@ -260,18 +275,48 @@ class TestWorktreeStatus(unittest.TestCase):
         output from a live repro: pre-fix both collapse to `?? shared/` (a
         false-positive collision on the directory name); post-fix each
         expands to its own real filename and the false positive is gone.
+
+        CORRECTED -- an earlier draft hand-built both Status objects as
+        literals and had no negative control, so this test read zero
+        collisions under both fixed AND reverted code (confirmed by two
+        independent review passes, 2026-09-06). Status is now derived
+        through the REAL worktree_status(), coupling the main assertion to
+        whichever command the code actually issues. The negative control
+        below is separate and explicit: literal pre-fix data fed through the
+        SAME matrix must show the false collision this fix removes -- if it
+        didn't, this test would not be exercising the fix at all.
         """
-        status_a = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/alpha.ts"}))
-        status_b = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/beta.ts"}))
-        runner = ReplayRunner({
+        runner_a = ReplayRunner({
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "?? shared/\0", "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": "?? shared/alpha.ts\0", "stderr": ""},
+        })
+        runner_b = ReplayRunner({
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "?? shared/\0", "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": "?? shared/beta.ts\0", "stderr": ""},
+        })
+        status_a = worktree_status(runner_a, "/t/a")
+        status_b = worktree_status(runner_b, "/t/b")  # real code path -- reverting -uall changes this
+        merge_runner = ReplayRunner({
             "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
             "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
         })
         trees = [Worktree("/t/a", "a", "a", "ha"), Worktree("/t/b", "b", "b", "hb")]
         statuses = {"/t/a": status_a, "/t/b": status_b}
-        result, undetermined = collisions(runner, trees, "main", statuses)
-        self.assertEqual(result, [])
+        result, undetermined = collisions(merge_runner, trees, "main", statuses)
+        self.assertEqual(result, [], "post-fix: different real filenames must never collide")
         self.assertEqual(undetermined, [])
+
+        # NEGATIVE CONTROL: the pre-fix collapsed data, fed through the same
+        # matrix, DOES falsely collide on the directory name -- proving this
+        # test would catch the false positive if -uall were ever removed,
+        # not merely that it reads zero under today's fixed code.
+        status_a_prefix = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/"}))
+        status_b_prefix = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/"}))
+        statuses_prefix = {"/t/a": status_a_prefix, "/t/b": status_b_prefix}
+        result_prefix, _ = collisions(merge_runner, trees, "main", statuses_prefix)
+        self.assertEqual([c["file"] for c in result_prefix], ["shared/"],
+                         "pre-fix collapsed data must falsely collide -- "
+                         "this IS the defect the fix removes")
 
 
 class TestCollisions(unittest.TestCase):
@@ -296,39 +341,6 @@ class TestCollisions(unittest.TestCase):
         result, undetermined = collisions(runner, trees, "main")
         self.assertEqual([c["file"] for c in result], ["src/a.ts", "src/b.ts"])
         self.assertEqual(result[0]["branches"], ["one", "two"])
-        self.assertEqual(undetermined, [])
-
-    def test_asymmetric_tracked_state_collides_through_the_real_matrix(self):
-        """Issue #17 -- the fix reaches the actual matrix collect.py wires into
-        a snapshot, not only the Status object one level down (step 2's
-        TestWorktreeStatus coverage).
-
-        Same asymmetric-tracked-state data as step 2's
-        test_asymmetric_tracked_state_now_collides_through_the_real_matrix:
-        worktree A's `shared/` is already a tracked directory (specific
-        filename either way, `shared/thing.ts`); worktree B's `shared/` is
-        wholly new, so it collapses to `shared/` pre-fix and only expands to
-        `shared/thing.ts` under `-uall`. PRE-fix, this exact fixture returned
-        ZERO collisions -- the two never compared equal. POST-fix (below) it
-        finds the real one.
-
-        ReplayRunner keys on argv alone, not cwd (loom/runner.py:42-43), so a
-        shared runner cannot give the two worktrees different status output;
-        each worktree's Status is hand-built instead of derived through
-        worktree_status().
-        """
-        status_a = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/thing.ts"}))
-        status_b_post_fix = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/thing.ts"}))
-        runner = ReplayRunner({
-            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
-            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
-        })
-        trees = [Worktree("/t/a", "a", "has-shared-dir", "ha"),
-                 Worktree("/t/b", "b", "wt-b-fresh", "hb")]
-        statuses = {"/t/a": status_a, "/t/b": status_b_post_fix}
-        result, undetermined = collisions(runner, trees, "main", statuses)
-        self.assertEqual([c["file"] for c in result], ["shared/thing.ts"])
-        self.assertEqual(result[0]["branches"], ["has-shared-dir", "wt-b-fresh"])
         self.assertEqual(undetermined, [])
 
     def test_single_tree_never_collides_with_itself(self):

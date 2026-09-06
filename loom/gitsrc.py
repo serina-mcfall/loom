@@ -122,12 +122,15 @@ def worktree_status(runner: Runner, path: str) -> Status | None:
     `-uall` IS REQUIRED, NOT COSMETIC (issue #17). Without it git defaults to
     `-unormal`, which collapses a wholly-new untracked directory to one line
     naming the directory rather than the files inside it -- undercounting
-    rank 5's dirty total and, worse, hiding real collisions between two
-    worktrees whose files inside a same-named new directory never actually
-    collide (or, in the divergent-branch case, missing a genuine collision
-    entirely: one worktree already has the directory tracked and reports the
-    specific filename, the other's directory is wholly new and collapses, so
-    the two never compare equal without `-uall`). Measured cost on the
+    rank 5's dirty total, and causing the collisions matrix TWO DIFFERENT
+    ways to be wrong: a FALSE POSITIVE when two worktrees each create a
+    same-named new directory with genuinely DIFFERENT files inside (both
+    collapse to the identical directory-name string and falsely "collide"),
+    and a FALSE NEGATIVE in the divergent-branch case (one worktree already
+    has the directory tracked and reports the specific filename, the
+    other's directory is wholly new and collapses, so an identical
+    uncommitted file in both never compares equal and the real collision is
+    missed). Measured cost on the
     largest real checkout on this machine (~Launchpad/buzz, 4.6M files):
     warm-cache steady state costs roughly 1-3 hundredths of a second more per
     worktree -- real, but small, and not worth diverging this call from the
