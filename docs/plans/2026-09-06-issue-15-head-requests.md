@@ -38,16 +38,26 @@ ALREADY TRUE  (verified against git and a live run, not notes)
     again once new tests land
 
 STEP 1  loom/serve.py: do_HEAD for the three body-bearing routes            [independent]  ← RUNS HERE
-        Add a do_HEAD(self) method. It sets a flag (e.g. self._head = True),
-        calls self.do_GET(), then clears the flag in a finally block — the
-        SAME routing logic as GET runs (path matching, file reads, JSON
-        serialisation), so the real Content-Length is always sent, never
-        guessed or zeroed. Modify _send() to check the flag and skip
-        self.wfile.write(body) when it is set — every other line in _send
-        (status, Content-Type, the real Content-Length, Cache-Control) stays
-        identical between GET and HEAD, which is the literal fix the issue
-        itself names: "answer HEAD with the same status and headers as GET
-        and no body."
+        Add `_head: bool = False` as a CLASS-LEVEL ATTRIBUTE on Handler, not
+        only an instance attribute set inside do_HEAD. Found by an
+        independent review-plan pass on this exact plan (2026-09-06): a
+        literal reading that only ever does `self._head = True` inside
+        do_HEAD, with no default, raises AttributeError on the very first
+        plain GET a connection ever serves (any GET that never had a
+        preceding HEAD on the same instance) — reproduced live by that
+        review. The class-level default is what makes GET safe by
+        construction rather than by every caller remembering to check
+        hasattr/getattr first.
+        Add a do_HEAD(self) method. It sets self._head = True, calls
+        self.do_GET(), then clears it (self._head = False) in a finally
+        block — the SAME routing logic as GET runs (path matching, file
+        reads, JSON serialisation), so the real Content-Length is always
+        sent, never guessed or zeroed. Modify _send() to check the flag and
+        skip self.wfile.write(body) when it is set — every other line in
+        _send (status, Content-Type, the real Content-Length, Cache-Control)
+        stays identical between GET and HEAD, which is the literal fix the
+        issue itself names: "answer HEAD with the same status and headers
+        as GET and no body."
         THIS COVERS "/", "/index.html", "/static/*", and "/snapshot.json" —
         every route that goes through _send. It does NOT yet cover /events,
         which never calls _send (see step 2).
@@ -59,7 +69,11 @@ STEP 1  loom/serve.py: do_HEAD for the three body-bearing routes            [ind
         returns the same Content-Length with a non-empty body; a HEAD to
         "/snapshot.json" before any collection has run returns 503 (matching
         do_GET's own honesty rule at serve.py:313), never 200 — proving the
-        shared routing logic, not a hardcoded 200, drives the HEAD response.
+        shared routing logic, not a hardcoded 200, drives the HEAD response;
+        AND a plain GET to "/" sent as the FIRST request ever served by a
+        freshly-started server (no prior HEAD on that connection or any
+        other) succeeds with no AttributeError — the specific crash the
+        independent review reproduced against an earlier draft of this step.
 
 STEP 2  loom/serve.py: /events answers HEAD without entering the SSE loop   [needs 1]
         /events sends its headers manually and then loops forever — the
@@ -71,20 +85,38 @@ STEP 2  loom/serve.py: /events answers HEAD without entering the SSE loop   [nee
         Add an explicit check right after the /events branch sends its
         headers: if self._head, return immediately (never enter the while
         True: loop, never touch _lock or _snapshot).
-        done when: a real HEAD to "/events" returns 200 with
-        Content-Type: text/event-stream and completes within 2 seconds
-        (proving the loop was never entered, not merely that no frame
-        happened to arrive yet — a wrong fix that enters the loop and then
-        immediately breaks would still pass a naive "did it respond" check
-        but would have touched _lock unnecessarily); the identical GET
+        done when: A RAW SOCKET, NOT http.client — found by an independent
+        review-plan pass on this exact plan (2026-09-06): http.client never
+        reads a body for a HEAD request regardless of what the server
+        actually writes to the wire, so "the request completes quickly"
+        is true whether or not the while-True loop was entered; that
+        reviewer measured a genuinely-broken build (Step 1 only, loop still
+        entered, real frames still written every tick) and a genuinely-fixed
+        one (this step's early return) at the same ~2ms via http.client —
+        indistinguishable, so that check would pass on a regressed build.
+        The falsifiable version: open a raw socket, send a literal HEAD
+        /events request, read and discard exactly the header block up to
+        the blank line, THEN attempt one more read with a short
+        socket-level timeout (e.g. 1s, well under SSE_IDLE_TIMEOUT). On the
+        fixed build that read must time out / return no bytes (server
+        already closed or is sending nothing further) — on a build that
+        still enters the loop, that same read returns real SSE frame bytes
+        within the tick interval, failing the test. The identical GET
         request to /events still streams real frames (unaffected by the new
-        branch) — asserted by reading at least one frame with a
-        socket-level timeout before closing the connection.
+        branch) — asserted the same way step 3 already needs to for GET:
+        reading at least one frame with a socket-level timeout before
+        closing the connection.
 
 STEP 3  tests/test_serve.py: cover all four routes, both methods           [needs 1, 2]
         A new test class spins up the real server (see ALREADY TRUE) once per
-        test method, sends both GET and HEAD to each of the four routes via
-        http.client.HTTPConnection, and tears the server down afterward.
+        test method and tears it down afterward. "/", "/static/loom.css",
+        and "/snapshot.json" use http.client.HTTPConnection for both GET and
+        HEAD — Content-Length/body comparisons are all that's needed there.
+        "/events" is DIFFERENT and MUST use a raw socket for its HEAD case,
+        per step 2's done-when — http.client cannot tell a stopped loop from
+        a running one on a HEAD request, so reusing it here would silently
+        re-introduce the unfalsifiable check the independent review-plan
+        pass on step 2 already rejected.
         Fixture note: "/snapshot.json" and "/events" both read module-level
         _snapshot state (loom/serve.py:30) — set it explicitly in each test
         via the same _lock the handler uses, never relying on whatever a
@@ -113,12 +145,15 @@ GATES     review-code and review-tests apply to the whole diff once step 3 is
           under HTTP/1.1 keep-alive) is exactly the kind of session explore
           mode is for.
 
-BUDGET    Step 3 is the step most likely to eat the budget — it is the only
-          genuinely new piece of test infrastructure in this plan (no test in
-          this file has ever started a real server before), so getting the
-          setUp/tearDown lifecycle right (binding, background-thread
-          shutdown, avoiding a lingering thread across test methods) is where
-          time will actually go, not the two small code changes in steps 1-2.
+BUDGET    Step 2/3's raw-socket /events check is the step most likely to eat
+          the budget, not the setUp/tearDown lifecycle originally flagged
+          here. An independent review-plan pass on this exact plan
+          (2026-09-06) found the http.client-based version of this specific
+          check cannot fail — it measured a genuinely broken build and a
+          genuinely fixed one at indistinguishable timings. Raw-socket
+          header parsing plus a short-timeout follow-up read is more fiddly
+          to get right than anything else in this plan; budget for that
+          specifically, not for the server lifecycle in general.
 
 OPEN      The issue itself raises, without answering: should an unsupported
           method (POST, PUT, DELETE, ...) keep returning bare 501, or switch
