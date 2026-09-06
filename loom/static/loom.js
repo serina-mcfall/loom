@@ -90,6 +90,11 @@ function announce(sentence) {
 
 function renderNeeds(items) {
   const list = el("needs");
+  // The hero glow is a signal of urgency, not decoration -- it must be OFF
+  // whenever the fleet is genuinely quiet, so this toggles on the item count,
+  // never on a fixed class. list.closest("section") is the `.panel--needs`
+  // element itself (see index.html), not the <ul>.
+  list.closest("section").classList.toggle("is-active", items.length > 0);
   list.replaceChildren();
   if (items.length === 0) {
     list.append(text("li", "Nothing needs you.", "needs-item"));

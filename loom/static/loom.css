@@ -70,6 +70,20 @@ main { display: flex; flex-direction: column; gap: 1rem; padding: 1rem; }
    single-column grid on a narrow viewport, so this does not need a media query
    and the panels still reflow on a phone. */
 .panel--wide { grid-column: span 2; }
+
+/* The needs-you hero. Calm and flat when the fleet is quiet (no glow at all --
+   glow is a signal of urgency, not decoration); .is-active is added/removed by
+   loom.js's renderNeeds() based on the real item count, never fixed in markup.
+   The gradient is STATIC (no animation, no transition), so it needs nothing
+   extra for prefers-reduced-motion -- there is no motion to disable. */
+.panel--needs { padding: 1rem 1.1rem; }
+.panel--needs #needs { font-size: 1rem; }
+.panel--needs.is-active {
+  border-color: var(--warn);
+  background: radial-gradient(120% 160% at 8% -10%,
+              color-mix(in srgb, var(--warn) 20%, transparent),
+              var(--panel) 60%);
+}
 /* A repo section is a labelled group of panels, with its name as the h2. */
 .repo { display: flex; flex-direction: column; gap: .6rem; }
 .repo + .repo { margin-top: .4rem; padding-top: 1rem;
