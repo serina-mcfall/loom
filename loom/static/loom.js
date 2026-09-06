@@ -170,7 +170,12 @@ function renderTrees(body, trees) {
     // empty cell is never mistaken for a rendering failure.
     tr.append(text("td", t.pr ? `#${t.pr}` : "—", t.pr ? "pr-num" : "st--dim"));
     const state = (t.agent && t.agent.state) || "none";
-    tr.append(text("td", STATE_LABEL[state] || state, `state--${state}`));
+    // A tinted, rounded chip -- visual only. The glyph and word inside are
+    // exactly what STATE_LABEL always printed; nothing here changes what a
+    // screen reader announces, only adds a background.
+    const stateTd = document.createElement("td");
+    stateTd.append(text("span", STATE_LABEL[state] || state, `chip chip--${state}`));
+    tr.append(stateTd);
     // Colour only reinforces the number that is already printed. An unmeasurable
     // fact reads "?" in italic dim, which no number could be mistaken for.
     tr.append(cell(num(t.ahead), t.ahead, "n--ahead"));

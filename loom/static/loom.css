@@ -143,10 +143,24 @@ tbody tr:nth-child(even) { background: #1b212a; }
 .c-time { color: var(--time); }
 .c-branch { color: var(--branch); }
 .ticker li { padding: .1rem 0; }
-.state--waiting { color: var(--warn); }
-.state--stale, .state--stopped { color: var(--bad); }
-.state--working { color: var(--good); }
-.state--unknown, .state--none { color: var(--dim); }
+/* Chip-shaped state badges -- a background treatment borrowed from 21st.dev's
+   visual style, hand-rolled here in plain CSS (no React, no component
+   library). Same colours renderTrees()'s state--* classes used before this,
+   just a tinted rounded pill instead of bare text; the glyph+word inside is
+   unchanged. idle/unknown/none get a neutral dim tint -- there was never a
+   dedicated colour for them either. */
+.chip { display: inline-flex; align-items: center; padding: .15em .6em;
+        border-radius: 999px; font-size: .85em; }
+.chip--waiting { background: color-mix(in srgb, var(--warn) 18%, transparent);
+                 color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+.chip--stale, .chip--stopped {
+  background: color-mix(in srgb, var(--bad) 18%, transparent);
+  color: var(--bad); border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent); }
+.chip--working { background: color-mix(in srgb, var(--good) 18%, transparent);
+                 color: var(--good); border: 1px solid color-mix(in srgb, var(--good) 40%, transparent); }
+.chip--idle, .chip--unknown, .chip--none {
+  background: color-mix(in srgb, var(--dim) 18%, transparent);
+  color: var(--dim); border: 1px solid color-mix(in srgb, var(--dim) 40%, transparent); }
 .src--bad  { color: var(--bad); }
 .src--ok   { color: var(--good); }
 .src--warn { color: var(--warn); }
