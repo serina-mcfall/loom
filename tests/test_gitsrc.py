@@ -296,6 +296,13 @@ class TestWorktreeStatus(unittest.TestCase):
         })
         status_a = worktree_status(runner_a, "/t/a")
         status_b = worktree_status(runner_b, "/t/b")  # real code path -- reverting -uall changes this
+        # Pins worktree_status() itself, not just the matrix it feeds: a
+        # broken parse that always returned an empty Status would leave
+        # `result` empty here too (nothing to collide), and the main
+        # assertion below would not notice. Asserting the real, DIFFERENT
+        # filenames were actually parsed closes that gap directly.
+        self.assertEqual(status_a.paths, frozenset({"shared/alpha.ts"}))
+        self.assertEqual(status_b.paths, frozenset({"shared/beta.ts"}))
         merge_runner = ReplayRunner({
             "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
             "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
