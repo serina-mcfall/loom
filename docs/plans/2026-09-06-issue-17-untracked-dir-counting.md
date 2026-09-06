@@ -73,8 +73,13 @@ ALREADY TRUE  (verified against git and real repro, not notes)
   Existing TestWorktreeStatus fixtures all key off a single helper,
     `_status(out)` (tests/test_gitsrc.py:140-144), so updating that one
     helper's fixture key fixes every test built on it (tests/test_gitsrc.py:
-    146-401ish) in one place — the eight-site list above is what's outside
-    that helper's reach.
+    146-196, the rest of TestWorktreeStatus — CORRECTED from an earlier
+    draft's "146-401ish", which both exceeded this 316-line file's actual
+    length and overstated the helper's real reach by 200+ lines; found by
+    a third independent review-plan pass, 2026-09-06. TestCollisions
+    starts at :197 and never calls git status at all, confirmed by grep)
+    in one place — the eight-site list above is what's outside that
+    helper's reach.
   Neither the issue nor loom/gitsrc.py's own docstrings currently document
     that `-uall` exists or why — this plan adds that comment as part of the
     fix, matching this codebase's own convention of recording the WHY next
