@@ -9,6 +9,7 @@ Runner.
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -137,6 +138,7 @@ class VerdictGateRealRepoTests(unittest.TestCase):
         code, msg = check(self.repo, head)
         self.assertEqual(code, 1)
         self.assertIn("file(s) changed since", msg)
+        self.assertIn("a.txt", msg)  # the actual changed file must be named, not just a count
         self.assertIn("The review does not cover this code", msg)
         self.assertNotIn("has never been reviewed", msg)
 
@@ -160,6 +162,86 @@ class VerdictGateRealRepoTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("This branch has never been reviewed", msg)
         self.assertIn("predates this branch's own commits", msg)
+        self.assertNotIn("The review does not cover this code", msg)
+
+    def test_never_reviewed_when_main_advances_past_divergence_after_branch_cut(self):
+        """The actual issue #14 bug, not the equality case above.
+
+        `test_never_reviewed_when_verdict_predates_this_branch` writes the
+        verdict for the divergence point ITSELF -- a sha equal to
+        `divergence`, which even the OLD code already caught, because
+        `is-ancestor(sha, divergence)` is true for a commit and itself. That
+        left the actual reported bug unexercised: on a `pull_request` event,
+        `actions/checkout@v4` checks out the MERGE ref, so verdict.json on
+        disk can carry a sha main advanced to AFTER this branch's own
+        divergence point -- a commit that is neither an ancestor of
+        `divergence` (it comes after it) nor reachable from this branch's own
+        `head` (this branch never merged it). The old code's `if ancestor:`
+        alone is False here, and execution fell through to the generic
+        "reviewed, then diverged" message on a branch that was never
+        reviewed at all -- issue #14's own reported symptom.
+        """
+        divergence = _commit(self.repo, "main at the point feature is cut")
+        _git(["checkout", "-q", "-b", "feature"], self.repo)
+        _write(self.repo, "b.txt", "feature's own new work, never reviewed")
+        head = _commit(self.repo, "feature's own first commit")
+        _git(["checkout", "-q", "main"], self.repo)
+        later_main = _commit(self.repo, "main moves on after feature was cut")
+        _git(["checkout", "-q", "feature"], self.repo)
+        # Simulates the merge-ref checkout: verdict.json on the PR's working
+        # tree names a commit main advanced to, not anything from feature's
+        # own history and not the original divergence point either.
+        _write_verdict(self.repo, later_main)
+        code, msg = check(self.repo, head)
+        self.assertEqual(code, 1)
+        self.assertIn("This branch has never been reviewed", msg)
+        self.assertIn("predates this branch's own commits", msg)
+        self.assertNotIn("The review does not cover this code", msg)
+
+    def test_indeterminate_when_reachability_from_head_cannot_be_computed(self):
+        """`_is_ancestor(sha, want)` -- the NEW git call this fix adds --
+        must be given its own indeterminate path, distinct from the
+        pre-existing divergence-point-unresolvable case.
+
+        A sha that is merely invalid won't isolate this: `git diff
+        sha..want` fails FIRST on such a sha, so control never reaches this
+        fix's new code at all (that's `test_sha_unreachable_from_head_blocks`,
+        above). To reach `_is_ancestor(sha, want)` specifically, the diff and
+        the divergence merge-base must both succeed -- so `sha` is a real,
+        valid, reachable commit -- and only the ONE new subprocess call this
+        fix adds is made to fail, via a real subprocess.run wrapped to
+        selectively raise for exactly that argv.
+        """
+        divergence = _commit(self.repo, "main at the point feature is cut")
+        _git(["checkout", "-q", "-b", "feature"], self.repo)
+        _write(self.repo, "b.txt", "feature's own new work")
+        head = _commit(self.repo, "feature's own commit")
+        # A real, valid, reachable sha -- just not head or divergence -- so
+        # both `git diff` and the divergence `merge-base` succeed normally.
+        _write_verdict(self.repo, divergence)
+        _commit(self.repo, "record a verdict for an older commit, then diverge")
+        head = _git(["rev-parse", "HEAD"], self.repo).stdout.strip()
+
+        real_run = subprocess.run
+
+        def selective_failure(cmd, *args, **kwargs):
+            # Only the FIRST is-ancestor call check() makes -- reachable_from_head,
+            # (sha=divergence, of=head) -- is targeted. check() returns as soon as
+            # this comes back None, so the later (sha, divergence) call this same
+            # helper makes for the "ancestor" check never runs; nothing else needs
+            # a case here.
+            if cmd[:3] == ["git", "merge-base", "--is-ancestor"] and cmd[3:5] == [divergence, head]:
+                raise OSError("simulated: the reachable-from-head check fails")
+            return real_run(cmd, *args, **kwargs)
+
+        with mock.patch("scripts.verdict_gate.subprocess.run", side_effect=selective_failure):
+            code, msg = check(self.repo, head)
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "could not determine whether the recorded verdict is "
+            "part of this branch's own history", msg,
+        )
+        self.assertNotIn("has never been reviewed", msg)
         self.assertNotIn("The review does not cover this code", msg)
 
     def test_indeterminate_when_divergence_point_cannot_be_computed(self):
@@ -200,6 +282,104 @@ class VerdictGateRealRepoTests(unittest.TestCase):
         code, msg = check(self.repo, head)
         self.assertEqual(code, 0)
         self.assertIn(f"READY verdict matches head {head[:8]}", msg)
+
+    def test_open_messages_are_distinguishable_from_each_other(self):
+        """Both OPEN paths return exit 0, but they are reached through
+        different logic (an exact sha match vs. a verdict-file-only diff) and
+        must not be conflated into one generic "OPEN" string -- a caller
+        relying on the message to tell the two apart (or a future test) needs
+        them to actually differ in substance, not just both start with OPEN.
+        """
+        exact = _commit(self.repo, "first")
+        _write_verdict(self.repo, exact)
+        _, exact_msg = check(self.repo, exact)
+
+        reviewed = _commit(self.repo, "reviewed here")
+        _write_verdict(self.repo, reviewed)
+        verdict_only_head = _commit(self.repo, "record the verdict, nothing else")
+        _, diff_msg = check(self.repo, verdict_only_head)
+
+        self.assertTrue(exact_msg.startswith("OPEN"))
+        self.assertTrue(diff_msg.startswith("OPEN"))
+        self.assertIn("matches head", exact_msg)
+        self.assertNotIn("matches head", diff_msg)
+        self.assertIn("the only change since is the verdict file itself", diff_msg)
+        self.assertNotIn("the only change since", exact_msg)
+
+    def test_block_message_names_the_full_remediation(self):
+        """block()'s remediation text is what a contributor actually reads
+        when the gate fires -- an assertion only on the leading BLOCKED
+        summary line would miss a regression that garbled or dropped the
+        instructions themselves (audit 2026-08-05, M6: a prior version of
+        this remediation named a script path that did not exist).
+        """
+        head = _commit(self.repo, "first")
+        code, msg = check(self.repo, head)  # no verdict.json at all
+        self.assertEqual(code, 1)
+        self.assertIn("This branch has no review recorded for its current state.", msg)
+        self.assertIn("Run the review-final skill (serina:review-final).", msg)
+        self.assertIn("verdict.sh record ready", msg)
+        self.assertIn("Commit .superpowers/verdict.json and push.", msg)
+        self.assertIn("verdict.sh ships with the skill, not with this repo.", msg)
+
+    def test_resolves_origin_main_over_bare_main_when_both_exist(self):
+        """_resolve_main_ref tries "origin/main" before bare "main". A real
+        `origin` remote (a second bare repo, actually fetched) exercises that
+        first branch -- every other fixture in this file has no remote at
+        all, so falls through to testing only the second, fallback path.
+        """
+        with tempfile.TemporaryDirectory() as remote:
+            _git(["init", "-q", "--bare", "-b", "main"], remote)
+            _git(["remote", "add", "origin", remote], self.repo)
+            main_tip = _commit(self.repo, "main's own commit")
+            _git(["push", "-q", "origin", "main"], self.repo)
+            _write_verdict(self.repo, main_tip)
+            _commit(self.repo, "main records its own verdict")
+            _git(["checkout", "-q", "-b", "feature"], self.repo)
+            _write(self.repo, "b.txt", "feature's own new work")
+            head = _commit(self.repo, "feature's own first commit")
+            code, msg = check(self.repo, head)
+        self.assertEqual(code, 1)
+        self.assertIn("This branch has never been reviewed", msg)
+
+
+class VerdictGateMainCliTests(unittest.TestCase):
+    """main() end-to-end, as a real subprocess -- covering argv parsing,
+    HEAD_SHA env-var reading, and the exit code actually returned to the
+    shell, none of which check()'s own unit tests exercise.
+    """
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.repo = self._td.name
+        _init_repo(self.repo)
+        self._script = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "scripts", "verdict_gate.py",
+        )
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _run_main(self, head_sha):
+        env = dict(os.environ, HEAD_SHA=head_sha)
+        return subprocess.run(
+            [sys.executable, self._script, self.repo],
+            env=env, capture_output=True, text=True, timeout=30,
+        )
+
+    def test_main_exits_zero_and_prints_open_when_ready(self):
+        head = _commit(self.repo, "first")
+        _write_verdict(self.repo, head)
+        result = self._run_main(head)
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(result.stdout.startswith("OPEN"))
+
+    def test_main_exits_one_and_prints_blocked_when_absent(self):
+        head = _commit(self.repo, "first")
+        result = self._run_main(head)
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(result.stdout.startswith("BLOCKED"))
 
 
 if __name__ == "__main__":

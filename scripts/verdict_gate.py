@@ -199,14 +199,53 @@ def check(repo_root: str, head_sha: str, verdict_path: str = VERDICT_PATH) -> tu
                     f"main ({mb_err}) — treating as indeterminate, not as "
                     "reviewed."
                 )
+            # CORRECTED, found by an independent review-code pass
+            # (2026-09-06): the divergence-ancestor check ALONE is not
+            # enough. On a `pull_request` event, `actions/checkout@v4`
+            # checks out the MERGE ref, so the on-disk verdict.json this
+            # function already read can reflect main's CURRENT state
+            # rather than what was true when this branch was cut -- if the
+            # branch never touched the file, the merge resolves it to
+            # main's own latest commit, and main has necessarily advanced
+            # PAST the old divergence point by the time anyone else has
+            # merged since. Reproduced live: with `sha` set to a commit
+            # main advanced to AFTER this branch's own divergence, sha is
+            # NOT an ancestor of that divergence point (correct, but
+            # uninformative alone), and the code fell through to the
+            # generic "reviewed, then diverged" message on a branch that
+            # was never reviewed at all -- exactly the presentation issue
+            # #14 was filed to fix.
+            #
+            # The fix is not to trust the divergence point in isolation:
+            # a verdict can only mean "this branch was reviewed, then
+            # diverged further" if `sha` is ALSO part of THIS BRANCH'S OWN
+            # history -- reachable from `want` (head), not merely absent
+            # from the divergence point's ancestry. A verdict sha that
+            # main advanced to on its own (never part of this branch's
+            # commits at all) fails that reachability test regardless of
+            # where it sits relative to the divergence point, and correctly
+            # falls through to "never reviewed" instead.
+            reachable_from_head, rfh_err = _is_ancestor(repo_root, sha, want)
+            if reachable_from_head is None:
+                return block(
+                    "could not determine whether the recorded verdict is "
+                    f"part of this branch's own history ({rfh_err}) — "
+                    "treating as indeterminate, not as reviewed."
+                )
             ancestor, anc_err = _is_ancestor(repo_root, sha, divergence)
             if ancestor is None:
+                # OWN message, not the divergence-computation one above --
+                # a different git call failed (found by an independent
+                # review-code pass, 2026-09-06: an earlier draft blamed
+                # the wrong call here, naming "this branch's divergence
+                # point" when what actually failed was testing sha's
+                # position relative to it).
                 return block(
-                    "could not determine this branch's divergence point from "
-                    f"main ({anc_err}) — treating as indeterminate, not as "
-                    "reviewed."
+                    "could not determine whether the recorded verdict "
+                    f"predates this branch ({anc_err}) — treating as "
+                    "indeterminate, not as reviewed."
                 )
-            if ancestor:
+            if ancestor or not reachable_from_head:
                 return block(
                     f"This branch has never been reviewed. The recorded "
                     f"verdict ({str(sha)[:8]}) predates this branch's own "
