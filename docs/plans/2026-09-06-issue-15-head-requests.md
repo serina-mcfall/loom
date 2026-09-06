@@ -39,11 +39,23 @@ ALREADY TRUE  (verified against git and a live run, not notes)
   urllib.request.Request(url, method="HEAD") is the correct way to issue a
     HEAD through the SAME self._get()-style call this class already uses —
     confirmed live: req.get_method() returns "HEAD" as constructed. No new
-    HTTP client mechanism is needed for the three _send-routed paths; only
-    /events needs the raw-socket approach, and only because its response has
-    neither Content-Length nor chunked encoding by design (the existing
-    class's own comment at :719-723 explains why urllib can't be used there
-    at all, for GET or HEAD alike).
+    HTTP client mechanism is needed for the three _send-routed paths.
+    /events needs the raw-socket approach, for TWO DIFFERENT reasons
+    depending on the method — CORRECTED, an earlier draft's single reason
+    ("urllib can't be used there at all, for GET or HEAD alike") was found
+    false for HEAD by an independent review-plan pass (2026-09-06): urllib
+    completes a HEAD /events request in ~20-30ms and returns identically
+    whether the SSE loop is entered or not (verified live against both a
+    broken build and the fixed one), because HTTP never expects a body on
+    a HEAD response, so urllib's reader doesn't wait for one. That makes
+    urllib exactly as UNFALSIFIABLE for HEAD as http.client was for the
+    Blocker Round 1 found — it would "work" and prove nothing. For GET,
+    urllib genuinely CANNOT be used at all (the existing class's own
+    comment at :719-723 explains why: no Content-Length, no chunked
+    encoding, by design — urllib's reader blocks waiting for a body shape
+    that never completes). So: GET needs a raw socket because urllib
+    cannot complete the request; HEAD needs one because urllib COULD
+    complete it, deceptively, without proving anything.
   README.md documents the test count in its "Running the tests" section
     (currently 347, per the prior branch's own fix) — this plan will move it
     again once new tests land
@@ -135,14 +147,25 @@ STEP 3  tests/test_serve.py: EXTEND TestHandlerRoutes, do not duplicate it  [nee
         collected-or-not rule from step 1's done-when (reusing this class's
         existing pattern of setting serve._snapshot directly before the
         request, as test_snapshot_json_is_503_before_the_first_collection_
-        completes already does); HEAD to "/events" per step 2's done-when,
-        built as a small variation on this class's OWN
-        test_events_streams_a_schema_one_frame_immediately (:718-738) —
-        same raw-socket connect and header-read, HEAD instead of GET in the
-        request line, then the short-timeout follow-up read step 2
-        specifies; and a genuinely unsupported method (e.g. DELETE) to "/"
-        still returns 501, proving this change did not accidentally widen
-        what the server accepts.
+        completes already does); HEAD to "/events" per step 2's done-when.
+        NOT the same read loop as test_events_streams_a_schema_one_frame_
+        immediately (:718-738) — CORRECTED, an earlier draft said "same
+        header-read"; found by an independent review-plan pass (2026-09-06)
+        that literally reusing that method's combined loop (which only
+        exits once BOTH the header AND at least 20 bytes of body have
+        arrived) against a HEAD response — which never sends a body —
+        blocks for the full 5s create_connection timeout and raises an
+        unhandled socket.timeout, never reaching an assertion. Use TWO
+        separate reads instead, exactly as step 2's own done-when
+        specifies: connect the same way this class's existing method does,
+        read ONLY up to the header/body blank line and stop, THEN attempt
+        one further read with its own short timeout (~1s) as a SEPARATE
+        step — that second read is what must time out on the fixed build
+        and return real frame bytes on a broken one. The connection setup
+        is shared with the existing method; the read strategy is not.
+        Also: a genuinely unsupported method (e.g. DELETE) to "/" still
+        returns 501, proving this change did not accidentally widen what
+        the server accepts.
         done when: `python3 -m unittest tests.test_serve` passes with these
         new methods added to TestHandlerRoutes (not a new class), and
         README.md's test count comment is updated to match the new total.
