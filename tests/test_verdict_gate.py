@@ -216,8 +216,14 @@ class VerdictGateRealRepoTests(unittest.TestCase):
         _git(["checkout", "-q", "-b", "feature"], self.repo)
         _write(self.repo, "b.txt", "feature's own new work")
         head = _commit(self.repo, "feature's own commit")
-        # A real, valid, reachable sha -- just not head or divergence -- so
-        # both `git diff` and the divergence `merge-base` succeed normally.
+        # The verdict sha IS `divergence` -- deliberately, so both `git diff`
+        # and the divergence `merge-base` succeed normally on it, and so the
+        # mock below's exact-match filter has one unambiguous commit to
+        # target. (An earlier draft of this fixture claimed the sha was
+        # "not head or divergence", which was never true here and was
+        # corrected by an independent review-tests pass, 2026-09-06 --
+        # a reader trusting the old comment and swapping in some other sha
+        # would have silently broken the mock's cmd[3:5] match below.)
         _write_verdict(self.repo, divergence)
         _commit(self.repo, "record a verdict for an older commit, then diverge")
         head = _git(["rev-parse", "HEAD"], self.repo).stdout.strip()
@@ -241,6 +247,43 @@ class VerdictGateRealRepoTests(unittest.TestCase):
             "could not determine whether the recorded verdict is "
             "part of this branch's own history", msg,
         )
+        self.assertNotIn("has never been reviewed", msg)
+        self.assertNotIn("The review does not cover this code", msg)
+
+    def test_indeterminate_when_ancestor_of_divergence_cannot_be_computed(self):
+        """The SECOND `_is_ancestor` call check() makes -- `ancestor =
+        _is_ancestor(sha, divergence)` -- gets its own distinct message
+        (found by an independent review-code pass, 2026-09-06: an earlier
+        draft blamed the wrong git call here). Reaching this call requires
+        `reachable_from_head` to succeed first, so a DIFFERENT sha is
+        targeted than the previous test -- here `sha == divergence` again,
+        but the mock fails the SECOND call (sha, divergence), not the first
+        (sha, head), which succeeds normally.
+        """
+        divergence = _commit(self.repo, "main at the point feature is cut")
+        _git(["checkout", "-q", "-b", "feature"], self.repo)
+        _write(self.repo, "b.txt", "feature's own new work")
+        _write_verdict(self.repo, divergence)
+        _commit(self.repo, "record a verdict for an older commit, then diverge")
+        head = _git(["rev-parse", "HEAD"], self.repo).stdout.strip()
+
+        real_run = subprocess.run
+
+        def selective_failure(cmd, *args, **kwargs):
+            if cmd[:3] == ["git", "merge-base", "--is-ancestor"] and cmd[3:5] == [divergence, divergence]:
+                raise OSError("simulated: the ancestor-of-divergence check fails")
+            return real_run(cmd, *args, **kwargs)
+
+        with mock.patch("scripts.verdict_gate.subprocess.run", side_effect=selective_failure):
+            code, msg = check(self.repo, head)
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "could not determine whether the recorded verdict "
+            "predates this branch", msg,
+        )
+        self.assertNotIn(
+            "part of this branch's own history", msg,
+        )  # the OTHER indeterminate message, not this one
         self.assertNotIn("has never been reviewed", msg)
         self.assertNotIn("The review does not cover this code", msg)
 
@@ -327,20 +370,42 @@ class VerdictGateRealRepoTests(unittest.TestCase):
         `origin` remote (a second bare repo, actually fetched) exercises that
         first branch -- every other fixture in this file has no remote at
         all, so falls through to testing only the second, fallback path.
+
+        CORRECTED (found by an independent review-tests pass, 2026-09-06):
+        an earlier draft of this fixture wrote the verdict for `main_tip`,
+        the commit pushed AS origin/main -- but `main_tip` is also an
+        ancestor of local main's later tip, so `ancestor(main_tip, X)` is
+        True for EITHER candidate divergence point, and the test passed
+        the same way even with `_resolve_main_ref` edited to try only
+        `("main",)`, never touching origin/main at all. To actually
+        discriminate, the verdict sha must be an ancestor of ONE candidate
+        ref's divergence point but not the other -- `local_only`, the
+        commit that advances local main PAST what was pushed to origin,
+        does that: it is not an ancestor of origin/main's (older) tip, but
+        it IS an ancestor of (in fact equal to) local main's tip.
         """
         with tempfile.TemporaryDirectory() as remote:
             _git(["init", "-q", "--bare", "-b", "main"], remote)
             _git(["remote", "add", "origin", remote], self.repo)
-            main_tip = _commit(self.repo, "main's own commit")
+            _commit(self.repo, "the shared root, pushed to origin")
             _git(["push", "-q", "origin", "main"], self.repo)
-            _write_verdict(self.repo, main_tip)
-            _commit(self.repo, "main records its own verdict")
+            # Advances local main PAST what origin/main has -- never pushed.
+            local_only = _commit(self.repo, "local main moves on, never pushed")
             _git(["checkout", "-q", "-b", "feature"], self.repo)
             _write(self.repo, "b.txt", "feature's own new work")
             head = _commit(self.repo, "feature's own first commit")
+            _write_verdict(self.repo, local_only)
+            _commit(self.repo, "record a verdict, then diverge")
+            head = _git(["rev-parse", "HEAD"], self.repo).stdout.strip()
             code, msg = check(self.repo, head)
+        # If origin/main were skipped (bug: falls back straight to bare
+        # "main"), divergence would resolve to `local_only` itself, sha
+        # would be its own ancestor, and this would wrongly read as
+        # "never reviewed" instead.
         self.assertEqual(code, 1)
-        self.assertIn("This branch has never been reviewed", msg)
+        self.assertIn("file(s) changed since", msg)
+        self.assertIn("The review does not cover this code", msg)
+        self.assertNotIn("has never been reviewed", msg)
 
 
 class VerdictGateMainCliTests(unittest.TestCase):
@@ -361,11 +426,11 @@ class VerdictGateMainCliTests(unittest.TestCase):
     def tearDown(self):
         self._td.cleanup()
 
-    def _run_main(self, head_sha):
+    def _run_main(self, head_sha, cwd=None):
         env = dict(os.environ, HEAD_SHA=head_sha)
         return subprocess.run(
             [sys.executable, self._script, self.repo],
-            env=env, capture_output=True, text=True, timeout=30,
+            env=env, cwd=cwd, capture_output=True, text=True, timeout=30,
         )
 
     def test_main_exits_zero_and_prints_open_when_ready(self):
@@ -374,6 +439,31 @@ class VerdictGateMainCliTests(unittest.TestCase):
         result = self._run_main(head)
         self.assertEqual(result.returncode, 0)
         self.assertTrue(result.stdout.startswith("OPEN"))
+
+    def test_main_actually_uses_the_argv_repo_root_not_its_own_cwd(self):
+        """CORRECTED (found by an independent review-tests pass, 2026-09-06):
+        the original test_main_exits_one_and_prints_blocked_when_absent
+        passed even with `main()` hardcoded to ignore argv[1] entirely and
+        always use "." -- because whatever directory a test happens to run
+        from also lacks a matching verdict for a synthetic head sha, so
+        BLOCKED came back for the wrong reason either way.
+
+        This pins it properly: run the subprocess from a DIFFERENT cwd (a
+        second real repo carrying a verdict for the SAME head sha, which
+        would read OPEN if `main()` mistakenly used its own cwd) while
+        passing self.repo -- which carries no verdict at all -- as the
+        explicit argv[1]. Only reading argv[1] correctly can produce this
+        exact BLOCKED/absent outcome; reading cwd instead would produce OPEN.
+        """
+        head = _commit(self.repo, "first")
+        with tempfile.TemporaryDirectory() as decoy:
+            _init_repo(decoy)
+            _commit(decoy, "unrelated decoy repo")
+            _write_verdict(decoy, head, state="READY")  # sha == want by construction below
+            result = self._run_main(head, cwd=decoy)
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(result.stdout.startswith("BLOCKED"))
+        self.assertIn(f"no {VERDICT_PATH} in this branch.", result.stdout)
 
     def test_main_exits_one_and_prints_blocked_when_absent(self):
         head = _commit(self.repo, "first")
