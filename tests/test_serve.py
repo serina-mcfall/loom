@@ -859,7 +859,14 @@ class TestHandlerRoutes(unittest.TestCase):
                 if not chunk:
                     break
                 data += chunk
-            headers, _, _ = data.partition(b"\r\n\r\n")
+            # `rest`, not `_` -- the outer loop above stops as soon as the
+            # header terminator is seen, but a single recv() can return
+            # bytes PAST that terminator in the same chunk. Discarding them
+            # into `_` would let real frame bytes that arrived early slip
+            # past this check unexamined; the assertion below must see
+            # everything that followed the headers, from both this read and
+            # the separate one after it.
+            headers, _, rest = data.partition(b"\r\n\r\n")
             self.assertIn(b"200", headers.split(b"\r\n", 1)[0])
             self.assertIn(b"text/event-stream", headers)
 
@@ -873,8 +880,56 @@ class TestHandlerRoutes(unittest.TestCase):
                 follow_up = b""
         finally:
             sock.close()
-        self.assertEqual(follow_up, b"",
+        self.assertEqual(rest + follow_up, b"",
                           "HEAD /events must not enter the SSE loop or send any frame bytes")
+
+    def test_head_then_get_reuses_the_connection_with_a_real_body(self):
+        """Guards do_HEAD's `finally: self._head = False`. If that reset
+        were ever dropped (or only set inside the try, where an early
+        exception could skip it), a GET immediately following a HEAD on the
+        SAME kept-alive connection would silently come back with an empty
+        body forever after -- indistinguishable from a passing test unless
+        something actually reuses the connection and checks the body is
+        real, which no other test here does.
+        """
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(b"HEAD /static/loom.css HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            head_headers, _, rest = data.partition(b"\r\n\r\n")
+            self.assertIn(b"200", head_headers.split(b"\r\n", 1)[0])
+            self.assertEqual(rest, b"", "HEAD must not carry a body into the next read")
+
+            # Same socket, no reconnect -- proves the server considers the
+            # connection still good and this handler instance's state (the
+            # thing do_HEAD's finally protects) is clean for the next request.
+            sock.sendall(b"GET /static/loom.css HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            get_headers, _, get_body_so_far = data.partition(b"\r\n\r\n")
+            content_length = int(
+                get_headers.split(b"Content-Length: ", 1)[1].split(b"\r\n", 1)[0]
+            )
+            body = get_body_so_far
+            while len(body) < content_length:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                body += chunk
+        finally:
+            sock.close()
+        self.assertEqual(len(body), content_length)
+        self.assertGreater(len(body), 0,
+                            "GET after HEAD on a reused connection came back empty")
 
     def test_delete_is_still_501_not_accidentally_widened(self):
         # This change adds do_HEAD; it must not widen what the server accepts
