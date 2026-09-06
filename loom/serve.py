@@ -254,9 +254,26 @@ def _refresh_loop(all_repos: bool, stop: threading.Event | None = None) -> None:
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # CLASS-LEVEL, NOT SET-ONLY-IN-do_HEAD. A plain GET on a connection that
+    # never had a preceding HEAD would otherwise hit an unset `self._head` in
+    # `_send` and raise AttributeError on the very first such request served —
+    # this default is what makes GET safe by construction, not by every path
+    # through `_send` remembering to `getattr`/`hasattr` first.
+    _head: bool = False
 
     def log_message(self, fmt: str, *args: object) -> None:  # keep the pane quiet
         pass
+
+    def do_HEAD(self) -> None:
+        # Run the SAME routing logic as GET (path matching, file reads, JSON
+        # serialisation) so the real Content-Length is always sent, never
+        # guessed or zeroed -- `_send` below is the one place that skips the
+        # body write once this flag is set.
+        self._head = True
+        try:
+            self.do_GET()
+        finally:
+            self._head = False
 
     def _send(self, code: int, body: bytes, ctype: str) -> None:
         self.send_response(code)
@@ -275,7 +292,8 @@ class Handler(BaseHTTPRequestHandler):
         # refresh -- there is no bandwidth argument on the other side.
         self.send_header("Cache-Control", "no-store, must-revalidate")
         self.end_headers()
-        self.wfile.write(body)
+        if not self._head:
+            self.wfile.write(body)
 
     def _send_file(self, path: Path, ctype: str) -> None:
         try:
@@ -317,6 +335,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
+            if self._head:
+                # do_HEAD's do_GET() reuse (see above) does not by itself stop
+                # this route's own infinite loop -- it writes frames directly
+                # to self.wfile with no check of the flag. Returning here,
+                # before the loop is ever entered, is what turns a HEAD to
+                # /events into a fast, honest response instead of a hang of up
+                # to SSE_IDLE_TIMEOUT: never touches _lock or _snapshot.
+                return
             self.connection.settimeout(SSE_IDLE_TIMEOUT)
             try:
                 while True:
