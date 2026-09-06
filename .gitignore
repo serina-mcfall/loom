@@ -11,10 +11,18 @@ __pycache__/
 # directory-wide ignore would silently hide them the day this repo grows one. Same
 # convention as worktrees-challenge and serina-learning, and for the same reason.
 .claude/.verified
+.claude/.test-change
 .claude/.session-tracker
 .claude/.sid-*
 .claude/.worklog.lock
 .claude/.edit-count
 .claude/session-journal.md
 .claude/worklog.md
-.superpowers/
+
+# Scratch mockups from the brainstorming skill's visual-companion server, never
+# meant to be committed. NOT a blanket `.superpowers/` rule -- this repo already
+# tracks .superpowers/verdict.json (the CI-checked READY-verdict record) across
+# many prior commits, and a wider rule here would silently block ever adding a
+# new file anywhere else under .superpowers/, same class of mistake the .claude/
+# note above already warns against.
+.superpowers/brainstorm/

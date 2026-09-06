@@ -162,6 +162,21 @@ disclosure pattern, for free. This is a small, contained change to
 `<details>`, the visually-hidden `<h3>` becomes the `<summary>`'s
 accessible label.
 
+**Correction (2026-09-07, caught by review-a11y then re-shaped by
+review-final):** a first draft implemented this literally — a bare
+`<summary>Data sources</summary>` with no heading and no landmark
+region at all. review-a11y found that dropped this panel from both
+heading navigation and the landmark rotor (`panel()`'s normal shape
+gives every other panel both). What shipped instead, and is the actual
+current shape: `<section class="panel" aria-labelledby>` — the same
+wrapper every other panel uses — containing `<details><summary><h3
+id="...">Data sources</h3></summary><ul>...</ul></details>`. The
+heading is now genuinely visible (inside the summary, not hidden) *and*
+still reachable by heading navigation and the landmark rotor, which the
+"visually-hidden `<h3>` becomes the label" text above got half right:
+the visually-hidden trick is gone, but a real `<h3>` survives rather
+than being flattened into plain summary text.
+
 **Loose ends stays visible, not collapsed.** Unlike Data sources, it's
 occasionally user-actionable (an orphaned PR, a directory that stopped
 being a worktree) even though the common case is "No loose ends" — hiding
@@ -172,6 +187,27 @@ values (`▶ working`, `⛔ waiting`, …) get a small rounded, tinted
 background — a chip shape borrowed from 21st.dev's visual style, hand-rolled
 in CSS. The glyph and word both stay exactly as they are today; the chip is
 a background treatment, not a new way of conveying state.
+
+**Correction (2026-09-07, found by review-code/review-a11y):** this claim
+is true for six of the seven states, not all seven. `idle` had no prior
+`.state--idle` rule at all — it inherited plain `--text` at full
+brightness — so grouping it under the same dim tint as `unknown`/`none`
+*is* a new color decision for that one state, kept deliberately (a
+neutral idle reads correctly next to working/waiting/stopped's urgency
+colors) rather than reverted. The other six states' colors are unchanged
+from what `state--*` already used.
+
+**Correction (2026-09-07, found by review-final):** the Data-sources
+heading described above is not static text. `renderSources()` now
+appends a live failing-source count — `Data sources — N failing` — so a
+real `git`/`gh`/`tmux` failure is signaled without forcing the panel
+open (which would fight a user who closed it on purpose) or leaving it
+silently invisible inside collapsed content (which a first draft did,
+re-creating the exact hole `loom/collect.py`'s "honesty channel", audit
+finding H3, exists to close). This was added during the fix round for
+review-a11y's findings, not in the original build steps, and is the one
+place `renderSources()` is no longer purely a rendering function of its
+`sources` argument — it also reads the section's own heading element.
 
 ### Cross-cutting: accessibility
 
@@ -229,12 +265,25 @@ same discipline as the file's existing comments.
 
 ## Tests
 
-No new Python behavior, so no new `tests/test_*.py` coverage. The existing
-accessibility properties this spec must not regress:
-`tests/test_serve.py` (if it asserts on static asset serving) continues to
-apply unchanged. Verification for this spec is manual: load the dashboard
-in a real browser in both the quiet and needs-you-non-empty states (as
-mocked during brainstorming), confirm the hero glow only appears in the
-latter, confirm `<details>` opens/closes with both mouse and keyboard, and
-re-run the contrast computation above against the actual shipped hex
-values before merge.
+**Correction (2026-09-07, found by review-final):** this section
+originally claimed "no new Python behavior, so no new `tests/test_*.py`
+coverage" — contradicted by this same document's own "Fonts,
+self-hosted" section, which requires a `serve.py` content-type change.
+What shipped is more than a static table entry: a conditional
+(`content_type = ctype if ctype == "font/woff2" else f"{ctype};
+charset=utf-8"`) that is genuine new branching behavior. `tests/
+test_serve.py::test_a_woff2_font_is_served_with_no_charset_parameter`
+now pins it — added specifically because review-final noted the exemption
+above rested on a premise this document itself refuted, and the
+untested branch was exactly the one review-code had just caught being
+wrong once already.
+
+Everything else in this spec is still presentation-only with no
+Python-side decision logic added, so it stays manually verified: load
+the dashboard in a real browser in both the quiet and
+needs-you-non-empty states (as mocked during brainstorming), confirm
+the hero glow only appears in the latter, confirm `<details>`
+opens/closes with both mouse and keyboard, and re-run the contrast
+computation above against the actual shipped hex values before merge —
+all done live during the build and fix rounds; see the plan's own
+`STEP 6` and the fix commit for what was actually run.

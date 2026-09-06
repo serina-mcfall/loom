@@ -711,6 +711,21 @@ class TestHandlerRoutes(unittest.TestCase):
             self._get("/static/definitely-not-here.css")
         self.assertEqual(cm.exception.code, 404)
 
+    def test_a_woff2_font_is_served_with_no_charset_parameter(self):
+        # Pins the one genuinely new piece of Python behavior the UI reskin
+        # added: the content-type table's "css"/"js" entries get a
+        # "; charset=utf-8" suffix (meaningful for text), but "woff2" must
+        # NOT -- a charset parameter is meaningless on a binary font
+        # container, and a first draft appended it unconditionally, keyed
+        # only on the file extension existing at all rather than on whether
+        # the type is text. review-code caught this as a Low finding,
+        # 2026-09-07; nothing in this suite pinned it before or after the
+        # fix, so a future content-type entry (say, "png") could silently
+        # reintroduce the same defect and stay green.
+        with self._get("/static/Lexend-Regular.woff2") as r:
+            self.assertEqual(r.status, 200)
+            self.assertEqual(r.headers.get("Content-Type"), "font/woff2")
+
     def test_the_index_route_serves_the_real_index_html(self):
         # Task 11 built loom/static/index.html; "/" is a live route now, not
         # just a clean-404 placeholder, and nothing else in this suite covers it.

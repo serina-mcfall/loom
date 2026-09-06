@@ -104,6 +104,17 @@ STEP 4  loom.js: Data sources panel becomes a native <details>/<summary>    [nee
         visible now, sitting in the summary itself). renderSources()
         (loom.js:286-292) is unchanged — it only ever mutated the inner
         `<ul>`, which still exists in the same place.
+        CORRECTED (2026-09-07, review-final, after the fix round below):
+        both of the previous paragraph's claims changed shape during the
+        fix round that closed review-a11y's findings, and are false as a
+        description of what actually shipped. The `<summary>` is not bare
+        text — review-a11y found the bare version dropped this panel from
+        heading navigation and the landmark rotor, so it now contains a
+        real `<h3>`, itself wrapped in the same `<section aria-labelledby>`
+        shape every other panel uses. And renderSources() is no longer
+        unchanged: it now takes a third argument (the heading element) and
+        writes a live failing-source count into it. See the design doc's
+        own corrections in "Layout & hierarchy" and "Tests" for why.
         This is the one step that could conceptually run alongside step 3
         or step 5, but does not — see PARALLEL below.
         done when: loading the dashboard shows "Data sources" as a closed-

@@ -461,6 +461,13 @@ function buildRepoSection(repo, i) {
   // free. "Data sources" now lives in a real, visible <h3> inside
   // <summary>, so the old visually-hidden-heading trick is gone AND heading
   // nav still finds it.
+  // Mirrors panel() (above, this file) by hand rather than calling it: the
+  // heading has to live INSIDE <summary>, which panel()'s fixed
+  // section+heading+body shape can't express. If panel() ever changes
+  // (a new class, a new attribute, a different landmark role), this block
+  // needs the same change made twice -- noted here on purpose, since a
+  // silently-skipped panel is exactly the class of bug review-a11y just
+  // found on this one. Found by review-final, 2026-09-07.
   const sources = document.createElement("ul");
   sources.className = "sources";
   const srcHeadingId = `repo-${i}-src-h`;
