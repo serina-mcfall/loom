@@ -335,6 +335,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
+            if self._head:
+                # do_HEAD's do_GET() reuse (see above) does not by itself stop
+                # this route's own infinite loop -- it writes frames directly
+                # to self.wfile with no check of the flag. Returning here,
+                # before the loop is ever entered, is what turns a HEAD to
+                # /events into a fast, honest response instead of a hang of up
+                # to SSE_IDLE_TIMEOUT: never touches _lock or _snapshot.
+                return
             self.connection.settimeout(SSE_IDLE_TIMEOUT)
             try:
                 while True:
