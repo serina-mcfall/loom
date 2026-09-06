@@ -26,15 +26,21 @@ ALREADY TRUE  (verified against git and real repro, not notes)
     fixes this in the same stroke as the undercount, because both defects
     share one root cause: a directory-name string standing in for the files
     inside it.
-  THE GENUINELY MISSED CASE, reproduced live: worktree A has an
-    ALREADY-TRACKED directory (some committed file already lives there) and
-    adds an untracked file to it → git reports the SPECIFIC filename
-    (`?? existingdir/thing.ts`), because git only collapses to a directory
-    name when the ENTIRE directory is untracked. Worktree B creates the
-    SAME logical file inside a BRAND-NEW directory → collapses to
-    `?? newdir/`. Two different strings, no collision detected, even though
-    both worktrees hold the same uncommitted file. This is the one case
-    `-uall` is actually required to fix, not merely "probably right."
+  THE GENUINELY MISSED CASE, reproduced live with the SAME final path in
+    both worktrees (CORRECTED — an earlier draft of this section used two
+    DIFFERENT paths here, existingdir/thing.ts vs newdir/thing.ts, which
+    can never collide under any -u mode and did not demonstrate the defect
+    it claimed to; found by an independent review-plan pass, 2026-09-06):
+    two worktrees on DIVERGENT branches, both adding the identical
+    uncommitted file `shared/thing.ts`. On branch "has-shared-dir",
+    shared/ is ALREADY a tracked directory (committed earlier on that
+    branch), so git reports the specific filename: `?? shared/thing.ts`.
+    On branch "wt-b-fresh", shared/ was never committed at all, so the
+    entire directory is untracked and collapses: `?? shared/`. WITHOUT
+    -uall these are two different strings — no collision detected, even
+    though both worktrees hold the identical uncommitted file. WITH -uall
+    both report `?? shared/thing.ts` — same string, correctly detected.
+    This is the one case `-uall` is actually required to fix.
   `-uall` PERFORMANCE, MEASURED rather than guessed (the issue's own open
     question): timed `git status --porcelain=v1 -z` with and without
     `-uall` on ~/Launchpad/buzz, the largest real checkout on this machine
@@ -47,8 +53,13 @@ ALREADY TRUE  (verified against git and real repro, not notes)
     and does not justify diverging the count path from the collision path
     (which finding M4 deliberately unified into one call).
   The literal command string "git status --porcelain=v1 -z" is hardcoded as
-    a ReplayRunner fixture key in SEVEN call sites across SIX test files —
-    not just the tests that exercise worktree_status directly:
+    a ReplayRunner fixture key in EIGHT call sites across FIVE test files —
+    CORRECTED from an earlier draft's miscount ("seven across six"; the
+    line-by-line list below was always correct, only the prose totals were
+    wrong — found by an independent review-plan pass, 2026-09-06, and
+    reconfirmed by `git grep -o "git status --porcelain=v1 -z" -- 'tests/*'
+    | wc -l` = 8) — not just the tests that exercise worktree_status
+    directly:
       tests/test_gitsrc.py:143, :191
       tests/test_view.py:437
       tests/test_collect.py:157, :289, :458
@@ -56,7 +67,7 @@ ALREADY TRUE  (verified against git and real repro, not notes)
       tests/test_serve.py:245
     ReplayRunner "raises on anything unrecorded, on purpose" (loom/runner.py:47) —
     a plain dict[key_for(argv)] lookup with no .get() fallback. Changing the
-    real command to add `-uall` without updating every one of these seven
+    real command to add `-uall` without updating every one of these eight
     breaks all of them with a KeyError far from the actual cause, in test
     files that have nothing to do with this issue on their face.
   Existing TestWorktreeStatus fixtures all key off a single helper,
@@ -69,20 +80,20 @@ ALREADY TRUE  (verified against git and real repro, not notes)
     fix, matching this codebase's own convention of recording the WHY next
     to the code it explains, not only in the issue.
 
-STEP 1  loom/gitsrc.py: add -uall, update the seven fixture call sites      [independent]  ← RUNS HERE
+STEP 1  loom/gitsrc.py: add -uall, update the eight fixture call sites      [independent]  ← RUNS HERE
         Change the invocation at loom/gitsrc.py:122 to
         `["git", "status", "--porcelain=v1", "-z", "-uall"]`. Add a comment
         stating WHY (untracked directories collapse to their own name
         without it, undercounting rank 5 and hiding collisions — cite this
         issue number) and the measured cost from ALREADY TRUE, so the next
         reader does not have to re-derive or re-measure it.
-        Update the fixture key in ALL SEVEN call sites named in ALREADY TRUE
+        Update the fixture key in ALL EIGHT call sites named in ALREADY TRUE
         to end in ` -uall`, including tests/test_gitsrc.py's shared
         `_status()` helper (which covers the bulk of TestWorktreeStatus by
         itself).
         done when: `python3 -m unittest discover -s tests` passes with ONLY
-        the eight fixture-key edits (loom/gitsrc.py's real invocation plus
-        the seven test call sites) and no other test content changed; a live
+        the nine fixture-key edits (loom/gitsrc.py's real invocation plus
+        the eight test call sites) and no other test content changed; a live
         two-worktree repro (recreating the "asymmetric tracked state" case
         from ALREADY TRUE, real git, real temp worktrees, not a fixture)
         run through the REAL worktree_status() now reports `paths` containing
@@ -107,10 +118,35 @@ STEP 2  tests/test_gitsrc.py: worktree_status-level tests for the three     [nee
             directory do NOT collide — the negative control this plan's own
             live repro found (the false-positive defect), proving the fix
             does not trade an undercount for an over-report
-        done when: all three pass, and reverting step 1's `-uall` flag alone
-        (leaving everything else in place) makes at least the first and
-        second fail — proving they exercise the actual fix, not merely the
-        existing parsing logic.
+        FIXTURE DESIGN, corrected after an independent review-plan pass
+        (2026-09-06) found the original falsifiability check does not work:
+        "revert step 1's flag, confirm the test now fails" cannot mean
+        "change the code's argv back to the un-suffixed key" while the
+        fixture dict only has an entry for the -uall-suffixed key —
+        ReplayRunner's dict lookup then raises KeyError before a single
+        line of parsing runs (confirmed live: `worktree_status()` against a
+        fixture keyed only on "... -uall" crashes with
+        `KeyError: 'git status --porcelain=v1 -z'` the moment the code is
+        reverted to ask for the un-suffixed key), which is not the
+        assertion failure the done-when claimed and proves nothing about
+        parsing logic either way.
+        EACH of the three fixtures below MUST register BOTH command
+        strings — "git status --porcelain=v1 -z" (the pre-fix key) AND
+        "git status --porcelain=v1 -z -uall" (the post-fix key) — with the
+        REAL git output for each, as verified live in ALREADY TRUE (e.g.
+        for the undercount case: the pre-fix key's stdout is the collapsed
+        "?? shared/\0", the post-fix key's stdout is the expanded per-file
+        lines). This way reverting step 1's code (making it request the
+        pre-fix key again) makes the SAME fixture return the SAME real
+        pre-fix data it would have from actual git — a meaningful
+        assertion failure (asserting a real filename, getting a collapsed
+        directory name instead), not a crash from a missing dict entry.
+        done when: all three pass against the post-fix key's data, AND —
+        with step 1's code reverted to the pre-fix invocation, the SAME
+        three fixtures (both keys still present, nothing else changed)
+        make at least the first and second test fail on a real, specific
+        assertion (wrong count, wrong path, or a collision going
+        undetected) — never a KeyError, never an error of any kind.
 
 STEP 3  tests/test_gitsrc.py: end-to-end collisions() proof, not just       [needs 1, 2]
         worktree_status() in isolation
@@ -123,9 +159,16 @@ STEP 3  tests/test_gitsrc.py: end-to-end collisions() proof, not just       [nee
         one level down. The test's own docstring states what the PRE-fix
         code returned against this exact fixture (zero collisions), so the
         test's purpose survives after the fix looks unremarkable.
-        done when: the test passes, and its docstring's stated pre-fix
-        behaviour is itself verified by temporarily reverting step 1's flag
-        and confirming the assertion flips to zero collisions found.
+        Uses the SAME both-keys fixture design step 2 specifies (the
+        pre-fix and post-fix command strings both registered, real output
+        for each) — for the same reason: reverting step 1's code must
+        produce a real "zero collisions found" assertion result, not a
+        KeyError from a fixture that only knows the post-fix key.
+        done when: the test passes against the post-fix key's data, and its
+        docstring's stated pre-fix behaviour is itself verified — with step
+        1's code reverted and the SAME fixture (both keys present) — by
+        confirming the assertion actually flips to zero collisions found,
+        never an error.
 
 PARALLEL  None of these three can be dispatched as independent subagents.
           Step 2 and step 3 both depend on step 1's flag existing before
