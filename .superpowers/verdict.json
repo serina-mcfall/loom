@@ -1,10 +1,10 @@
 {
   "state": "READY",
-  "sha": "0a916fcc9af88579366ba79fb218a933f80088a5",
-  "plan": "2026-08-17-issue-11-tokens-cost-panel.md",
-  "recorded_at": "2026-09-06T09:58:52+12:00",
+  "sha": "7d5b5dfd14555914c397fb9ca93a72510871d3ee",
+  "plan": "2026-09-06-issue-14-stale-verdict-gate.md",
+  "recorded_at": "2026-09-06T20:56:10+12:00",
   "checks": {
-    "ledger": "pass",
-    "test_cmd": "not-run"
+    "ledger": "pass (manual: check-ledger.sh's task-heading regex does not match this repo's STEP-N plan format -- mechanical exit is FAIL against every plan-issue plan, including this one and issue #11's; read .superpowers/sdd/2026-09-06-issue-14-stale-verdict-gate/progress.md directly, which maps Task N: complete lines onto the plan's STEP N sections with commit shas and records what each review round found)",
+    "test_cmd": "python3 -m unittest discover -s tests (366 tests, OK); mypy --strict --allow-any-generics loom/ loom_cli.py hooks/ scripts/ (clean)"
   }
 }

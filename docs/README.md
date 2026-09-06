@@ -44,6 +44,16 @@ would log every difference as drift.
 An audit describes the tree **at the commit it was run against**. Read the remediation
 log beside it, or you will be reading a list of problems that have since been fixed.
 
+## Plans — what was built, and how it was reviewed before it was
+
+| Document | What it is |
+|---|---|
+| [`plans/2026-08-17-issue-11-tokens-cost-panel.md`](plans/2026-08-17-issue-11-tokens-cost-panel.md) | The tokens-and-cost panel (issue #11), step-by-step, with its review-plan revision history |
+| [`plans/2026-09-06-issue-14-stale-verdict-gate.md`](plans/2026-09-06-issue-14-stale-verdict-gate.md) | Distinguishing "never reviewed" from "reviewed, then diverged" in the verdict gate (issue #14), step-by-step, with its review-plan revision history |
+
+A plan describes what was **intended** before the build started, not what shipped —
+read it beside the code, the same way an audit is read beside its remediation log.
+
 ## Archived — history, not documentation
 
 | Document | What it is |
