@@ -1,10 +1,10 @@
 {
   "state": "READY",
-  "sha": "0501255c55a2e71a02cef4b302596969f2027a59",
-  "plan": "2026-09-06-issue-17-untracked-dir-counting.md",
-  "recorded_at": "2026-09-07T07:33:07+12:00",
+  "sha": "c7e8c9b5b2dc847c1f75dabce2d083de3adfb0b4",
+  "plan": "2026-09-07-loom-ui-reskin.md",
+  "recorded_at": "2026-09-07T10:48:57+12:00",
   "checks": {
-    "ledger": "pass (manual: check-ledger.sh's task-heading regex does not match this repo's STEP-N plan format -- mechanical exit is FAIL against every plan-issue plan, including this one and issue #11's; read .superpowers/sdd/2026-09-06-issue-17-untracked-dir-counting/progress.md directly, which maps Task N: complete lines onto the plan's STEP N sections with commit shas and records what each review round found)",
-    "test_cmd": "python3 -m unittest discover -s tests (374 tests, OK, after merging origin/main which brought in issue #14's 19 and issue #15's tests); mypy --strict --allow-any-generics loom/ loom_cli.py hooks/ scripts/ (clean)"
+    "ledger": "pass (check-ledger.sh docs/plans/2026-09-07-loom-ui-reskin.md: plan declares 6 tasks, ledger found at .superpowers/sdd/2026-09-07-loom-ui-reskin/progress.md, all 6 have a Task N: complete line); read the ledger directly for what each review round found and fixed -- 1 Blocker + 5 Medium + 5 Low from review-code/review-a11y/review-adjudicate against the build commits, then 1 Blocker + 1 High + 3 Medium + 1 Low from review-final against the whole branch, all closed",
+    "test_cmd": "python3 -m unittest discover -s tests (375 tests, OK -- 374 from the build, +1 new: test_a_woff2_font_is_served_with_no_charset_parameter, added closing a review-final finding); mypy NOT run this session (no pip/mypy available in this environment) -- the one Python change (serve.py's ctype ternary between two string literals) is trivially typed, and CI's separate `types` job still runs it on push"
   }
 }
