@@ -73,7 +73,7 @@ ALREADY TRUE  (verified against git and real repro, not notes)
   Existing TestWorktreeStatus fixtures all key off a single helper,
     `_status(out)` (tests/test_gitsrc.py:140-144), so updating that one
     helper's fixture key fixes every test built on it (tests/test_gitsrc.py:
-    146-401ish) in one place — the seven-site list above is what's outside
+    146-401ish) in one place — the eight-site list above is what's outside
     that helper's reach.
   Neither the issue nor loom/gitsrc.py's own docstrings currently document
     that `-uall` exists or why — this plan adds that comment as part of the
@@ -118,57 +118,91 @@ STEP 2  tests/test_gitsrc.py: worktree_status-level tests for the three     [nee
             directory do NOT collide — the negative control this plan's own
             live repro found (the false-positive defect), proving the fix
             does not trade an undercount for an over-report
-        FIXTURE DESIGN, corrected after an independent review-plan pass
-        (2026-09-06) found the original falsifiability check does not work:
-        "revert step 1's flag, confirm the test now fails" cannot mean
-        "change the code's argv back to the un-suffixed key" while the
-        fixture dict only has an entry for the -uall-suffixed key —
-        ReplayRunner's dict lookup then raises KeyError before a single
-        line of parsing runs (confirmed live: `worktree_status()` against a
-        fixture keyed only on "... -uall" crashes with
-        `KeyError: 'git status --porcelain=v1 -z'` the moment the code is
-        reverted to ask for the un-suffixed key), which is not the
-        assertion failure the done-when claimed and proves nothing about
-        parsing logic either way.
-        EACH of the three fixtures below MUST register BOTH command
-        strings — "git status --porcelain=v1 -z" (the pre-fix key) AND
-        "git status --porcelain=v1 -z -uall" (the post-fix key) — with the
-        REAL git output for each, as verified live in ALREADY TRUE (e.g.
-        for the undercount case: the pre-fix key's stdout is the collapsed
-        "?? shared/\0", the post-fix key's stdout is the expanded per-file
-        lines). This way reverting step 1's code (making it request the
-        pre-fix key again) makes the SAME fixture return the SAME real
-        pre-fix data it would have from actual git — a meaningful
-        assertion failure (asserting a real filename, getting a collapsed
-        directory name instead), not a crash from a missing dict entry.
-        done when: all three pass against the post-fix key's data, AND —
-        with step 1's code reverted to the pre-fix invocation, the SAME
-        three fixtures (both keys still present, nothing else changed)
-        make at least the first and second test fail on a real, specific
-        assertion (wrong count, wrong path, or a collision going
-        undetected) — never a KeyError, never an error of any kind.
+        FIXTURE DESIGN splits into two shapes, because ONE worktree and TWO
+        worktrees need different constructions — conflating them was found
+        broken by a second independent review-plan pass (2026-09-06).
+        TEST 1 (single worktree, the undercount case) uses the ORIGINAL
+        both-keys design: a ReplayRunner registering BOTH "git status
+        --porcelain=v1 -z" (pre-fix key) AND "... -uall" (post-fix key),
+        each with the REAL git output verified in ALREADY TRUE. Reverting
+        step 1's code makes it request the pre-fix key again, and the SAME
+        fixture returns the SAME real pre-fix data — a meaningful assertion
+        failure (wrong count, collapsed path), never a KeyError. This part
+        still works exactly as designed; only tests 2 and 3 below needed
+        fixing.
+        TESTS 2 AND 3 (two worktrees, asymmetric or false-positive) CANNOT
+        use one shared ReplayRunner for both worktrees — found live:
+        ReplayRunner's key is `key_for(argv) = " ".join(argv)`
+        (loom/runner.py:42-43), which does NOT include `cwd`. One shared
+        runner therefore returns the IDENTICAL stdout to both worktrees for
+        the identical command, which cannot express "worktree A sees the
+        specific filename, worktree B sees the collapsed directory" — the
+        entire point of both tests. (This is also why the file's own
+        existing test_two_trees_touching_the_same_files_collide shares one
+        runner: it WANTS both worktrees to see the same thing. These two
+        new tests want the opposite, so they cannot copy that pattern.)
+        Instead: construct each worktree's Status object DIRECTLY —
+        `Status(dirty=Dirty(...), paths=frozenset({...}))` — using the
+        REAL per-worktree values verified live in ALREADY TRUE's divergent-
+        branch repro (worktree A: `{"shared/thing.ts"}`; worktree B
+        pre-fix: `{"shared/"}`, post-fix: `{"shared/thing.ts"}`), rather
+        than deriving them through worktree_status() at all. Verified this
+        construction actually produces the claimed collisions() results:
+        passing both hand-built Status objects through the real
+        `statuses` dict parameter, with one ordinary shared runner
+        supplying only the merge-base/diff calls (identical across both
+        worktrees, which is fine — only the untracked-status paths need to
+        differ, and touched_files() skips re-deriving those when a `status`
+        is already supplied) gives `[]` collisions for the pre-fix pair and
+        one real collision for the post-fix pair, exactly as intended.
+        done when: test 1 passes against the post-fix key's data, and with
+        step 1's code reverted (same fixture, both keys present) fails on a
+        real, specific assertion — never a KeyError. Tests 2 and 3, built
+        from hand-constructed per-worktree Status objects (not a shared
+        ReplayRunner), pass against the post-fix values. Substituting each
+        test's PRE-fix Status values (also hand-constructed from the same
+        ALREADY TRUE data, never re-derived) in place of the post-fix ones
+        must flip BOTH: test 2 from one real collision found to zero (the
+        missed-detection direction), and test 3 from zero to ONE FALSE
+        collision found on "shared/" — verified live, pre-fix values
+        collide on the collapsed directory name even though the real files
+        (alpha.ts vs beta.ts) never do. Test 3 existing as a negative
+        control does NOT mean it stays zero under both fixture states; it
+        means it correctly reads zero post-fix and correctly reads a
+        (false) one pre-fix — if it read zero under BOTH, it would not be
+        exercising the fix at all.
 
 STEP 3  tests/test_gitsrc.py: end-to-end collisions() proof, not just       [needs 1, 2]
         worktree_status() in isolation
         One new test on the existing collisions()-level test group (beside
         test_two_trees_touching_the_same_files_collide) using the
-        asymmetric-tracked-state fixture from step 2's second case, run
+        asymmetric-tracked-state Status objects from step 2's test 2, run
         through the real collisions(runner, trees, base, statuses) function
         with two real Worktree entries — proving the fix reaches the actual
         matrix collect.py wires into a snapshot, not only the Status object
         one level down. The test's own docstring states what the PRE-fix
         code returned against this exact fixture (zero collisions), so the
         test's purpose survives after the fix looks unremarkable.
-        Uses the SAME both-keys fixture design step 2 specifies (the
-        pre-fix and post-fix command strings both registered, real output
-        for each) — for the same reason: reverting step 1's code must
-        produce a real "zero collisions found" assertion result, not a
-        KeyError from a fixture that only knows the post-fix key.
-        done when: the test passes against the post-fix key's data, and its
-        docstring's stated pre-fix behaviour is itself verified — with step
-        1's code reverted and the SAME fixture (both keys present) — by
-        confirming the assertion actually flips to zero collisions found,
-        never an error.
+        FIXTURE, corrected the same way step 2's tests 2 and 3 were —
+        found by a second independent review-plan pass (2026-09-06) that a
+        SHARED ReplayRunner cannot give the two worktrees different status
+        output (ReplayRunner keys on argv only, not cwd; verified live: a
+        shared runner here collapses both worktrees to the SAME collapsed
+        "shared/" pre-fix, which — unlike test 2's genuinely-missed case —
+        actually DOES register as a collision on the directory name, the
+        wrong result for the wrong reason, not the "zero collisions" the
+        test needs). Pass the two hand-built Status objects (one per
+        worktree, from step 2's test 2 data) through collisions()'s
+        `statuses` parameter directly; a single ordinary runner supplies
+        only the merge-base/diff calls, which are identical across both
+        worktrees here and need no per-worktree variance. Verified live
+        this construction gives [] for the pre-fix pair and one real
+        collision for the post-fix pair.
+        done when: the test passes against the post-fix Status pair, and
+        its docstring's stated pre-fix behaviour is itself verified — with
+        the SAME two hand-built Status objects swapped for their pre-fix
+        values (never re-derived through a runner) — by confirming the
+        assertion actually flips to zero collisions found.
 
 PARALLEL  None of these three can be dispatched as independent subagents.
           Step 2 and step 3 both depend on step 1's flag existing before
@@ -187,12 +221,21 @@ GATES     review-code and review-tests apply to the whole diff once step 3
           those worktrees — a real-world sanity check no unit test fixture
           can substitute for.
 
-BUDGET    Step 1 is the step most likely to eat the budget — not the
-          one-line git-invocation change itself, but finding and correctly
-          updating all seven fixture call sites. Missing even one produces a
-          KeyError failure in a test file this issue has nothing else to do
-          with, which reads as an unrelated regression rather than what it
-          actually is.
+BUDGET    Step 1 is A budget risk — not the one-line git-invocation change
+          itself, but finding and correctly updating all eight fixture call
+          sites. Missing even one produces a KeyError failure in a test file
+          this issue has nothing else to do with, which reads as an
+          unrelated regression rather than what it actually is.
+          THE BIGGER RISK, found by a second independent review-plan pass
+          (2026-09-06): ReplayRunner keys on argv alone — `key_for(argv) =
+          " ".join(argv)` (loom/runner.py:42-43) — NOT on cwd, so one
+          shared runner instance cannot give two different worktrees two
+          different outputs for the identical git-status command. Steps 2
+          and 3's multi-worktree tests must build each worktree's Status
+          object from its OWN isolated runner (or construct Status directly
+          by hand) and pass the results through collisions()'s `statuses`
+          dict, never share one runner across worktrees that need to look
+          different. See steps 2 and 3's own corrected fixture text.
 
 OPEN      None. The issue's own open question — whether `-uall`'s cost
           justifies diverging the count path from the collision path — is
