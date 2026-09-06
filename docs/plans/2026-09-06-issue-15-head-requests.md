@@ -30,9 +30,18 @@ ALREADY TRUE  (verified against git and a live run, not notes)
     (shutdown/server_close/thread.join), with a self._get(path) helper over
     urllib.request.urlopen for ordinary GET assertions and raw-socket reads
     for /events specifically (test_events_streams_a_schema_one_frame_
-    immediately, at :718-738, reads exactly up to the header/body boundary
-    — the same technique step 2 below needs, already established here, not
-    invented for this issue). The earlier claim came from grepping this file
+    immediately, at :718-738). CORRECTED — an earlier draft of this line
+    said that method "reads exactly up to the header/body boundary," the
+    same technique step 2 needs; found false by a fourth independent
+    review-plan pass (2026-09-06), and this was a live contradiction with
+    step 3's own text, not just an inaccuracy: the real loop is
+    `while b"\r\n\r\n" not in data or len(data.split(b"\r\n\r\n", 1)[1]) <
+    20`, which reads the header AND at least 20 bytes of BODY — step 3
+    already says so correctly and explicitly forbids reusing this combined
+    loop for HEAD. This line agreed with step 3 in effect but described the
+    method wrong, which is exactly the kind of thing that reads fine on its
+    own and only breaks if an implementer trusts this section before
+    reaching step 3's own, correct instruction. The earlier claim came from grepping this file
     and only reading the first 40 lines of that grep's output, which ended
     before line 626. This plan now EXTENDS TestHandlerRoutes rather than
     building a second, duplicate server lifecycle beside it.
