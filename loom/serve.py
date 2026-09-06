@@ -321,7 +321,13 @@ class Handler(BaseHTTPRequestHandler):
             ctype = {"css": "text/css", "js": "text/javascript",
                       "woff2": "font/woff2"}.get(
                 name.rsplit(".", 1)[-1], "text/plain")
-            self._send_file(target, f"{ctype}; charset=utf-8")
+            # `charset` describes TEXT encoding and is meaningless on a binary
+            # container -- appending it unconditionally shipped `font/woff2;
+            # charset=utf-8` for every font response, which the plan's own
+            # done-when specified as plain `font/woff2`. Found by
+            # review-code, 2026-09-07.
+            content_type = ctype if ctype == "font/woff2" else f"{ctype}; charset=utf-8"
+            self._send_file(target, content_type)
         elif self.path == "/snapshot.json":
             with _lock:
                 snap = _snapshot

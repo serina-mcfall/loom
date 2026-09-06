@@ -80,7 +80,11 @@ STEP 2  loom.css: replace the :root palette, rank ramp, and font stack      [nee
 STEP 3  loom.css + loom.js: needs-you hero, glowing only when non-empty     [needs 2]
         Add CSS for `.panel--needs` (larger padding, larger item type) and
         a second, additive rule for `.panel--needs.is-active` (the static
-        — no animation — radial glow in lantern/magnolia). Modify
+        — no animation — radial glow in lantern, corrected from an earlier
+        two-hue "lantern/magnolia" description: --magnolia went unused in
+        what actually shipped and was removed rather than wired in, to
+        avoid re-risking the contrast margin review-a11y found and fixed
+        2026-09-07). Modify
         renderNeeds() (loom.js:91-111) to toggle `is-active` on the
         section ancestor: `list.closest("section").classList.toggle(
         "is-active", items.length > 0)`.

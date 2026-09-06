@@ -138,10 +138,19 @@ Two structural changes, both scoped to stay inside the current DOM shape:
 (`section.panel--needs`, already first in the DOM and in reading order) —
 no reordering needed, no reworked landmark structure. The change is CSS
 only: larger padding and type for the item text, and a **static** (no
-motion) radial glow in lantern/magnolia that appears only when
+motion) radial glow in lantern that appears only when
 `needs_you` is non-empty. When the fleet is quiet, the panel stays calm and
 flat — the glow is a signal of urgency, not decoration, so it must not be
 always-on.
+
+**Correction (2026-09-07, caught by review-a11y during the review gate):**
+this originally described a two-hue "lantern/magnolia" glow. Only lantern
+shipped — `--magnolia` was defined but never referenced. Rather than wire
+the second hue in after the fact, it was removed: the review that caught
+this also found the chip badges (see "Layout & hierarchy" below) shipped a
+real WCAG AA failure from an under-verified composited color, and adding a
+second translucent hue to the hero's own composited gradient risked the
+same class of mistake for a purely cosmetic gain.
 
 **Data sources collapses into a native `<details>`/`<summary>`.** This is
 the one panel that's pure diagnostics (git/gh/tmux health) — rarely

@@ -293,12 +293,26 @@ function renderLoose(list, flags) {
   }
 }
 
-function renderSources(list, sources) {
+/** `heading` is the closed-by-default <details>'s visible <h3>, inside its
+ *  <summary>. A failing source used to be a Python-side "honesty channel"
+ *  (loom/collect.py, audit finding H3): a per-worktree failure must never
+ *  render as a confident number with no explanation nearby. Folding this
+ *  panel shut (this reskin) re-created exactly that hole -- a real failure
+ *  sat inside collapsed content, invisible until a manual click. Appending
+ *  the failing count to the heading restores the signal WITHOUT forcing
+ *  `open`, which would fight a user who closed it on purpose and could
+ *  steal focus. Found by review-a11y, 2026-09-07. */
+function renderSources(list, sources, heading) {
   list.replaceChildren();
+  let failing = 0;
   for (const s of sources) {
+    if (!s.ok) failing++;
     list.append(text("li", s.ok ? `✓ ${s.name}` : `✕ ${s.name}: ${s.error}`,
                      s.ok ? "src--ok" : "src--bad"));
   }
+  heading.textContent = failing > 0
+    ? `Data sources — ${failing} failing`
+    : "Data sources";
 }
 
 function renderTicker(ol, commits) {
@@ -437,31 +451,48 @@ function buildRepoSection(repo, i) {
   panels.append(panel(`repo-${i}-loose-h`, "Loose ends", "h3",
                       capBox(`repo-${i}-loose-h`, loose)));
 
-  // Native <details>/<summary> instead of panel()'s <section>+heading shape:
-  // this is the one panel that's pure diagnostics, rarely useful unless
-  // something's broken, so it opens on demand rather than sitting open by
-  // default like every other panel. The native element is keyboard-operable
-  // and correctly announced with zero custom ARIA -- it already IS the W3C
-  // APG disclosure pattern. "Data sources" now lives in <summary>, genuinely
-  // visible, so the old visually-hidden heading trick is gone.
+  // Native <details>/<summary> for the toggle, inside the SAME
+  // <section aria-labelledby>+<h3> shape every other panel uses -- a first
+  // draft dropped both the heading and the landmark region entirely (found
+  // by review-a11y, 2026-09-07: heading navigation and the landmark rotor
+  // both lost this panel, even though it stayed in reading/Tab order). The
+  // <details>/<summary> still is the disclosure: keyboard-operable and
+  // correctly announced with zero custom ARIA, the W3C APG pattern for
+  // free. "Data sources" now lives in a real, visible <h3> inside
+  // <summary>, so the old visually-hidden-heading trick is gone AND heading
+  // nav still finds it.
   const sources = document.createElement("ul");
   sources.className = "sources";
+  const srcHeadingId = `repo-${i}-src-h`;
+  const srcHeading = text("h3", "Data sources");
+  srcHeading.id = srcHeadingId;
+  const srcSummary = document.createElement("summary");
+  srcSummary.append(srcHeading);
   const srcDetails = document.createElement("details");
-  srcDetails.className = "panel";
-  srcDetails.append(text("summary", "Data sources"), sources);
-  panels.append(srcDetails);
+  srcDetails.append(srcSummary, sources);
+  const srcSection = document.createElement("section");
+  srcSection.className = "panel";
+  srcSection.setAttribute("aria-labelledby", srcHeadingId);
+  srcSection.append(srcDetails);
+  panels.append(srcSection);
 
   section.append(panels);
   return {
     section,
     refs: { heading, meta, treesBody: treesTable.tBodies[0], collTable, prsBox,
-            ticker, loose, sources },
+            ticker, loose, sources, srcHeading },
   };
 }
 
 // Skeletons are rebuilt ONLY when the set of repo names changes. Rebuilding every
 // tick would move focus to <body> every 2 seconds for anyone tabbed into a scroll
-// container -- introducing an accessibility defect while fixing one.
+// container -- introducing an accessibility defect while fixing one. This is a
+// narrow, already-accepted limitation, not a new one: a rebuild already resets
+// scroll position in the capped/scroll regions, and now also resets the Data
+// sources <details> to closed and drops focus if it was on the summary --
+// found by review-a11y, 2026-09-07, and left as-is: it fires only when a repo
+// appears, disappears, or is renamed in config, the same rare trigger the
+// scroll-position loss already accepted.
 let renderedKey = null;
 let repoRefs = new Map();
 
@@ -499,7 +530,7 @@ function syncRepos(repos) {
     renderPrs(r.prsBox, repo);
     renderTicker(r.ticker, repo.commits);
     renderLoose(r.loose, repo.flags);
-    renderSources(r.sources, repo.sources);
+    renderSources(r.sources, repo.sources, r.srcHeading);
   }
 }
 
