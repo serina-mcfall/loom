@@ -22,17 +22,28 @@ ALREADY TRUE  (verified against git and a live run, not notes)
     loops forever inside `while True:` writing SSE frames on `_lock`-protected
     `_snapshot` state until the client disconnects or SSE_IDLE_TIMEOUT (30s,
     loom/serve.py:23) elapses (loom/serve.py:315-334+)
-  No existing test in tests/test_serve.py starts a real HTTP server and hits
-    it with a real client — every test there either calls a pure function
-    directly (_should_include_gh, _apply_gh_cache, _refresh_step) or mocks
-    threading.Thread/socket binding without exercising Handler's routing.
-    Confirmed by reading every class in the file. A real-server test is new
-    infrastructure for this suite, not a pattern to copy.
-  ThreadingHTTPServer((host, port), Handler) is the exact constructor
-    run_server() already uses in production (loom/serve.py:357) — a test can
-    construct the same class directly with ("127.0.0.1", 0) to get an
-    OS-assigned free port, then read the real port back off
-    server.server_address[1]
+  CORRECTION — an earlier draft of this section claimed no real-server test
+    existed anywhere in this suite. FALSE, found by an independent
+    review-plan pass (2026-09-06): tests/test_serve.py:626-806 already
+    defines TestHandlerRoutes, a real ThreadingHTTPServer(("127.0.0.1", 0),
+    Handler) started in setUp() on a daemon thread, torn down in tearDown()
+    (shutdown/server_close/thread.join), with a self._get(path) helper over
+    urllib.request.urlopen for ordinary GET assertions and raw-socket reads
+    for /events specifically (test_events_streams_a_schema_one_frame_
+    immediately, at :718-738, reads exactly up to the header/body boundary
+    — the same technique step 2 below needs, already established here, not
+    invented for this issue). The earlier claim came from grepping this file
+    and only reading the first 40 lines of that grep's output, which ended
+    before line 626. This plan now EXTENDS TestHandlerRoutes rather than
+    building a second, duplicate server lifecycle beside it.
+  urllib.request.Request(url, method="HEAD") is the correct way to issue a
+    HEAD through the SAME self._get()-style call this class already uses —
+    confirmed live: req.get_method() returns "HEAD" as constructed. No new
+    HTTP client mechanism is needed for the three _send-routed paths; only
+    /events needs the raw-socket approach, and only because its response has
+    neither Content-Length nor chunked encoding by design (the existing
+    class's own comment at :719-723 explains why urllib can't be used there
+    at all, for GET or HEAD alike).
   README.md documents the test count in its "Running the tests" section
     (currently 347, per the prior branch's own fix) — this plan will move it
     again once new tests land
@@ -107,29 +118,34 @@ STEP 2  loom/serve.py: /events answers HEAD without entering the SSE loop   [nee
         reading at least one frame with a socket-level timeout before
         closing the connection.
 
-STEP 3  tests/test_serve.py: cover all four routes, both methods           [needs 1, 2]
-        A new test class spins up the real server (see ALREADY TRUE) once per
-        test method and tears it down afterward. "/", "/static/loom.css",
-        and "/snapshot.json" use http.client.HTTPConnection for both GET and
-        HEAD — Content-Length/body comparisons are all that's needed there.
-        "/events" is DIFFERENT and MUST use a raw socket for its HEAD case,
-        per step 2's done-when — http.client cannot tell a stopped loop from
-        a running one on a HEAD request, so reusing it here would silently
-        re-introduce the unfalsifiable check the independent review-plan
-        pass on step 2 already rejected.
-        Fixture note: "/snapshot.json" and "/events" both read module-level
-        _snapshot state (loom/serve.py:30) — set it explicitly in each test
-        via the same _lock the handler uses, never relying on whatever a
-        previous test left behind, so tests cannot pass or fail depending on
-        run order.
-        done when: `python3 -m unittest tests.test_serve` passes with new
-        cases covering — HEAD vs GET Content-Length parity on "/" and
+STEP 3  tests/test_serve.py: EXTEND TestHandlerRoutes, do not duplicate it  [needs 1, 2]
+        ADD new test methods to the EXISTING TestHandlerRoutes class
+        (:626-806) — it already owns the server lifecycle this issue needs,
+        per ALREADY TRUE's correction. Do not build a second class with its
+        own setUp/tearDown; that would run two real servers' worth of
+        lifecycle for one feature and is exactly the mistake an earlier
+        draft of this plan would have caused by claiming (wrongly) that no
+        such class existed yet.
+        Add a self._head(path) helper beside the existing self._get(path)
+        (:644-645), built on urllib.request.Request(url, method="HEAD") —
+        confirmed live this returns a request whose get_method() is "HEAD".
+        New methods, following this class's own existing naming and
+        assertion style: HEAD vs GET Content-Length parity on "/" and
         "/static/loom.css"; HEAD to "/snapshot.json" honouring the 200/503
-        collected-or-not rule from step 1's done-when; HEAD to "/events" per
-        step 2's done-when; and a genuinely unsupported method (e.g. DELETE)
-        to "/" still returns 501, proving this change did not accidentally
-        widen what the server accepts. README.md's test count comment is
-        updated to match the new total.
+        collected-or-not rule from step 1's done-when (reusing this class's
+        existing pattern of setting serve._snapshot directly before the
+        request, as test_snapshot_json_is_503_before_the_first_collection_
+        completes already does); HEAD to "/events" per step 2's done-when,
+        built as a small variation on this class's OWN
+        test_events_streams_a_schema_one_frame_immediately (:718-738) —
+        same raw-socket connect and header-read, HEAD instead of GET in the
+        request line, then the short-timeout follow-up read step 2
+        specifies; and a genuinely unsupported method (e.g. DELETE) to "/"
+        still returns 501, proving this change did not accidentally widen
+        what the server accepts.
+        done when: `python3 -m unittest tests.test_serve` passes with these
+        new methods added to TestHandlerRoutes (not a new class), and
+        README.md's test count comment is updated to match the new total.
 
 PARALLEL  None of these three can run as independent subagents: step 2 edits
           the same function do_GET touches conceptually and the same file as
