@@ -206,7 +206,6 @@ class TestWorktreeStatus(unittest.TestCase):
         1's code change makes this fail on a real assertion (untracked=1, one
         collapsed path) rather than a KeyError.
         """
-        from loom.gitsrc import worktree_status
         runner = ReplayRunner({
             "git status --porcelain=v1 -z":
                 {"returncode": 0, "stdout": "?? newfeature/\0", "stderr": ""},

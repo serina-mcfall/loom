@@ -135,6 +135,17 @@ def worktree_status(runner: Runner, path: str) -> Status | None:
     warm-cache steady state costs roughly 1-3 hundredths of a second more per
     worktree -- real, but small, and not worth diverging this call from the
     collisions path (finding M4) over.
+
+    STILL COLLAPSES ONE CASE: a directory holding its own `.git` (a nested
+    repository, e.g. a stopped agent's own worktree checkout sitting
+    untracked inside another). `-uall` asks git to descend into untracked
+    directories, and git will not descend into one that is itself a repo --
+    confirmed live against this repository's own `.claude/worktrees/*`
+    entries, each collapsing to `?? .claude/worktrees/agent-.../` rather
+    than expanding. Both consequences above still apply to that shape; this
+    is a limit of git, not a gap this fix left unclosed for the case it was
+    filed against (issue #17's repro was a plain new directory, not a nested
+    checkout).
     """
     r = runner.run(["git", "status", "--porcelain=v1", "-z", "-uall"], cwd=path)
     if not r.ok:

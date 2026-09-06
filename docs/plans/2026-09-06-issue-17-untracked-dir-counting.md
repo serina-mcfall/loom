@@ -146,6 +146,20 @@ STEP 2  tests/test_gitsrc.py: worktree_status-level tests for the three     [nee
         existing test_two_trees_touching_the_same_files_collide shares one
         runner: it WANTS both worktrees to see the same thing. These two
         new tests want the opposite, so they cannot copy that pattern.)
+        CORRECTED post-build, by an independent review-final pass
+        (2026-09-06): this hand-built-Status design is what actually
+        shipped in ce26e33, and review-code/review-tests then found it
+        unfalsifiable -- both tests passed unchanged with step 1's -uall
+        flag fully reverted, because neither called the real
+        worktree_status() at all. Commit 8d605e7 replaced it: each
+        worktree gets its OWN ReplayRunner carrying BOTH the pre-fix and
+        post-fix command keys with real captured output, and Status is
+        derived through the REAL worktree_status() (see
+        tests/test_gitsrc.py:250,
+        test_asymmetric_tracked_state_now_collides_through_the_real_matrix).
+        The paragraph below is what this plan originally called for and is
+        kept for its own record, but it is NOT what shipped -- read it as
+        history, not as the current design.
         Instead: construct each worktree's Status object DIRECTLY —
         `Status(dirty=Dirty(...), paths=frozenset({...}))` — using the
         REAL per-worktree values verified live in ALREADY TRUE's divergent-
@@ -188,6 +202,14 @@ STEP 3  tests/test_gitsrc.py: end-to-end collisions() proof, not just       [nee
         one level down. The test's own docstring states what the PRE-fix
         code returned against this exact fixture (zero collisions), so the
         test's purpose survives after the fix looks unremarkable.
+        CORRECTED post-build, same as step 2 above: this test's design was
+        absorbed into step 2's rewrite rather than surviving as its own
+        commit -- 8d605e7 deleted a byte-identical duplicate of it from
+        TestCollisions and kept the rewritten version inside
+        TestWorktreeStatus instead (see the note at step 2). There is no
+        separate collisions()-level test in TestCollisions for this fix
+        as a result; the coverage is real, but it does not live where this
+        step originally said it would.
         FIXTURE, corrected the same way step 2's tests 2 and 3 were —
         found by a second independent review-plan pass (2026-09-06) that a
         SHARED ReplayRunner cannot give the two worktrees different status

@@ -40,6 +40,20 @@ class SubprocessRunner:
 
 
 def key_for(argv: Sequence[str]) -> str:
+    # ARGV ONLY -- DELIBERATELY BLIND TO cwd. A single ReplayRunner instance
+    # therefore cannot give two different simulated worktrees two different
+    # outputs for the identical git command, because both calls collapse to
+    # the same key. Found the hard way on issue #17: two collision tests
+    # shared one runner and hand-built their Status objects as literals to
+    # route around this, which meant neither test called the real
+    # worktree_status() parsing code at all and both passed unchanged with
+    # the fix under test fully reverted. The working fix is per-worktree
+    # ReplayRunner instances (see tests/test_gitsrc.py's
+    # test_asymmetric_tracked_state_now_collides_through_the_real_matrix),
+    # not a change here -- but that workaround only covers calls made
+    # against a SINGLE runner per worktree; a fixture needing two worktrees
+    # to see different answers for the SAME git command sharing one runner
+    # (e.g. collisions()'s merge-base/diff calls) hits this same gap again.
     return " ".join(argv)
 
 
