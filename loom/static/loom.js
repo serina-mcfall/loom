@@ -432,11 +432,19 @@ function buildRepoSection(repo, i) {
   panels.append(panel(`repo-${i}-loose-h`, "Loose ends", "h3",
                       capBox(`repo-${i}-loose-h`, loose)));
 
+  // Native <details>/<summary> instead of panel()'s <section>+heading shape:
+  // this is the one panel that's pure diagnostics, rarely useful unless
+  // something's broken, so it opens on demand rather than sitting open by
+  // default like every other panel. The native element is keyboard-operable
+  // and correctly announced with zero custom ARIA -- it already IS the W3C
+  // APG disclosure pattern. "Data sources" now lives in <summary>, genuinely
+  // visible, so the old visually-hidden heading trick is gone.
   const sources = document.createElement("ul");
   sources.className = "sources";
-  const srcPanel = panel(`repo-${i}-src-h`, "Data sources", "h3", sources);
-  srcPanel.querySelector("h3").classList.add("visually-hidden");
-  panels.append(srcPanel);
+  const srcDetails = document.createElement("details");
+  srcDetails.className = "panel";
+  srcDetails.append(text("summary", "Data sources"), sources);
+  panels.append(srcDetails);
 
   section.append(panels);
   return {

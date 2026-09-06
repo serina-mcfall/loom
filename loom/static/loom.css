@@ -150,7 +150,15 @@ tbody tr:nth-child(even) { background: #1b212a; }
 .src--bad  { color: var(--bad); }
 .src--ok   { color: var(--good); }
 .src--warn { color: var(--warn); }
-.sources { display: flex; gap: 1.2rem; flex-wrap: wrap; }
+.sources { display: flex; gap: 1.2rem; flex-wrap: wrap; margin-top: .5rem; }
+/* Native <details>/<summary> -- the browser already provides the disclosure
+   triangle, keyboard toggling and correct announcement; this only styles the
+   label to match the page's other h3 panel headings. */
+details.panel > summary {
+  font: 600 .8rem/1.5 "Lexend", system-ui, sans-serif; color: var(--dim);
+  letter-spacing: .12em; text-transform: uppercase; cursor: pointer;
+}
+details.panel[open] > summary { margin-bottom: .2rem; }
 .summary { margin: 0; color: var(--dim); }
 /* The fleet-wide total (loom/view.py's fleet_total) and its session counts,
    both plain text. Step 9 decided against a live region for either -- see
