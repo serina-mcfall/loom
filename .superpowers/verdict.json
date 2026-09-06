@@ -1,10 +1,10 @@
 {
   "state": "READY",
-  "sha": "PLACEHOLDER",
+  "sha": "0501255c55a2e71a02cef4b302596969f2027a59",
   "plan": "2026-09-06-issue-17-untracked-dir-counting.md",
-  "recorded_at": "PLACEHOLDER",
+  "recorded_at": "2026-09-07T07:33:07+12:00",
   "checks": {
     "ledger": "pass (manual: check-ledger.sh's task-heading regex does not match this repo's STEP-N plan format -- mechanical exit is FAIL against every plan-issue plan, including this one and issue #11's; read .superpowers/sdd/2026-09-06-issue-17-untracked-dir-counting/progress.md directly, which maps Task N: complete lines onto the plan's STEP N sections with commit shas and records what each review round found)",
-    "test_cmd": "PLACEHOLDER -- to be re-run and re-recorded after the merge commit is created"
+    "test_cmd": "python3 -m unittest discover -s tests (374 tests, OK, after merging origin/main which brought in issue #14's 19 and issue #15's tests); mypy --strict --allow-any-generics loom/ loom_cli.py hooks/ scripts/ (clean)"
   }
 }
