@@ -25,7 +25,12 @@ def _git(args, cwd, check_call=True):
 
 
 def _init_repo(path):
-    _git(["init", "-q"], path)
+    # `-b main` explicitly, not whatever `init.defaultBranch` happens to be
+    # configured to on the machine running this test -- step 2's own
+    # divergence logic resolves a branch literally named "main" as its
+    # fallback, so leaving this implicit would make fixtures (a)/(b)/(c)
+    # below depend on host git config rather than on what they say they test.
+    _git(["init", "-q", "-b", "main"], path)
     _git(["config", "user.email", "test@example.test"], path)
     _git(["config", "user.name", "Test"], path)
     _git(["config", "commit.gpgsign", "false"], path)
@@ -113,17 +118,73 @@ class VerdictGateRealRepoTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("is not reachable from this PR's head", msg)
 
-    def test_files_changed_beyond_verdict_blocks(self):
+    def test_reviewed_then_diverged_on_this_branch_keeps_existing_message(self):
+        """Step 2, fixture (b): a branch that recorded its OWN verdict
+        earlier in its own unique history, then landed more commits on the
+        SAME branch afterward -- mirrors this exact session's real #11
+        experience. Must keep printing the pre-existing message unchanged,
+        proving the new divergence check adds coverage without breaking the
+        one case issue #14 itself says must keep working.
+        """
+        _commit(self.repo, "main tip")  # feature diverges from here
+        _git(["checkout", "-q", "-b", "feature"], self.repo)
         _write(self.repo, "a.txt", "one")
-        reviewed = _commit(self.repo, "first, reviewed here")
+        reviewed = _commit(self.repo, "reviewed on feature")
         _write_verdict(self.repo, reviewed)
         _commit(self.repo, "record the verdict")
         _write(self.repo, "a.txt", "two")
-        head = _commit(self.repo, "second, unrelated change")
+        head = _commit(self.repo, "more work on the same branch, after review")
         code, msg = check(self.repo, head)
         self.assertEqual(code, 1)
         self.assertIn("file(s) changed since", msg)
         self.assertIn("The review does not cover this code", msg)
+        self.assertNotIn("has never been reviewed", msg)
+
+    def test_never_reviewed_when_verdict_predates_this_branch(self):
+        """Step 2, fixture (a): mirrors the issue's own example almost
+        exactly -- "main carries READY for ec65092 (issue #3)". main's OWN
+        tracked verdict.json already names some other, unrelated commit at
+        the point this branch was cut. The new branch has never itself been
+        reviewed, and this must print the NEW message, not the old generic
+        one.
+        """
+        main_tip = _commit(self.repo, "main's own reviewed commit")
+        _write_verdict(self.repo, main_tip)
+        _commit(self.repo, "main records its own verdict")
+        _git(["checkout", "-q", "-b", "feature"], self.repo)
+        _write(self.repo, "b.txt", "this branch's own new work")
+        head = _commit(self.repo, "this branch's own first commit")
+        # verdict.json is untouched here -- inherited wholesale from main,
+        # exactly as issue #14 describes a brand-new branch inheriting it.
+        code, msg = check(self.repo, head)
+        self.assertEqual(code, 1)
+        self.assertIn("This branch has never been reviewed", msg)
+        self.assertIn("predates this branch's own commits", msg)
+        self.assertNotIn("The review does not cover this code", msg)
+
+    def test_indeterminate_when_divergence_point_cannot_be_computed(self):
+        """Step 2, fixture (c): built the same way loom/gitsrc.py's own
+        test_touched_files_is_none_when_the_merge_base_cannot_be_found
+        fixture is -- two real, disjoint histories in one repository, so
+        merge-base against "main" genuinely cannot be computed. Must print
+        the NEW indeterminate message, never silently falling into fixture
+        (b)'s message.
+        """
+        _commit(self.repo, "main, its own root commit")
+        _git(["checkout", "-q", "--orphan", "feature"], self.repo)
+        _write(self.repo, "c.txt", "feature's own unrelated history")
+        reviewed = _commit(self.repo, "reviewed on feature's own history")
+        _write_verdict(self.repo, reviewed)
+        _commit(self.repo, "record the verdict")
+        _write(self.repo, "c.txt", "more feature work")
+        head = _commit(self.repo, "further, unrelated change")
+        code, msg = check(self.repo, head)
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "could not determine this branch's divergence point from main", msg
+        )
+        self.assertNotIn("has never been reviewed", msg)
+        self.assertNotIn("The review does not cover this code", msg)
 
     def test_only_verdict_file_changed_since_is_open(self):
         reviewed = _commit(self.repo, "first, reviewed here")

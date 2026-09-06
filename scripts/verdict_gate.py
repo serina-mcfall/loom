@@ -28,6 +28,73 @@ import sys
 VERDICT_PATH = ".superpowers/verdict.json"
 
 
+def _resolve_main_ref(repo_root: str) -> str | None:
+    """`origin/main` if it resolves, else bare `main`, else None.
+
+    None covers both "neither ref exists" and the rev-parse call itself
+    raising -- both mean there is nothing to compute a divergence point
+    against, and the caller must treat that as indeterminate, not as "no
+    main branch, so nothing to diverge from."
+    """
+    for ref in ("origin/main", "main"):
+        try:
+            proc = subprocess.run(
+                ["git", "rev-parse", "--verify", ref],
+                capture_output=True, text=True, timeout=30, cwd=repo_root,
+            )
+        except Exception:
+            continue
+        if proc.returncode == 0 and proc.stdout.strip():
+            return ref
+    return None
+
+
+def _merge_base(repo_root: str, a: str, b: str) -> tuple[str | None, str]:
+    """(sha, description) for `git merge-base a b`.
+
+    sha is None for BOTH a failed git call and empty output -- the same
+    third, indeterminate outcome loom/gitsrc.py's own merge-base convention
+    already distinguishes from a real answer (loom/gitsrc.py:236-239: "if
+    not mb.ok or not mb.stdout.strip(): return None"). description is empty
+    on success, and is git's own stderr (or the raised exception) on
+    failure, so a real cause always accompanies the caller's block message.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", a, b],
+            capture_output=True, text=True, timeout=30, cwd=repo_root,
+        )
+    except Exception as exc:
+        return None, str(exc)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None, proc.stderr.strip() or "git merge-base produced no output"
+    return proc.stdout.strip(), ""
+
+
+def _is_ancestor(repo_root: str, maybe_ancestor: str, of: str) -> tuple[bool | None, str]:
+    """(True/False/None, description) for `git merge-base --is-ancestor`.
+
+    0 = ancestor (True), 1 = not an ancestor (False). Anything else -- 128 on
+    an invalid object, or the subprocess call itself raising -- is None:
+    indeterminate, never silently folded into False. Folding a 128 into "not
+    an ancestor" would reuse the existing "review does not cover this code"
+    message for a case that is genuinely unknown, reproducing audit finding
+    H3 ("failed git call indistinguishable from healthy") in new code.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", maybe_ancestor, of],
+            capture_output=True, text=True, timeout=30, cwd=repo_root,
+        )
+    except Exception as exc:
+        return None, str(exc)
+    if proc.returncode == 0:
+        return True, ""
+    if proc.returncode == 1:
+        return False, ""
+    return None, proc.stderr.strip() or f"git merge-base --is-ancestor exited {proc.returncode}"
+
+
 def check(repo_root: str, head_sha: str, verdict_path: str = VERDICT_PATH) -> tuple[int, str]:
     """Return (exit_code, message) -- 0 = open, 1 = blocked. Never raises for
     a missing or malformed verdict file; that is exactly what this checks for.
@@ -110,6 +177,43 @@ def check(repo_root: str, head_sha: str, verdict_path: str = VERDICT_PATH) -> tu
 
         files = [f for f in changed.stdout.split("\n") if f.strip()]
         if files != [verdict_path]:
+            # DISTINGUISH "never reviewed" FROM "reviewed, then diverged"
+            # (issue #14). Both currently produce this same "N files
+            # changed" message, and that conflates two different situations:
+            # a branch that genuinely diverged after a real review of its
+            # own history, versus a brand-new branch that inherited main's
+            # verdict.json wholesale and has never been reviewed at all. The
+            # mechanical signal that tells them apart: is `sha` an ancestor
+            # of (or equal to) the point THIS branch diverged from main?
+            main_ref = _resolve_main_ref(repo_root)
+            if main_ref is None:
+                return block(
+                    "could not determine this branch's divergence point from "
+                    "main (no origin/main or main ref could be resolved) — "
+                    "treating as indeterminate, not as reviewed."
+                )
+            divergence, mb_err = _merge_base(repo_root, want, main_ref)
+            if divergence is None:
+                return block(
+                    "could not determine this branch's divergence point from "
+                    f"main ({mb_err}) — treating as indeterminate, not as "
+                    "reviewed."
+                )
+            ancestor, anc_err = _is_ancestor(repo_root, sha, divergence)
+            if ancestor is None:
+                return block(
+                    "could not determine this branch's divergence point from "
+                    f"main ({anc_err}) — treating as indeterminate, not as "
+                    "reviewed."
+                )
+            if ancestor:
+                return block(
+                    f"This branch has never been reviewed. The recorded "
+                    f"verdict ({str(sha)[:8]}) predates this branch's own "
+                    "commits — it is inherited from whatever main's "
+                    "verdict.json happened to say when this branch was cut, "
+                    "not a review of anything here."
+                )
             return block(
                 f"verdict is for {str(sha)[:8]} but head is {want[:8]}, and "
                 f"{len(files)} file(s) changed since:\n"
