@@ -191,6 +191,25 @@ STEP 2  scripts/verdict_gate.py: distinguish "never reviewed" from          [nee
         determine this branch's divergence point from main (<git's own
         stderr>) — treating as indeterminate, not as reviewed." — rather
         than guessing either way.
+        THIS SAME THIRD-OUTCOME REQUIREMENT APPLIES TO THE SECOND GIT CALL
+        TOO, not only the first, found missing by a second independent
+        review-plan pass (2026-09-06). Step 2 needs TWO git calls: computing
+        merge_base(head, origin/main), handled above, and then checking
+        whether sha is an ancestor of that point via
+        git merge-base --is-ancestor sha MERGE_BASE_POINT. This second call
+        has the SAME three-way failure shape, reproduced live:
+        git merge-base --is-ancestor deadbeef HEAD exits 128, not 0=yes or
+        1=no, on an invalid object. Reducing this call's result to a bare
+        returncode-equals-0 check would silently fold a 128 into the "not
+        an ancestor" branch, reusing the existing message for this call the
+        same way it would have for the first -- same defect class, one call
+        later. In practice this call runs only after sha and the merge-base
+        point have already been validated as resolvable by earlier checks
+        in this same gate, so the realistic trigger here is narrower (a
+        transient subprocess failure, not a routine bad object name) -- but
+        the same explicit third branch is required regardless, for the same
+        reason: never let a git call's own failure read as a definite git
+        answer.
         done when: three new real-git-repo fixtures, not two. (a) A fresh
         branch cut from a "main" whose OWN tracked verdict.json already
         names some OTHER, unrelated commit (mirroring the issue's own
