@@ -4,8 +4,9 @@
 - **Status:** approved
 - **Author:** Serina McFall, with Claude
 - **Supersedes:** nothing. Replaces `loom.css`'s `:root` token values and
-  `loom.js`'s Data-sources render path; no schema, no snapshot, no Python
-  change.
+  `loom.js`'s Data-sources render path; no schema, no snapshot change, and
+  the only Python touch is one content-type table entry in `serve.py` (see
+  "Fonts, self-hosted" below — caught during planning).
 
 ## The problem
 
@@ -108,10 +109,21 @@ already printed in words; it never carries meaning alone.
 
 Vixenz loads Lexend (headings/prose) and JetBrains Mono (code/data) from
 Google's CDN. Loom is a loopback-only local tool — Serina chose to
-self-host both families under `loom/static/fonts/` instead, so the
-dashboard renders correctly with zero network access. Existing fallback
-stacks (`system-ui` / `ui-monospace`) stay as the safety net if a font file
-is ever missing.
+self-host both families instead, so the dashboard renders correctly with
+zero network access. Existing fallback stacks (`system-ui` / `ui-monospace`)
+stay as the safety net if a font file is ever missing.
+
+**Correction (2026-09-07, caught during planning):** the font files live
+flat in `loom/static/`, not `loom/static/fonts/`. `serve.py`'s `/static/`
+route resolves every request through `Path(self.path).name` — the
+basename only, any directory component silently stripped — so a nested
+path would 404. That same route's content-type table currently maps only
+`css`/`js`; a `.woff2` extension needs to be added there too (one new
+entry, `{"woff2": "font/woff2"}`), which makes this the one place the
+"no Python change" framing above was wrong. The change is one line in an
+existing lookup table, not new routing logic, so the architectural
+boundary this spec cares about (no new decisions moving into `loom.js`
+or `loom/view.py`) still holds.
 
 Loom's data-heavy panels (tables, token counts, commit shas) keep
 JetBrains Mono throughout, matching the current monospace-first design;
