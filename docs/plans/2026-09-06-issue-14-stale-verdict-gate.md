@@ -37,9 +37,28 @@ ALREADY TRUE  (verified against git and the real committed workflow, not notes)
   git merge-base --is-ancestor A B is the exact primitive this plan needs:
     exits 0 if A is an ancestor of (or equal to) B, non-zero otherwise, no
     output either way — confirmed live against this repo's own history.
-    `git merge-base HEAD main` (the point a branch diverged from main) is
-    already implicitly relied on by nothing in this repo today; this plan
-    is the first thing to use it.
+  CORRECTION — an earlier draft claimed plain `git merge-base` was unused
+    anywhere in this repo. FALSE, found by an independent review-plan pass
+    (2026-09-06): loom/gitsrc.py:235 already runs
+    `git merge-base <base> HEAD`, with an ESTABLISHED, AUDITED convention
+    for its failure mode this plan must follow, not invent fresh —
+    loom/gitsrc.py:236-239: "if not mb.ok or not mb.stdout.strip(): ...
+    return None" (a failed or empty merge-base is a THIRD, distinguishable
+    outcome — "cannot tell" — never silently folded into either the
+    success or the failure branch). That convention exists because of
+    audit finding H3, "Failed git call indistinguishable from healthy,"
+    fixed in 96961c7 (docs/audits/remediation-2026-08-05.md:28). Step 2
+    below must follow this same convention for `git merge-base` failing
+    against origin/main, or it reproduces H3's exact defect class in new
+    code: a `git merge-base` call that fails (disjoint histories, a
+    corrupted/foreign sha, a shallow or partial fetch) would otherwise
+    silently read as "not an ancestor" — the SAME branch as the legitimate
+    "reviewed, then diverged" case — misclassifying an indeterminate
+    situation as a known-good one. Reproduced live: `git merge-base
+    <head> ""` (an empty/unresolvable ref, the shape of an unhandled
+    failure) exits 128 with no stdout and does not raise in Python
+    (subprocess.run only raises with check=True) — so an unguarded read of
+    this result silently falls through unless explicitly checked.
   Locally, both `main` and `origin/main` resolve to the same sha right now
     (confirmed: `git rev-parse --verify main` and `--verify origin/main`
     both print 628a9dd). In a GitHub Actions PR run, the checked-out ref is
@@ -55,10 +74,41 @@ ALREADY TRUE  (verified against git and the real committed workflow, not notes)
     its test module need no allow-list change). mypy --strict --allow-any-
     generics already runs against scripts/ (.github/workflows/checks.yml's
     `types` job) — a new script there is checked automatically, for free.
-  No test in this repo exercises the verdict gate's logic at all today —
+  No test in this repo exercises the verdict GATE's logic at all today —
     it is untested Python living inside a YAML string, the one piece of
-    logic in this codebase's CI that isn't. Confirmed by grep: no
-    "verdict" reference anywhere under tests/.
+    logic in this codebase's CI that isn't. CORRECTED — an earlier draft
+    said grep found no "verdict" reference anywhere under tests/; found
+    false by an independent review-plan pass (2026-09-06):
+    tests/test_collect.py:377 has one hit, "every staleness verdict in the
+    snapshot" — an unrelated docstring about a different feature (worktree
+    staleness, not this gate), so the substantive conclusion (nothing
+    exercises the CI gate itself) still holds, but the claim as stated was
+    wrong.
+  THE FULL, EXACT set of branches the real inline Python has today — not
+    the six an earlier draft of this plan named, which omitted two —
+    verified by reading .github/workflows/checks.yml:278-373 line by line:
+      1. verdict.json absent                          -> block, exit 1
+      2. verdict.json present but not valid JSON       -> block, exit 1
+      3. state field is not "READY"                    -> block, exit 1
+      4. sha != head AND the `git diff` subprocess call
+         itself raises (not a git failure — a Python
+         exception: timeout, git missing, etc.)         -> block, exit 1
+      5. sha != head AND git diff returns non-zero
+         (sha unreachable from head at all)              -> block, exit 1
+      6. sha != head AND diff succeeds AND more than
+         just the verdict file changed                   -> block, exit 1
+      7. sha != head AND diff succeeds AND ONLY the
+         verdict file changed since                       -> OPEN, exit 0
+      8. sha == head exactly                              -> OPEN, exit 0
+    Cases 2 and 4 are the two an earlier draft's "six existing cases" list
+    omitted. Case 4 in particular matters for step 1's own refactor: moving
+    from block()'s direct `sys.exit(1)` to a function that RETURNS
+    (exit_code, message) means every call site needs an explicit `return`,
+    and case 2's except-block currently has no code after it that would
+    crash if the return were missing — `state, sha = v.get(...)` executes
+    unconditionally right after, with `v` never assigned when the JSON load
+    raised, which is a NameError waiting for exactly this refactor to
+    introduce it if case 2's own return is forgotten.
 
 STEP 1  scripts/verdict_gate.py: extract the inline Python unchanged        [independent]  ← RUNS HERE
         Move checks.yml's inline Python verbatim into scripts/verdict_gate.py
@@ -72,21 +122,29 @@ STEP 1  scripts/verdict_gate.py: extract the inline Python unchanged        [ind
         now runs `python3 scripts/verdict_gate.py` with HEAD_SHA still set
         the same way (env, not a new mechanism).
         THIS STEP CHANGES NO BEHAVIOUR. Every message string, every exit
-        code, every existing distinction (absence, non-READY state,
-        unreachable sha, reachable-but-N-files-changed, exact match, verdict-
-        file-only-changed) is preserved byte-for-byte. It exists to make the
-        NEXT step's fix testable, not to fix anything itself.
+        code, and ALL EIGHT existing cases enumerated in ALREADY TRUE
+        (not six — an earlier draft missed the malformed-JSON case and the
+        diff-subprocess-raises case) are preserved byte-for-byte. EVERY
+        call site converted from block()'s direct `sys.exit(1)` to the new
+        `return (exit_code, message)` shape gets an explicit `return`
+        immediately — including the malformed-JSON except-block, where
+        ALREADY TRUE names the exact NameError this refactor would
+        introduce if that one return were missed. This step exists to make
+        the NEXT step's fix testable, not to fix anything itself.
         done when: tests/test_verdict_gate.py, using REAL git repositories
         built in temporary directories (not mocked — this issue is about
         real git topology, and a mock would just assert this plan's own
-        assumptions back at itself), covers all six existing cases: no
-        verdict file (block, "no ... in this branch"); state not READY
-        (block, names the reason); sha unreachable from head (block, "not
-        reachable from this PR's head"); sha reachable but N files changed
-        beyond the verdict file (block, "N file(s) changed since... The
-        review does not cover this code"); sha equals head exactly (open);
-        sha reachable and ONLY the verdict file changed since (open). Also:
-        running `python3 scripts/verdict_gate.py` against THIS repo's own
+        assumptions back at itself), covers ALL EIGHT cases from ALREADY
+        TRUE: absent (block, "no ... in this branch"); malformed JSON
+        (block, "not readable JSON", NOT a NameError or any other
+        exception); state not READY (block, names the reason); diff
+        subprocess itself raising (block, "could not diff"); sha
+        unreachable from head (block, "not reachable from this PR's
+        head"); sha reachable but N files changed beyond the verdict file
+        (block, "N file(s) changed since... The review does not cover this
+        code"); sha equals head exactly (open); sha reachable and ONLY the
+        verdict file changed since (open). Also: running
+        `python3 scripts/verdict_gate.py` against THIS repo's own
         real current state (real HEAD, real .superpowers/verdict.json)
         prints the identical message the inline YAML version would have —
         checked once, side by side, before the inline copy is deleted.
@@ -112,19 +170,46 @@ STEP 2  scripts/verdict_gate.py: distinguish "never reviewed" from          [nee
         that ref does not exist (keeps local/manual runs working exactly as
         they do today, per ALREADY TRUE's note that both currently resolve
         identically here).
-        done when: two new real-git-repo fixtures. (a) A fresh branch cut
-        from a "main" whose OWN tracked verdict.json already names some
-        OTHER, unrelated commit (mirroring the issue's own example almost
-        exactly: "main carries READY for ec65092 (issue #3)") — the new
-        branch has never itself been reviewed, and the check now prints the
-        NEW "has never been reviewed" message, not the old generic one. (b)
-        A branch that recorded ITS OWN verdict earlier in its own unique
-        history (mirroring this exact session's real #11 experience: a
-        verdict recorded mid-branch, then more commits landed on the SAME
-        branch afterward) still prints the EXISTING "review does not cover
-        this code" message, completely unchanged — proving the new
-        distinction adds coverage without breaking the one case the issue
-        itself says must keep working.
+        A THIRD, INDETERMINATE OUTCOME IS REQUIRED, matching loom/gitsrc.py's
+        OWN established convention for this exact primitive — found missing
+        by an independent review-plan pass (2026-09-06). Computing
+        merge_base(head, origin/main) is itself a git call that can fail
+        (disjoint histories, a corrupted or foreign sha, a shallow or
+        partial fetch) — reproduced live: `git merge-base <head> ""` exits
+        128 with empty stdout and raises nothing in Python. loom/gitsrc.py:
+        236-239 already treats exactly this shape ("not ok, or empty
+        stdout") as a THIRD state, distinct from both "yes" and "no" —
+        never silently folded into either. If this new code instead lets a
+        failed merge-base fall through to "not an ancestor," it silently
+        reuses the EXISTING "review does not cover this code" message for a
+        case that is genuinely indeterminate, not "reviewed then
+        diverged" — reproducing audit finding H3 ("failed git call
+        indistinguishable from healthy") in brand-new code, in the same
+        repository that already paid to fix it once elsewhere. So: if the
+        merge-base call itself fails or returns empty, block with a
+        message distinct from BOTH existing ones — e.g. "could not
+        determine this branch's divergence point from main (<git's own
+        stderr>) — treating as indeterminate, not as reviewed." — rather
+        than guessing either way.
+        done when: three new real-git-repo fixtures, not two. (a) A fresh
+        branch cut from a "main" whose OWN tracked verdict.json already
+        names some OTHER, unrelated commit (mirroring the issue's own
+        example almost exactly: "main carries READY for ec65092 (issue
+        #3)") — the new branch has never itself been reviewed, and the
+        check now prints the NEW "has never been reviewed" message, not the
+        old generic one. (b) A branch that recorded ITS OWN verdict earlier
+        in its own unique history (mirroring this exact session's real #11
+        experience: a verdict recorded mid-branch, then more commits landed
+        on the SAME branch afterward) still prints the EXISTING "review
+        does not cover this code" message, completely unchanged — proving
+        the new distinction adds coverage without breaking the one case the
+        issue itself says must keep working. (c) A repository where
+        merge-base against origin/main genuinely cannot be computed
+        (disjoint histories, built the same way loom/gitsrc.py's own
+        test_touched_files_is_none_when_the_merge_base_cannot_be_found
+        fixture does) prints the NEW "could not determine this branch's
+        divergence point" message — never silently falling into case (b)'s
+        message.
 
 STEP 3  .github/workflows/checks.yml: wire the extracted script, confirm    [needs 1, 2]
         origin/main resolves in a real PR run
