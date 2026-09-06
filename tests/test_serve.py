@@ -645,7 +645,7 @@ class TestHandlerRoutes(unittest.TestCase):
     def _get(self, path: str):
         return urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=2)
 
-    def _head(self, path: str):
+    def _head_request(self, path: str):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method="HEAD")
         return urllib.request.urlopen(req, timeout=2)
 
@@ -819,7 +819,7 @@ class TestHandlerRoutes(unittest.TestCase):
                 with self._get(path) as get_resp:
                     get_length = get_resp.headers.get("Content-Length")
                     get_body = get_resp.read()
-                with self._head(path) as head_resp:
+                with self._head_request(path) as head_resp:
                     self.assertEqual(head_resp.status, 200)
                     self.assertEqual(head_resp.headers.get("Content-Length"), get_length)
                     head_body = head_resp.read()
@@ -831,14 +831,14 @@ class TestHandlerRoutes(unittest.TestCase):
         # must not hardcode 200 regardless of collection state.
         serve._snapshot = {"schema": SCHEMA_VERSION, "repos": [], "collected": False}
         try:
-            self._head("/snapshot.json")
+            self._head_request("/snapshot.json")
             self.fail("expected an HTTPError for the not-yet-collected state")
         except urllib.error.HTTPError as exc:
             self.assertEqual(exc.code, 503)
             self.assertEqual(exc.read(), b"")
 
         serve._snapshot = {"schema": SCHEMA_VERSION, "repos": [{"name": "example"}], "collected": True}
-        with self._head("/snapshot.json") as r:
+        with self._head_request("/snapshot.json") as r:
             self.assertEqual(r.status, 200)
             self.assertEqual(r.read(), b"")
 
@@ -931,9 +931,15 @@ class TestHandlerRoutes(unittest.TestCase):
         self.assertGreater(len(body), 0,
                             "GET after HEAD on a reused connection came back empty")
 
-    def test_delete_is_still_501_not_accidentally_widened(self):
+    def test_delete_currently_returns_501_pending_the_405_decision(self):
         # This change adds do_HEAD; it must not widen what the server accepts
-        # beyond GET and HEAD. A genuinely unsupported method still 501s.
+        # beyond GET and HEAD. A genuinely unsupported method still 501s --
+        # a SNAPSHOT of current behaviour, not a lock-in of 501 over 405.
+        # The plan's OPEN section reserves whether DELETE (and other verbs)
+        # should someday become 405 + Allow: GET, HEAD instead; this test
+        # exists so that decision has a known starting point, not so it is
+        # pre-empted. Rename this alongside that decision, don't let it read
+        # as "must stay 501 forever".
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         try:
             conn.request("DELETE", "/")
