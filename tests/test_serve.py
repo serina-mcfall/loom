@@ -14,6 +14,7 @@ tear the server down in `tearDown`, so nothing is left listening afterward.
 """
 from __future__ import annotations
 
+import http.client
 import inspect
 import io
 import json
@@ -644,6 +645,10 @@ class TestHandlerRoutes(unittest.TestCase):
     def _get(self, path: str):
         return urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=2)
 
+    def _head_request(self, path: str):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method="HEAD")
+        return urllib.request.urlopen(req, timeout=2)
+
     def test_nothing_is_cacheable(self):
         """A restyled page must not come back looking unchanged.
 
@@ -804,6 +809,145 @@ class TestHandlerRoutes(unittest.TestCase):
             finally:
                 sock.close()
         self.assertIn(serve.SSE_IDLE_TIMEOUT, calls)
+
+    def test_head_matches_get_content_length_with_an_empty_body(self):
+        # Issue #15: a HEAD must carry the same status and headers as the
+        # equivalent GET, with no body -- proven here for both a static file
+        # and the index route, the two routes _send serves directly.
+        for path in ("/", "/static/loom.css"):
+            with self.subTest(path=path):
+                with self._get(path) as get_resp:
+                    get_length = get_resp.headers.get("Content-Length")
+                    get_body = get_resp.read()
+                with self._head_request(path) as head_resp:
+                    self.assertEqual(head_resp.status, 200)
+                    self.assertEqual(head_resp.headers.get("Content-Length"), get_length)
+                    head_body = head_resp.read()
+                self.assertEqual(head_body, b"")
+                self.assertTrue(get_body, "GET body should be non-empty for parity to mean anything")
+
+    def test_head_snapshot_json_honours_the_503_before_collection_rule(self):
+        # Same 200/503 rule do_GET already applies at serve.py:313 -- a HEAD
+        # must not hardcode 200 regardless of collection state.
+        serve._snapshot = {"schema": SCHEMA_VERSION, "repos": [], "collected": False}
+        try:
+            self._head_request("/snapshot.json")
+            self.fail("expected an HTTPError for the not-yet-collected state")
+        except urllib.error.HTTPError as exc:
+            self.assertEqual(exc.code, 503)
+            self.assertEqual(exc.read(), b"")
+
+        serve._snapshot = {"schema": SCHEMA_VERSION, "repos": [{"name": "example"}], "collected": True}
+        with self._head_request("/snapshot.json") as r:
+            self.assertEqual(r.status, 200)
+            self.assertEqual(r.read(), b"")
+
+    def test_head_events_returns_without_entering_the_sse_loop(self):
+        # Not urllib and not http.client for this one -- both are unfalsifiable
+        # here: neither ever waits for a body on a HEAD response, so "the
+        # request completed quickly" is true whether or not the server's own
+        # `while True` frame loop was entered. A raw socket, reading the
+        # header block and THEN attempting a separate short-timeout read, is
+        # the only construction that can actually fail against a build that
+        # still enters the loop (see serve.py's /events branch).
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(b"HEAD /events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            # `rest`, not `_` -- the outer loop above stops as soon as the
+            # header terminator is seen, but a single recv() can return
+            # bytes PAST that terminator in the same chunk. Discarding them
+            # into `_` would let real frame bytes that arrived early slip
+            # past this check unexamined; the assertion below must see
+            # everything that followed the headers, from both this read and
+            # the separate one after it.
+            headers, _, rest = data.partition(b"\r\n\r\n")
+            self.assertIn(b"200", headers.split(b"\r\n", 1)[0])
+            self.assertIn(b"text/event-stream", headers)
+
+            # A SEPARATE read, with its own short timeout, well under
+            # SSE_IDLE_TIMEOUT -- this is what must time out on the fixed
+            # build and would return real frame bytes on a regressed one.
+            sock.settimeout(1)
+            try:
+                follow_up = sock.recv(4096)
+            except (socket.timeout, TimeoutError):
+                follow_up = b""
+        finally:
+            sock.close()
+        self.assertEqual(rest + follow_up, b"",
+                          "HEAD /events must not enter the SSE loop or send any frame bytes")
+
+    def test_head_then_get_reuses_the_connection_with_a_real_body(self):
+        """Guards do_HEAD's `finally: self._head = False`. If that reset
+        were ever dropped (or only set inside the try, where an early
+        exception could skip it), a GET immediately following a HEAD on the
+        SAME kept-alive connection would silently come back with an empty
+        body forever after -- indistinguishable from a passing test unless
+        something actually reuses the connection and checks the body is
+        real, which no other test here does.
+        """
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        try:
+            sock.sendall(b"HEAD /static/loom.css HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            head_headers, _, rest = data.partition(b"\r\n\r\n")
+            self.assertIn(b"200", head_headers.split(b"\r\n", 1)[0])
+            self.assertEqual(rest, b"", "HEAD must not carry a body into the next read")
+
+            # Same socket, no reconnect -- proves the server considers the
+            # connection still good and this handler instance's state (the
+            # thing do_HEAD's finally protects) is clean for the next request.
+            sock.sendall(b"GET /static/loom.css HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            get_headers, _, get_body_so_far = data.partition(b"\r\n\r\n")
+            content_length = int(
+                get_headers.split(b"Content-Length: ", 1)[1].split(b"\r\n", 1)[0]
+            )
+            body = get_body_so_far
+            while len(body) < content_length:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                body += chunk
+        finally:
+            sock.close()
+        self.assertEqual(len(body), content_length)
+        self.assertGreater(len(body), 0,
+                            "GET after HEAD on a reused connection came back empty")
+
+    def test_delete_currently_returns_501_pending_the_405_decision(self):
+        # This change adds do_HEAD; it must not widen what the server accepts
+        # beyond GET and HEAD. A genuinely unsupported method still 501s --
+        # a SNAPSHOT of current behaviour, not a lock-in of 501 over 405.
+        # The plan's OPEN section reserves whether DELETE (and other verbs)
+        # should someday become 405 + Allow: GET, HEAD instead; this test
+        # exists so that decision has a known starting point, not so it is
+        # pre-empted. Rename this alongside that decision, don't let it read
+        # as "must stay 501 forever".
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            conn.request("DELETE", "/")
+            resp = conn.getresponse()
+            resp.read()
+            self.assertEqual(resp.status, 501)
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

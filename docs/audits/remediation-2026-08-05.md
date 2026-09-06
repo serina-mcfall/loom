@@ -55,6 +55,7 @@ test is how a suite stops being evidence.
 | L11 | No declared Python floor | Low | **fixed (measured, 3.10)** | `ff56ba4` |
 | L12 | Completed plan is the largest file | Low | **fixed (archived)** | `ff56ba4` |
 | L13 | No index of decision records | Low | **fixed** | `ff56ba4` |
+| N3 | `HEAD` requests return 501 | Low | **fixed (issue #15)** | `309b1d0` |
 | N4 | Static assets were cacheable (found while fixing) | new | **fixed** | `8d98887` |
 | — | Colour coding + compactness (requested live) | extra | **done** | `8d98887` |
 | R1–R4 | Four findings from the `review-final` pass | review | **fixed** | see below |
@@ -992,11 +993,11 @@ error has to be spotted among noise. Pre-existing, not introduced by this pass.
 
 **Change** Serve a tiny inline favicon, or return 204 for that path.
 
-### N3 · `HEAD` requests return 501
+### N3 · `HEAD` requests return 501 — FIXED, issue #15
 
-*Low · found while verifying the cache header*
+*Low · found while verifying the cache header · fixed in `309b1d0`*
 
-**Evidence** `Handler` implements `do_GET` only:
+**Evidence** `Handler` implemented `do_GET` only:
 
 ```
 === HEAD ===
@@ -1008,7 +1009,12 @@ reported no `Cache-Control` header, which looked like the fix having failed when
 fact the request method was unsupported. Anything health-checking this server with
 HEAD would see it as broken.
 
-**Change** Add `do_HEAD = do_GET`-style handling, or accept it and note it.
+**Change** `do_HEAD` now runs the same routing as `do_GET` (real `Content-Length`,
+real headers, no body written), across `/`, `/static/*`, `/snapshot.json` — which
+also honours the 200/503 collected-or-not rule — and `/events`, which returns
+immediately instead of entering the SSE loop. `DELETE` and other unsupported verbs
+still 501; the branch does not change what the server accepts, only what HEAD does
+against what it already accepts.
 
 ### N4 · Static assets were cacheable — FIXED in this pass
 
