@@ -298,6 +298,39 @@ class TestCollisions(unittest.TestCase):
         self.assertEqual(result[0]["branches"], ["one", "two"])
         self.assertEqual(undetermined, [])
 
+    def test_asymmetric_tracked_state_collides_through_the_real_matrix(self):
+        """Issue #17 -- the fix reaches the actual matrix collect.py wires into
+        a snapshot, not only the Status object one level down (step 2's
+        TestWorktreeStatus coverage).
+
+        Same asymmetric-tracked-state data as step 2's
+        test_asymmetric_tracked_state_now_collides_through_the_real_matrix:
+        worktree A's `shared/` is already a tracked directory (specific
+        filename either way, `shared/thing.ts`); worktree B's `shared/` is
+        wholly new, so it collapses to `shared/` pre-fix and only expands to
+        `shared/thing.ts` under `-uall`. PRE-fix, this exact fixture returned
+        ZERO collisions -- the two never compared equal. POST-fix (below) it
+        finds the real one.
+
+        ReplayRunner keys on argv alone, not cwd (loom/runner.py:42-43), so a
+        shared runner cannot give the two worktrees different status output;
+        each worktree's Status is hand-built instead of derived through
+        worktree_status().
+        """
+        status_a = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/thing.ts"}))
+        status_b_post_fix = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/thing.ts"}))
+        runner = ReplayRunner({
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+        trees = [Worktree("/t/a", "a", "has-shared-dir", "ha"),
+                 Worktree("/t/b", "b", "wt-b-fresh", "hb")]
+        statuses = {"/t/a": status_a, "/t/b": status_b_post_fix}
+        result, undetermined = collisions(runner, trees, "main", statuses)
+        self.assertEqual([c["file"] for c in result], ["shared/thing.ts"])
+        self.assertEqual(result[0]["branches"], ["has-shared-dir", "wt-b-fresh"])
+        self.assertEqual(undetermined, [])
+
     def test_single_tree_never_collides_with_itself(self):
         runner = ReplayRunner({
             "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
