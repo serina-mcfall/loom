@@ -318,7 +318,8 @@ class Handler(BaseHTTPRequestHandler):
             if not target.is_file():
                 self._send(404, b"not found", "text/plain")
                 return
-            ctype = {"css": "text/css", "js": "text/javascript"}.get(
+            ctype = {"css": "text/css", "js": "text/javascript",
+                      "woff2": "font/woff2"}.get(
                 name.rsplit(".", 1)[-1], "text/plain")
             self._send_file(target, f"{ctype}; charset=utf-8")
         elif self.path == "/snapshot.json":
