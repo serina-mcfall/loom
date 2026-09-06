@@ -69,7 +69,7 @@ and says so plainly when they told it nothing.
 ## Running the tests
 
 ```bash
-python3 -m unittest discover -s tests    # 352 tests, no network, no fixtures to fetch
+python3 -m unittest discover -s tests    # 374 tests, no network, no fixtures to fetch
 python3 scripts/check_stdlib_only.py     # every import is stdlib or first-party
 ```
 

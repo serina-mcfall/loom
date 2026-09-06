@@ -118,8 +118,36 @@ def worktree_status(runner: Runner, path: str) -> Status | None:
     None rather than an empty Status on failure: a clean tree and an unmeasurable one
     differ by whether work is at risk of being lost, which is rank 5's entire job
     (finding H3).
+
+    `-uall` IS REQUIRED, NOT COSMETIC (issue #17). Without it git defaults to
+    `-unormal`, which collapses a wholly-new untracked directory to one line
+    naming the directory rather than the files inside it -- undercounting
+    rank 5's dirty total, and causing the collisions matrix TWO DIFFERENT
+    ways to be wrong: a FALSE POSITIVE when two worktrees each create a
+    same-named new directory with genuinely DIFFERENT files inside (both
+    collapse to the identical directory-name string and falsely "collide"),
+    and a FALSE NEGATIVE in the divergent-branch case (one worktree already
+    has the directory tracked and reports the specific filename, the
+    other's directory is wholly new and collapses, so an identical
+    uncommitted file in both never compares equal and the real collision is
+    missed). Measured cost on the
+    largest real checkout on this machine (~Launchpad/buzz, 4.6M files):
+    warm-cache steady state costs roughly 1-3 hundredths of a second more per
+    worktree -- real, but small, and not worth diverging this call from the
+    collisions path (finding M4) over.
+
+    STILL COLLAPSES ONE CASE: a directory holding its own `.git` (a nested
+    repository, e.g. a stopped agent's own worktree checkout sitting
+    untracked inside another). `-uall` asks git to descend into untracked
+    directories, and git will not descend into one that is itself a repo --
+    confirmed live against this repository's own `.claude/worktrees/*`
+    entries, each collapsing to `?? .claude/worktrees/agent-.../` rather
+    than expanding. Both consequences above still apply to that shape; this
+    is a limit of git, not a gap this fix left unclosed for the case it was
+    filed against (issue #17's repro was a plain new directory, not a nested
+    checkout).
     """
-    r = runner.run(["git", "status", "--porcelain=v1", "-z"], cwd=path)
+    r = runner.run(["git", "status", "--porcelain=v1", "-z", "-uall"], cwd=path)
     if not r.ok:
         return None
 

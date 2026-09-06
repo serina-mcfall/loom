@@ -1,7 +1,8 @@
 import unittest
 from loom.runner import ReplayRunner
 from loom.gitsrc import (list_worktrees, ahead_behind, Dirty, recent_commits,
-                          touched_files, collisions, Worktree, default_branch)
+                          touched_files, collisions, Worktree, default_branch,
+                          Status, worktree_status)
 
 PORCELAIN = (
     "worktree /repo\n"
@@ -140,7 +141,7 @@ class TestWorktreeStatus(unittest.TestCase):
     def _status(self, out: str):
         from loom.gitsrc import worktree_status
         return worktree_status(ReplayRunner({
-            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": out, "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": out, "stderr": ""},
         }), "/t/one")
 
     def test_counts_and_paths_come_from_the_same_single_call(self):
@@ -188,10 +189,140 @@ class TestWorktreeStatus(unittest.TestCase):
     def test_a_failed_status_is_none_not_an_empty_status(self):
         from loom.gitsrc import worktree_status
         runner = ReplayRunner({
-            "git status --porcelain=v1 -z":
+            "git status --porcelain=v1 -z -uall":
                 {"returncode": 128, "stdout": "", "stderr": "not a work tree"},
         })
         self.assertIsNone(worktree_status(runner, "/t/one"))
+
+    # ------------------------------------------------------------- issue #17
+    def test_a_new_directory_with_several_files_reports_the_true_count(self):
+        """Issue #17, Consequence 1 -- undercounting rank 5's dirty total.
+
+        Real git output from a live repro: a brand-new directory holding three
+        files collapses to one line naming the directory under the default
+        `-unormal` (pre-fix, the OLD key), and expands to three specific
+        filenames under `-uall` (post-fix, the key `worktree_status` now
+        requests). Registering both keys on one runner means reverting step
+        1's code change makes this fail on a real assertion (untracked=1, one
+        collapsed path) rather than a KeyError.
+        """
+        runner = ReplayRunner({
+            "git status --porcelain=v1 -z":
+                {"returncode": 0, "stdout": "?? newfeature/\0", "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {
+                "returncode": 0,
+                "stdout": "?? newfeature/one.ts\0?? newfeature/three.ts\0?? newfeature/two.ts\0",
+                "stderr": "",
+            },
+        })
+        s = worktree_status(runner, "/t/one")
+        self.assertEqual(s.dirty, Dirty(staged=0, unstaged=0, untracked=3))
+        self.assertEqual(s.paths, {"newfeature/one.ts", "newfeature/two.ts", "newfeature/three.ts"})
+
+    def test_asymmetric_tracked_state_now_collides_through_the_real_matrix(self):
+        """Issue #17, Consequence 2 -- the case ALREADY TRUE marks as "the one
+        `-uall` is actually required for", verified live with two real git
+        worktrees on divergent branches.
+
+        Worktree A's `shared/` is already a tracked directory (committed
+        earlier on its branch), so git reports the specific filename either
+        way: `?? shared/thing.ts`. Worktree B's `shared/` was never committed
+        at all, so the whole directory collapses under `-unormal` (`??
+        shared/`) and only expands to the specific filename under `-uall`.
+        Without `-uall` these are two different strings and no collision is
+        detected even though both worktrees hold the identical uncommitted
+        file.
+
+        CORRECTED -- an earlier draft hand-built both Status objects as
+        literals, so this test passed unchanged with -uall reverted in the
+        real code (confirmed by two independent review-code/review-tests
+        passes, 2026-09-06: reverting the flag left this test green). Each
+        worktree's runner now registers BOTH the pre-fix and post-fix
+        command keys with REAL captured output, and Status is derived
+        through the REAL worktree_status() -- so whichever key the current
+        code actually requests is what this test sees, and reverting the
+        flag changes worktree B's real result, not just a comment's claim.
+        Worktree A's directory is already tracked, so its real output is
+        identical either way; only B's differs.
+        """
+        runner_a = ReplayRunner({
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "?? shared/thing.ts\0", "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": "?? shared/thing.ts\0", "stderr": ""},
+        })
+        runner_b = ReplayRunner({
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "?? shared/\0", "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": "?? shared/thing.ts\0", "stderr": ""},
+        })
+        status_a = worktree_status(runner_a, "/t/a")
+        status_b = worktree_status(runner_b, "/t/b")  # real code path -- reverting -uall changes this
+        merge_runner = ReplayRunner({
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+        trees = [Worktree("/t/a", "a", "has-shared-dir", "ha"),
+                 Worktree("/t/b", "b", "wt-b-fresh", "hb")]
+        statuses = {"/t/a": status_a, "/t/b": status_b}
+        result, undetermined = collisions(merge_runner, trees, "main", statuses)
+        self.assertEqual([c["file"] for c in result], ["shared/thing.ts"])
+        self.assertEqual(result[0]["branches"], ["has-shared-dir", "wt-b-fresh"])
+        self.assertEqual(undetermined, [])
+
+    def test_different_files_in_a_same_named_new_directory_do_not_collide(self):
+        """The false-positive defect this plan's own live repro found, not in
+        the issue: two worktrees each creating a brand-new SAME-NAMED
+        directory but with DIFFERENT files inside must NOT collide. Real git
+        output from a live repro: pre-fix both collapse to `?? shared/` (a
+        false-positive collision on the directory name); post-fix each
+        expands to its own real filename and the false positive is gone.
+
+        CORRECTED -- an earlier draft hand-built both Status objects as
+        literals and had no negative control, so this test read zero
+        collisions under both fixed AND reverted code (confirmed by two
+        independent review passes, 2026-09-06). Status is now derived
+        through the REAL worktree_status(), coupling the main assertion to
+        whichever command the code actually issues. The negative control
+        below is separate and explicit: literal pre-fix data fed through the
+        SAME matrix must show the false collision this fix removes -- if it
+        didn't, this test would not be exercising the fix at all.
+        """
+        runner_a = ReplayRunner({
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "?? shared/\0", "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": "?? shared/alpha.ts\0", "stderr": ""},
+        })
+        runner_b = ReplayRunner({
+            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "?? shared/\0", "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": "?? shared/beta.ts\0", "stderr": ""},
+        })
+        status_a = worktree_status(runner_a, "/t/a")
+        status_b = worktree_status(runner_b, "/t/b")  # real code path -- reverting -uall changes this
+        # Pins worktree_status() itself, not just the matrix it feeds: a
+        # broken parse that always returned an empty Status would leave
+        # `result` empty here too (nothing to collide), and the main
+        # assertion below would not notice. Asserting the real, DIFFERENT
+        # filenames were actually parsed closes that gap directly.
+        self.assertEqual(status_a.paths, frozenset({"shared/alpha.ts"}))
+        self.assertEqual(status_b.paths, frozenset({"shared/beta.ts"}))
+        merge_runner = ReplayRunner({
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+        trees = [Worktree("/t/a", "a", "a", "ha"), Worktree("/t/b", "b", "b", "hb")]
+        statuses = {"/t/a": status_a, "/t/b": status_b}
+        result, undetermined = collisions(merge_runner, trees, "main", statuses)
+        self.assertEqual(result, [], "post-fix: different real filenames must never collide")
+        self.assertEqual(undetermined, [])
+
+        # NEGATIVE CONTROL: the pre-fix collapsed data, fed through the same
+        # matrix, DOES falsely collide on the directory name -- proving this
+        # test would catch the false positive if -uall were ever removed,
+        # not merely that it reads zero under today's fixed code.
+        status_a_prefix = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/"}))
+        status_b_prefix = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/"}))
+        statuses_prefix = {"/t/a": status_a_prefix, "/t/b": status_b_prefix}
+        result_prefix, _ = collisions(merge_runner, trees, "main", statuses_prefix)
+        self.assertEqual([c["file"] for c in result_prefix], ["shared/"],
+                         "pre-fix collapsed data must falsely collide -- "
+                         "this IS the defect the fix removes")
 
 
 class TestCollisions(unittest.TestCase):
