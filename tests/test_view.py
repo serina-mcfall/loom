@@ -434,7 +434,7 @@ class TestFleetTotal(unittest.TestCase):
             "#{pane_pid}\t#{window_name}": {"returncode": 1, "stdout": "", "stderr": ""},
             "git rev-list --left-right --count main...HEAD":
                 {"returncode": 0, "stdout": "0\t0\n", "stderr": ""},
-            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": "", "stderr": ""},
             "git remote get-url origin":
                 {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
             "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},

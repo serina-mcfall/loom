@@ -140,7 +140,7 @@ class TestWorktreeStatus(unittest.TestCase):
     def _status(self, out: str):
         from loom.gitsrc import worktree_status
         return worktree_status(ReplayRunner({
-            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": out, "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": out, "stderr": ""},
         }), "/t/one")
 
     def test_counts_and_paths_come_from_the_same_single_call(self):
@@ -188,7 +188,7 @@ class TestWorktreeStatus(unittest.TestCase):
     def test_a_failed_status_is_none_not_an_empty_status(self):
         from loom.gitsrc import worktree_status
         runner = ReplayRunner({
-            "git status --porcelain=v1 -z":
+            "git status --porcelain=v1 -z -uall":
                 {"returncode": 128, "stdout": "", "stderr": "not a work tree"},
         })
         self.assertIsNone(worktree_status(runner, "/t/one"))

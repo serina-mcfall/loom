@@ -154,7 +154,7 @@ class TestSubprocessBudget(unittest.TestCase):
                 {"returncode": 1, "stdout": "", "stderr": "no server"},
             "git rev-list --left-right --count main...HEAD":
                 {"returncode": 0, "stdout": "0\t0\n", "stderr": ""},
-            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": "", "stderr": ""},
             "git remote get-url origin":
                 {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
             "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
@@ -286,7 +286,7 @@ class TestCollectSources(unittest.TestCase):
                 {"returncode": 1, "stdout": "", "stderr": "no server running"},
             "git rev-list --left-right --count main...HEAD":
                 {"returncode": 0, "stdout": "0\t0\n", "stderr": ""},
-            "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": "", "stderr": ""},
             "git remote get-url origin":
                 {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
             "gh pr list -R you/example --state open --limit 50 --json "
@@ -455,7 +455,7 @@ def _single_worktree_recordings(worktree_stdout: str) -> dict:
             {"returncode": 1, "stdout": "", "stderr": "no server"},
         "git rev-list --left-right --count main...HEAD":
             {"returncode": 0, "stdout": "0\t0\n", "stderr": ""},
-        "git status --porcelain=v1 -z": {"returncode": 0, "stdout": "", "stderr": ""},
+        "git status --porcelain=v1 -z -uall": {"returncode": 0, "stdout": "", "stderr": ""},
         "git remote get-url origin":
             {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
         "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
