@@ -1,7 +1,8 @@
 import unittest
 from loom.runner import ReplayRunner
 from loom.gitsrc import (list_worktrees, ahead_behind, Dirty, recent_commits,
-                          touched_files, collisions, Worktree, default_branch)
+                          touched_files, collisions, Worktree, default_branch,
+                          Status)
 
 PORCELAIN = (
     "worktree /repo\n"
@@ -192,6 +193,85 @@ class TestWorktreeStatus(unittest.TestCase):
                 {"returncode": 128, "stdout": "", "stderr": "not a work tree"},
         })
         self.assertIsNone(worktree_status(runner, "/t/one"))
+
+    # ------------------------------------------------------------- issue #17
+    def test_a_new_directory_with_several_files_reports_the_true_count(self):
+        """Issue #17, Consequence 1 -- undercounting rank 5's dirty total.
+
+        Real git output from a live repro: a brand-new directory holding three
+        files collapses to one line naming the directory under the default
+        `-unormal` (pre-fix, the OLD key), and expands to three specific
+        filenames under `-uall` (post-fix, the key `worktree_status` now
+        requests). Registering both keys on one runner means reverting step
+        1's code change makes this fail on a real assertion (untracked=1, one
+        collapsed path) rather than a KeyError.
+        """
+        from loom.gitsrc import worktree_status
+        runner = ReplayRunner({
+            "git status --porcelain=v1 -z":
+                {"returncode": 0, "stdout": "?? newfeature/\0", "stderr": ""},
+            "git status --porcelain=v1 -z -uall": {
+                "returncode": 0,
+                "stdout": "?? newfeature/one.ts\0?? newfeature/three.ts\0?? newfeature/two.ts\0",
+                "stderr": "",
+            },
+        })
+        s = worktree_status(runner, "/t/one")
+        self.assertEqual(s.dirty, Dirty(staged=0, unstaged=0, untracked=3))
+        self.assertEqual(s.paths, {"newfeature/one.ts", "newfeature/two.ts", "newfeature/three.ts"})
+
+    def test_asymmetric_tracked_state_now_collides_through_the_real_matrix(self):
+        """Issue #17, Consequence 2 -- the case ALREADY TRUE marks as "the one
+        `-uall` is actually required for", verified live with two real git
+        worktrees on divergent branches.
+
+        Worktree A's `shared/` is already a tracked directory (committed
+        earlier on its branch), so git reports the specific filename either
+        way: `?? shared/thing.ts`. Worktree B's `shared/` was never committed
+        at all, so the whole directory collapses under `-unormal` (`??
+        shared/`) and only expands to the specific filename under `-uall`.
+        Without `-uall` these are two different strings and no collision is
+        detected even though both worktrees hold the identical uncommitted
+        file.
+
+        ReplayRunner keys on argv alone, not cwd (loom/runner.py:42-43), so
+        one shared runner cannot give two worktrees two different outputs for
+        the identical git-status command -- each worktree's Status is
+        hand-built instead of derived through worktree_status().
+        """
+        status_a = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/thing.ts"}))
+        status_b_post_fix = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/thing.ts"}))
+        runner = ReplayRunner({
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+        trees = [Worktree("/t/a", "a", "has-shared-dir", "ha"),
+                 Worktree("/t/b", "b", "wt-b-fresh", "hb")]
+        statuses = {"/t/a": status_a, "/t/b": status_b_post_fix}
+        result, undetermined = collisions(runner, trees, "main", statuses)
+        self.assertEqual([c["file"] for c in result], ["shared/thing.ts"])
+        self.assertEqual(result[0]["branches"], ["has-shared-dir", "wt-b-fresh"])
+        self.assertEqual(undetermined, [])
+
+    def test_different_files_in_a_same_named_new_directory_do_not_collide(self):
+        """The false-positive defect this plan's own live repro found, not in
+        the issue: two worktrees each creating a brand-new SAME-NAMED
+        directory but with DIFFERENT files inside must NOT collide. Real git
+        output from a live repro: pre-fix both collapse to `?? shared/` (a
+        false-positive collision on the directory name); post-fix each
+        expands to its own real filename and the false positive is gone.
+        """
+        status_a = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/alpha.ts"}))
+        status_b = Status(dirty=Dirty(untracked=1), paths=frozenset({"shared/beta.ts"}))
+        runner = ReplayRunner({
+            "git merge-base main HEAD": {"returncode": 0, "stdout": "base1\n", "stderr": ""},
+            "git diff --name-only -z base1 HEAD": {"returncode": 0, "stdout": "", "stderr": ""},
+        })
+        trees = [Worktree("/t/a", "a", "a", "ha"), Worktree("/t/b", "b", "b", "hb")]
+        statuses = {"/t/a": status_a, "/t/b": status_b}
+        result, undetermined = collisions(runner, trees, "main", statuses)
+        self.assertEqual(result, [])
+        self.assertEqual(undetermined, [])
 
 
 class TestCollisions(unittest.TestCase):
