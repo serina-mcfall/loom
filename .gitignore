@@ -17,3 +17,4 @@ __pycache__/
 .claude/.edit-count
 .claude/session-journal.md
 .claude/worklog.md
+.superpowers/
