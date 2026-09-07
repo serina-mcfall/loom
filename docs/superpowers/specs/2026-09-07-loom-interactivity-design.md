@@ -7,7 +7,7 @@
   2026-09-07 reskin design doc deferred — first round of it, not all of
   it. Adds `url` to the `PullRequest` and `Issue` dataclasses (additive;
   `SCHEMA_VERSION` unaffected, same reasoning as the tokens-and-cost
-  design's OPEN-3) and a `pr_number` field to two `needs_you()` item
+  design's OPEN-3) and a `pr_url` field to two `needs_you()` item
   kinds.
 
 ## The problem
@@ -76,11 +76,19 @@ provided `url` as the PRs & Issues panel, not a second, separately
 constructed one.
 
 **`loom/rank.py`'s `needs_you()`:** the `pr_failing` and
-`pr_awaiting_review` branches already compute `pr_number` locally
-before formatting it into the `subject` string (`f"PR #{pr_number}"`)
-and discarding the variable. It survives instead, as a `pr_number` key
-on the item dict. `loom/view.py`'s `aggregate_needs()` needs **no
-change** — it already spreads every original key through
+`pr_awaiting_review` branches already compute `pr_number = p.get(
+"number", "?")` locally, from `p` — the full serialized PR dict
+(`repo.get("prs", [])`, already carrying the real `url` this spec adds)
+— before formatting it into the `subject` string (`f"PR #{pr_number}"`)
+and discarding both `pr_number` and the rest of `p`. **Correction
+(2026-09-07, caught while planning):** an earlier draft of this section
+said `pr_number` survives as a new field, which would have left
+`loom.js` to reconstruct a URL from it — exactly the "decision in JS"
+this doc's own Constraints section rules out. Since `p` already has the
+real `url` in hand, `needs_you()` carries `pr_url = p.get("url")`
+through instead — the same real value, one hop earlier, no
+reconstruction anywhere. `loom/view.py`'s `aggregate_needs()` needs
+**no change** — it already spreads every original key through
 (`{**item, "repo": ..., "show_repo": ..., "label": ...}`), confirmed by
 reading the function, so a new key on the input dict reaches the
 client automatically.
@@ -103,9 +111,9 @@ helper:
   number (`i.number`/`i.url`)
 - `renderTicker` — each commit's sha (`c.sha`/`c.url`)
 - `renderNeeds` — the `pr_failing`/`pr_awaiting_review` items' `subject`
-  line, where the `PR #N` substring becomes a link when `item.pr_number`
+  line, where the `PR #N` substring becomes a link when `item.pr_url`
   is present (the other four `needs_you` kinds — agent-waiting,
-  collision, stopped-dirty, loose-end-flag — have no PR number and stay
+  collision, stopped-dirty, loose-end-flag — have no PR and stay
   exactly as they render today)
 
 ### Accessibility
@@ -147,7 +155,7 @@ forgotten.
 
 - **Build all URLs client-side in `loom.js`** from `issue_repo` +
   number/sha, avoiding any Python change beyond the unavoidable
-  `pr_number` threading in `rank.py`. Rejected: it works today (only
+  `pr_url` threading in `rank.py`. Rejected: it works today (only
   `github.com` remotes are recognized at all), but it puts a decision
   — what a link points to, whether one exists — into the file whose
   own header comment says decisions don't belong there. The
@@ -165,8 +173,9 @@ presentation-only) — real coverage, not just manual verification:
 - `tests/test_ghsrc.py`: a `PullRequest`/`Issue` built from mock `gh`
   JSON carries the `url` field through unchanged.
 - `tests/test_rank.py`: `needs_you()`'s `pr_failing` and
-  `pr_awaiting_review` items carry a real `pr_number` matching the
-  number already embedded in their `subject` string.
+  `pr_awaiting_review` items carry `pr_url` equal to the input PR
+  dict's own `url` field — not reconstructed, not derived from the
+  number embedded in `subject`.
 - A new test (`tests/test_ghsrc.py`) for `commit_url`: `None` when
   `issue_repo` is `None`, the expected `github.com/.../commit/{sha}`
   string otherwise.
