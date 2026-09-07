@@ -44,6 +44,17 @@ instead of reading a number and switching tabs to look it up by hand.
   `git log` knows nothing about GitHub — so commit links are
   necessarily built, not fetched.
 
+  **Correction (2026-09-07, found by an independent codex review):** a
+  built commit link is a *candidate* destination, not evidence the page
+  exists. `gitsrc.recent_commits()` runs `git log --all`, which includes
+  commits on a branch that has never been pushed — every one still gets
+  a link. A correct fix (verifying each commit is an ancestor of a
+  remote-tracking ref) costs one subprocess call per commit, up to 40
+  more per tick against this project's own measured, tested subprocess
+  budget (audit finding M4) — deliberately not attempted as part of this
+  round; see `loom/ghsrc.py`'s `commit_url()` docstring for the batched-
+  call shape a real fix would need.
+
 ## Design
 
 ### Data model (Python)
@@ -132,11 +143,47 @@ tab)` — sighted users see nothing extra, screen readers announce it as
 part of the link's name.
 
 Color stays exactly as today (`--num` for PR/issue numbers, `--dim` for
-commit shas) — no new color decision. `a:hover, a:focus-visible` gets a
-text-underline, so the interactive affordance is visible on interaction
-without changing how the page reads when it isn't being interacted
-with. `:focus-visible`'s existing outline rule already covers these
-links with zero changes.
+commit shas) — no new color decision.
+
+**Correction (2026-09-07, found by an independent codex review, both
+fixed the same day):**
+
+1. This section originally said hover/focus-only underlining was
+   sufficient for every link. It is not, for the two that carry no other
+   non-color cue: `.issue-num` and `.c-sha` have normal font weight, so
+   color was their *only* resting distinction from surrounding text —
+   a WCAG 1.4.1 / G183 violation. `.pr-num` and `.needs-subject` are
+   already bold in a context where nothing else is, which is itself a
+   valid non-color cue, so those two correctly keep the hover-only
+   underline. `.issue-num` and `.c-sha` now carry a permanent underline
+   instead.
+2. `.needs-subject`'s CSS set `font-weight: 700` but never `color` —
+   `<strong>` always inherited the page's text color for free, and
+   swapping the tag to `<a>` for a linked item meant the browser's own
+   default link color took over instead, measuring as low as 1.24:1
+   against the hero background. Now sets `color: var(--text)` explicitly
+   (9.76:1, verified).
+
+**Correction (2026-09-07, found by an independent codex review, fixed
+the same day) — focus loss on every render tick.** `renderTrees`,
+`renderPrs`, `renderTicker`, and `renderNeeds` all call
+`.replaceChildren()` unconditionally on every SSE tick (every 2 seconds).
+Before this feature, nothing inside that regenerated content was ever
+focusable, so the churn was invisible. Once real links lived there, a
+keyboard user who tabbed onto one lost focus to `<body>` before they
+could realistically press Enter — confirmed live by marking a DOM node
+and finding it a different object 3 seconds later. Fixed with a
+`preservingFocus()` wrapper (`loom.js`) around each of the four render
+calls: it remembers the focused link's `href` (a stable identity, not a
+DOM position), lets the render proceed exactly as before, then restores
+focus to whichever fresh link now carries that same `href`. A fuller
+fix — reusing the same DOM nodes across renders entirely, so focus is
+never even nominally lost — was considered and deliberately not built:
+it means restructuring all four render functions from wholesale rebuilds
+into field-level patches, real but separable engineering from closing
+the immediate hole. The accepted residual cost: a screen reader
+announces the restored link again, since it is a new DOM node: better
+than silently losing focus to `<body>`, not free.
 
 ### Scope: what gets linked, what doesn't
 

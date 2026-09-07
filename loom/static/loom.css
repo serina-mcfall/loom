@@ -230,20 +230,29 @@ tbody tr:nth-child(even) { background: #1d1e3b; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden;
                    clip-path: inset(50%); white-space: nowrap; }
 /* Real links (PR/issue numbers, commit shas, the needs-you PR reference) --
-   same colour as the plain text they replace, underlined only on hover/focus
-   so the page reads exactly as it did before this existed, and reveals the
-   affordance on interaction. Scoped to `a.` specifically: the "no matching
-   URL" fallback renders the identical class on a plain, non-anchor element,
-   which this must not touch. :focus-visible's existing outline rule already
-   covers these with no change needed here. */
-a.pr-num, a.issue-num, a.c-sha, a.needs-subject { text-decoration: none; }
+   same colour as the plain text they replace. Scoped to `a.` specifically:
+   the "no matching URL" fallback renders the identical class on a plain,
+   non-anchor element, which this must not touch. :focus-visible's existing
+   outline rule already covers these with no change needed here.
+   WCAG 1.4.1 / G183: colour alone must never be the only way a link is told
+   apart from surrounding text, and that has to hold AT REST, not only on
+   hover/focus. `.pr-num` and `.needs-subject` are already font-weight: 700
+   in a context where nothing else is bold, which is itself a non-colour
+   cue -- confirmed by an independent codex review, 2026-09-07, which flagged
+   `.issue-num` and `.c-sha` as the two that had neither bold NOR a resting
+   underline, relying on colour by itself. Those two keep a permanent
+   underline; the other two do not gain one, because they already pass. */
+a.pr-num, a.needs-subject { text-decoration: none; }
 a.pr-num:hover, a.pr-num:focus-visible,
-a.issue-num:hover, a.issue-num:focus-visible,
-a.c-sha:hover, a.c-sha:focus-visible,
 a.needs-subject:hover, a.needs-subject:focus-visible { text-decoration: underline; }
-/* `<strong>` is bold by the browser default; linking swaps the tag to `<a>`,
-   which is not -- this keeps the weight identical either way. */
-.needs-subject { font-weight: 700; }
+a.issue-num, a.c-sha { text-decoration: underline; }
+/* `<strong>` is bold by the browser default AND inherits its parent's text
+   colour; linking swaps the tag to `<a>`, which is neither -- an unstyled
+   anchor falls back to the BROWSER'S OWN default link colour (blue/purple),
+   not --text. A first draft only restored the weight and missed the
+   colour, which measured as low as 1.24:1 against the hero background --
+   found by an independent codex review, 2026-09-07. 9.76:1 verified here. */
+.needs-subject { font-weight: 700; color: var(--text); }
 :focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

@@ -62,6 +62,41 @@ function linkOrText(tag, value, className, url) {
   return a;
 }
 
+/** renderTrees/renderPrs/renderTicker/renderNeeds all call .replaceChildren()
+ *  UNCONDITIONALLY on every SSE tick (every 2s) -- fine while their content
+ *  held nothing focusable, but now that they render real links, a keyboard
+ *  user who tabs onto one loses focus to <body> the moment the next tick
+ *  fires, often well under the time it takes to actually read the link and
+ *  press Enter. Confirmed live, 2026-09-07: a marked DOM node was a
+ *  different object 3 seconds later.
+ *  This wraps a render call to restore focus afterward, keyed by the link's
+ *  own `href` -- a stable identity that survives the element being
+ *  destroyed and recreated, unlike DOM position, which a reorder or
+ *  insertion elsewhere in the same list would silently point at the wrong
+ *  row. If nothing with that href exists in the fresh render (its PR
+ *  merged, its commit aged out of the ticker), focus is not force-relocated
+ *  -- it falls back to whatever the browser does by default for any
+ *  element removed while focused, same as it always has.
+ *  TRADE-OFF, stated plainly rather than hidden: the restored element is a
+ *  NEW DOM node, not the same one, so a screen reader announces it again on
+ *  every tick a focused link's row happens to re-render. Less disruptive
+ *  than silently losing focus to <body>, but not free -- a full keyed-diff
+ *  reconciliation (reusing the same DOM nodes across renders entirely)
+ *  would avoid the re-announcement too, at the cost of restructuring all
+ *  four render functions from wholesale rebuilds into field-level patches.
+ *  Deliberately not attempted here: real, but separable engineering, not
+ *  this fix's job. */
+function preservingFocus(container, render) {
+  const active = document.activeElement;
+  const focusedHref = (active && active.tagName === "A" && container.contains(active))
+    ? active.href : null;
+  render();
+  if (focusedHref) {
+    const match = [...container.querySelectorAll("a")].find((a) => a.href === focusedHref);
+    if (match) match.focus();
+  }
+}
+
 // null/undefined in the snapshot means CANNOT TELL, never zero. Rendering it as
 // "?" is the whole point of audit finding H3: `String(null)` gave "null", and
 // `t.dirty || {}` quietly turned an unmeasurable tree back into a row of zeros,
@@ -564,10 +599,10 @@ function syncRepos(repos) {
       [n(repo.worktrees.length, "tree", "trees"),
        n(repo.prs.length, "PR", "PRs"),
        n(repo.issues.length, "issue", "issues")].join(" · ")));
-    renderTrees(r.treesBody, repo.worktrees);
+    preservingFocus(r.treesBody, () => renderTrees(r.treesBody, repo.worktrees));
     renderCollisions(r.collTable, repo.collisions, repo.worktrees);
-    renderPrs(r.prsBox, repo);
-    renderTicker(r.ticker, repo.commits);
+    preservingFocus(r.prsBox, () => renderPrs(r.prsBox, repo));
+    preservingFocus(r.ticker, () => renderTicker(r.ticker, repo.commits));
     renderLoose(r.loose, repo.flags);
     renderSources(r.sources, repo.sources, r.srcHeading);
   }
@@ -662,7 +697,7 @@ function render(snapshot) {
   // over a screen reader continuously, the same defect M7 fixed on #conn.
   renderConfigWarning(snapshot.config);
 
-  renderNeeds(snapshot.needs_you || []);
+  preservingFocus(el("needs"), () => renderNeeds(snapshot.needs_you || []));
   // The sentence is decided in loom.view.announcement; the page only decides WHEN,
   // which is a timing concern it genuinely owns.
   announce(snapshot.announcement);

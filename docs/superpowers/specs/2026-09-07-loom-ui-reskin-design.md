@@ -177,6 +177,19 @@ still reachable by heading navigation and the landmark rotor, which the
 the visually-hidden trick is gone, but a real `<h3>` survives rather
 than being flattened into plain summary text.
 
+**Correction (2026-09-07, found by an independent codex review):** "still
+reachable by heading navigation" above was stated as an unconditional
+fact; it isn't one. A `<h3>` inside `<summary>` is valid HTML and a real
+improvement over a bare summary with no heading at all, but some
+browser/assistive-tech combinations expose `<summary>` as a button and
+flatten its descendants' roles, which can mean the `<h3>` doesn't
+register as a heading to every screen reader — [MDN documents this exact
+limitation](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/summary#summaries_as_headings).
+The landmark region (`<section aria-labelledby>`) does not depend on
+this and holds regardless. Not re-verified across a real
+browser/screen-reader matrix as part of this correction — recorded as an
+honest gap rather than a claim this doc cannot back up.
+
 **Loose ends stays visible, not collapsed.** Unlike Data sources, it's
 occasionally user-actionable (an orphaned PR, a directory that stopped
 being a worktree) even though the common case is "No loose ends" — hiding
