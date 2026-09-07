@@ -137,6 +137,45 @@ class TestApplyGhCache(unittest.TestCase):
         sources = {s["name"]: s for s in repo["sources"]}
         self.assertFalse(sources["gh:prs"]["ok"])
 
+    def test_a_fast_tick_recomputes_worktree_pr_url_from_the_cached_pr_list(self):
+        # A worktree's pr/pr_url is computed by collect() against WHATEVER prs
+        # list that tick's own collection saw -- empty on every fast tick,
+        # since include_gh=False skips gh entirely. Splicing repo["prs"] back
+        # from cache is not enough by itself: the worktree's OWN pr/pr_url
+        # fields, set by an earlier collect() call before this cache splice
+        # even runs, must be recomputed from the just-restored list, or they
+        # stay whatever the fast tick's own (PR-less) collect() produced.
+        # Found by an independent codex review, 2026-09-07: 58 of every 60
+        # seconds, a worktree's PR link would silently vanish.
+        cache = self._good_cache(prs=[
+            {"number": 1, "branch": "feature-a", "url": "https://github.com/you/example/pull/1"},
+        ])
+        snap = self._snap(prs=[], gh_ok=False)
+        # This fast tick's own collect() ran with no gh data, so it produced
+        # exactly what a real fast tick would: no PR match for this worktree.
+        snap["repos"][0]["worktrees"] = [
+            {"dir": "a", "branch": "feature-a", "pr": None, "pr_url": None},
+        ]
+        apply_gh_cache(snap, cache, include_gh=False, now_iso="T2")
+        wt = snap["repos"][0]["worktrees"][0]
+        self.assertEqual(wt["pr"], 1)
+        self.assertEqual(wt["pr_url"], "https://github.com/you/example/pull/1")
+
+    def test_a_fast_tick_with_no_matching_pr_leaves_the_worktree_pr_fields_none(self):
+        # Negative control: a worktree whose branch matches nothing in the
+        # cached PR list must not pick up someone else's PR.
+        cache = self._good_cache(prs=[
+            {"number": 1, "branch": "feature-a", "url": "https://github.com/you/example/pull/1"},
+        ])
+        snap = self._snap(prs=[], gh_ok=False)
+        snap["repos"][0]["worktrees"] = [
+            {"dir": "b", "branch": "feature-b", "pr": None, "pr_url": None},
+        ]
+        apply_gh_cache(snap, cache, include_gh=False, now_iso="T2")
+        wt = snap["repos"][0]["worktrees"][0]
+        self.assertIsNone(wt["pr"])
+        self.assertIsNone(wt["pr_url"])
+
     def test_git_only_sources_are_never_touched_by_the_splice(self):
         cache = self._good_cache(prs=[])
         snap = self._snap(prs=[], gh_ok=False)

@@ -125,6 +125,24 @@ def apply_gh_cache(snap: dict, cached_gh: dict[str, dict], include_gh: bool,
             continue
 
         repo["prs"], repo["issues"] = entry["prs"], entry["issues"]
+        # A worktree's `pr`/`pr_url` was computed by collect() against
+        # WHATEVER `prs` list that tick's own collection actually saw --
+        # empty, on every fast tick, since `include_gh=False` skips `gh`
+        # entirely (SLOW_SECONDS=60, FAST_SECONDS=2: this is 29 ticks out of
+        # every 30). Splicing the cached PR list back into `repo["prs"]`
+        # above does NOT, by itself, repair the worktree association --
+        # without this, every worktree's PR badge (and now its link) goes
+        # blank for ~58 of every 60 seconds and only reappears on the one
+        # tick that actually re-fetched gh. This is the same defect the bare
+        # `pr` number always had; `pr_url` just made it visible as a link
+        # flickering rather than a number flickering. Found by an
+        # independent codex review, 2026-09-07 -- mirrors collect.py's own
+        # by_branch construction exactly, so the two never diverge.
+        by_branch = {p["branch"]: p for p in repo["prs"] if "branch" in p}
+        for wt in repo.get("worktrees", []):
+            match = by_branch.get(wt.get("branch") or "")
+            wt["pr"] = match["number"] if match else None
+            wt["pr_url"] = match.get("url") if match else None
         # Status comes from the last ATTEMPT, data from the last SUCCESS. Holding
         # them apart is what stops the page flapping: without it, a failed slow
         # tick showed the banner and the next fast tick spliced the stale
