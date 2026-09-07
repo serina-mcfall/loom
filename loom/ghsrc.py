@@ -73,9 +73,24 @@ def origin_repo(runner: Runner, root: str) -> str | None:
 
 def remote_reachable_shas(runner: Runner, root: str, since_iso: str) -> list[str] | None:
     """Full shas reachable from `origin`'s remote-tracking refs, no older
-    than `since_iso` -- ONE subprocess call, bounded by recency rather than
-    full history, the same way `gitsrc.recent_commits()` bounds itself by
-    count rather than walking the whole repo.
+    than `since_iso` -- ONE subprocess call.
+
+    The OUTPUT is bounded by recency, but the WALK is not: `--since-as-filter`
+    (see gap 2 below) deliberately gives up the traversal-pruning that plain
+    `--since` would otherwise use, so this call inspects the full remote
+    history rather than stopping early. Measured on a 60k-commit synthetic
+    repo at ~115x the work of the pruned equivalent -- negligible at this
+    project's realistic repo sizes, but "bounded like `recent_commits()`
+    bounds itself by count" would overstate what this actually does. Found
+    by `review-adjudicate`, 2026-09-07.
+
+    Requires git >= 2.37 for `--since-as-filter` (added in that release).
+    This project's stated floor is "Python 3.10 or newer -- nothing else";
+    this is the one place that additionally assumes a modern git. Not
+    enforced at runtime: a git older than 2.37 will fail this call's option
+    parsing, `r.ok` will be false, and every commit link is withheld via the
+    same "cannot verify, do not link" path a failed call already takes for
+    any other reason.
 
     Returns `None` on a failed git call -- an honest "could not verify",
     never a guessed empty list, which `commit_url` below treats as "do not

@@ -63,6 +63,34 @@ instead of reading a number and switching tabs to look it up by hand.
   (unpushed) commits correctly shows no link, and every already-pushed
   commit before them correctly does.
 
+  **Correction (2026-09-07, found by a third independent codex review,
+  adjudicated the same day):** three more correctness gaps in the first
+  draft above, each verified empirically in a scratch git repo before
+  being trusted. (1) Bare `--remotes` matches every configured remote,
+  not just `origin` — a commit pushed only to a personal fork or backup
+  mirror would be marked reachable even though the constructed URL
+  always targets `origin`'s GitHub repo. Scoped to `--remotes=origin/*`.
+  (2) `--since` can prune the traversal early when history isn't
+  strictly date-ordered (a merge commit dated earlier than its parents),
+  silently dropping commits that are both reachable and new enough.
+  Switched to `--since-as-filter`, git's own documented fix — it filters
+  by date without using it to prune the walk. This means the OUTPUT
+  stays bounded by recency, but the WALK is no longer: measured ~115x
+  more work on a 60k-commit synthetic repo, negligible at this project's
+  real repo sizes but no longer accurately described as "bounded" in the
+  same sense `recent_commits()` bounds itself by count. `--since-as-filter`
+  also raises this project's implicit floor to git ≥ 2.37 (the release
+  that added it) — undocumented until now, and not enforced at runtime;
+  an older git simply fails the call, and the existing "cannot verify, do
+  not link" path withholds every commit link the same way it does for any
+  other failure. (3) The date bound passed in is derived from `Commit.when`
+  (author date, `%aI`), but `--since`/`--since-as-filter` filter by
+  committer date — verified these are not interchangeable. Rather than
+  widen `gitsrc.Commit` to also carry committer date, `loom/collect.py`'s
+  `_commit_dicts()` pads the bound with a `SINCE_MARGIN` safety margin
+  generous enough to absorb realistic author/committer skew, a
+  deliberately loose bound rather than a precise one.
+
 ## Design
 
 ### Data model (Python)
