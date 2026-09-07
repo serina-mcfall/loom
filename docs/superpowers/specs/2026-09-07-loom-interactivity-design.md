@@ -188,11 +188,24 @@ fixed the same day):**
    sufficient for every link. It is not, for the two that carry no other
    non-color cue: `.issue-num` and `.c-sha` have normal font weight, so
    color was their *only* resting distinction from surrounding text —
-   a WCAG 1.4.1 / G183 violation. `.pr-num` and `.needs-subject` are
-   already bold in a context where nothing else is, which is itself a
-   valid non-color cue, so those two correctly keep the hover-only
-   underline. `.issue-num` and `.c-sha` now carry a permanent underline
-   instead.
+   a WCAG 1.4.1 / G183 violation. `.issue-num` and `.c-sha` now carry a
+   permanent underline instead.
+
+   **Correction to the correction (2026-09-07, found by an independent
+   review-a11y + review-docs pass, confirmed Blocker by review-adjudicate):**
+   this point originally also said `.pr-num` and `.needs-subject` correctly
+   kept the hover-only underline because their bold weight was "already a
+   valid non-color cue." False for `.needs-subject` — `renderNeeds()`
+   renders every needs-you item's subject through the same `.needs-subject`
+   class regardless of whether it is linked (only the `pr_failing`/
+   `pr_awaiting_review` kinds ever carry a `pr_url`), so an unlinked
+   subject in the same list is equally bold, and identical styling on both
+   sides of a link/non-link boundary is not a cue. `.needs-subject` now
+   carries the same permanent underline as `.issue-num`/`.c-sha`. `.pr-num`
+   alone genuinely keeps the hover-only underline: it only ever renders on
+   a worktree with a matched PR, whose `url` field is a required `str`
+   (never absent when a PR match exists), so there is no unlinked `.pr-num`
+   sibling in practice for bold to fail to distinguish from.
 2. `.needs-subject`'s CSS set `font-weight: 700` but never `color` —
    `<strong>` always inherited the page's text color for free, and
    swapping the tag to `<a>` for a linked item meant the browser's own

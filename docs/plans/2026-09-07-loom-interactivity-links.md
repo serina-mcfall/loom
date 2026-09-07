@@ -148,12 +148,22 @@ STEP 4  loom.js + loom.css: render real links wherever a PR/issue        [needs 
         turned out to be a WCAG 1.4.1/G183 violation for the two that
         carry no other non-color cue -- `.issue-num` and `.c-sha` have
         normal font weight, so color was their only resting distinction
-        from surrounding text. Those two now carry a PERMANENT underline;
-        `.pr-num`/`.needs-subject` correctly kept hover-only, since their
-        bold weight is already a valid non-color cue. Following this
-        step's instructions as originally written would recreate the
-        violation -- read the shipped CSS, not this paragraph, for the
-        actual rule.
+        from surrounding text. Those two now carry a PERMANENT underline.
+
+        SUPERSEDED AGAIN (2026-09-07, found by an independent review-a11y +
+        review-docs pass, confirmed Blocker by review-adjudicate): the
+        paragraph above also claimed `.pr-num`/`.needs-subject` correctly
+        kept hover-only underlining because their bold weight was "already
+        a valid non-color cue." False for `.needs-subject` -- every
+        needs-you item's subject renders through the same class whether or
+        not it's linked (only two of six kinds ever carry a `pr_url`), so
+        an unlinked sibling in the same list is equally bold and the cue
+        distinguishes nothing. `.needs-subject` now carries the same
+        permanent underline as `.issue-num`/`.c-sha`. `.pr-num` alone keeps
+        hover-only underlining -- it has no unlinked-sibling problem, since
+        it only ever renders on a worktree with a matched PR, whose `url`
+        is a required field. Read the shipped CSS, not this paragraph, for
+        the actual rule.
         done when: `python3 -m unittest discover -s tests` still green
         (this step touches only static assets); loading the dashboard
         in a real browser (`python3 loom_cli.py serve`) shows each of

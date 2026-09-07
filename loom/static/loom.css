@@ -236,16 +236,24 @@ tbody tr:nth-child(even) { background: #1d1e3b; }
    outline rule already covers these with no change needed here.
    WCAG 1.4.1 / G183: colour alone must never be the only way a link is told
    apart from surrounding text, and that has to hold AT REST, not only on
-   hover/focus. `.pr-num` and `.needs-subject` are already font-weight: 700
-   in a context where nothing else is bold, which is itself a non-colour
-   cue -- confirmed by an independent codex review, 2026-09-07, which flagged
-   `.issue-num` and `.c-sha` as the two that had neither bold NOR a resting
-   underline, relying on colour by itself. Those two keep a permanent
-   underline; the other two do not gain one, because they already pass. */
-a.pr-num, a.needs-subject { text-decoration: none; }
-a.pr-num:hover, a.pr-num:focus-visible,
-a.needs-subject:hover, a.needs-subject:focus-visible { text-decoration: underline; }
-a.issue-num, a.c-sha { text-decoration: underline; }
+   hover/focus.
+
+   CORRECTED (found by an independent review-a11y + review-docs pass,
+   confirmed by review-adjudicate as a Blocker, 2026-09-07): this comment
+   used to claim `.pr-num` and `.needs-subject` were exempt because their
+   font-weight: 700 was itself a non-colour cue, "in a context where
+   nothing else is bold." False for `.needs-subject`: `renderNeeds()`
+   (loom.js) renders EVERY needs-you item's subject through the same
+   `.needs-subject` class, linked or not, so an unlinked item in the same
+   list is equally bold -- bold cannot distinguish a link from the plain
+   text beside it when both carry it. `.needs-subject` now gets the same
+   permanent underline as `.issue-num`/`.c-sha`. `.pr-num` genuinely is
+   exempt: it is only ever rendered on a worktree with a matched PR, whose
+   `url` field is a required `str` (never absent when `pr` is truthy), so
+   there is no unlinked `.pr-num` sibling in practice to collide with. */
+a.pr-num { text-decoration: none; }
+a.pr-num:hover, a.pr-num:focus-visible { text-decoration: underline; }
+a.issue-num, a.c-sha, a.needs-subject { text-decoration: underline; }
 /* `<strong>` is bold by the browser default AND inherits its parent's text
    colour; linking swaps the tag to `<a>`, which is neither -- an unstyled
    anchor falls back to the BROWSER'S OWN default link colour (blue/purple),

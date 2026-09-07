@@ -147,8 +147,15 @@ class TestApplyGhCache(unittest.TestCase):
         # stay whatever the fast tick's own (PR-less) collect() produced.
         # Found by an independent codex review, 2026-09-07: 58 of every 60
         # seconds, a worktree's PR link would silently vanish.
+        # The url is deliberately NOT what f"https://github.com/{repo}/pull/{n}"
+        # would reconstruct from this test's own repo/number -- found by
+        # review-tests, confirmed by review-adjudicate, 2026-09-07: the original
+        # fixture's url happened to equal the naive reconstruction, so a future
+        # regression that reconstructed instead of passing the real value through
+        # would still have passed this test.
+        real_url = "https://github.com/a-totally-different-org/renamed-repo/pull/999?tab=files"
         cache = self._good_cache(prs=[
-            {"number": 1, "branch": "feature-a", "url": "https://github.com/you/example/pull/1"},
+            {"number": 1, "branch": "feature-a", "url": real_url},
         ])
         snap = self._snap(prs=[], gh_ok=False)
         # This fast tick's own collect() ran with no gh data, so it produced
@@ -159,7 +166,7 @@ class TestApplyGhCache(unittest.TestCase):
         apply_gh_cache(snap, cache, include_gh=False, now_iso="T2")
         wt = snap["repos"][0]["worktrees"][0]
         self.assertEqual(wt["pr"], 1)
-        self.assertEqual(wt["pr_url"], "https://github.com/you/example/pull/1")
+        self.assertEqual(wt["pr_url"], real_url)
 
     def test_a_fast_tick_with_no_matching_pr_leaves_the_worktree_pr_fields_none(self):
         # Negative control: a worktree whose branch matches nothing in the

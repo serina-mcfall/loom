@@ -194,8 +194,8 @@ function renderNeeds(items) {
     // whole subject becomes the link, no substring parsing needed. Linking
     // swaps the tag from <strong> to <a>, so "needs-subject" carries the
     // bold weight in loom.css regardless of which one rendered.
-    li.append(linkOrText("strong", `${item.subject} `, "needs-subject", item.pr_url));
-    li.append(text("span", `— ${item.detail}`));
+    li.append(linkOrText("strong", item.subject.trimEnd(), "needs-subject", item.pr_url));
+    li.append(text("span", ` — ${item.detail}`));
     list.append(li);
   }
 }
@@ -342,8 +342,8 @@ function renderPrs(box, repo) {
   }
   for (const i of repo.issues) {
     const li = document.createElement("li");
-    li.append(linkOrText("span", `#${i.number} `, "issue-num", i.url));
-    li.append(text("span", i.title));
+    li.append(linkOrText("span", `#${i.number}`, "issue-num", i.url));
+    li.append(text("span", ` ${i.title}`));
     if (i.labels && i.labels.length) {
       li.append(text("span", ` [${i.labels.join(", ")}]`, "issue-label"));
     }
@@ -412,10 +412,10 @@ function renderTicker(ol, commits) {
     // re-reading each line to find where it starts.
     li.append(text("span", c.when.slice(11, 16) + " ", "c-time"));
     if (c.branch) li.append(text("span", c.branch + " ", "c-branch"));
-    li.append(text("span", c.subject));
+    li.append(text("span", `${c.subject} `));
     // sha, files and the +/- totals were all collected and rendered nowhere (L2).
     // The sha is what you need to `git show` the thing you just read about.
-    li.append(linkOrText("span", ` ${c.sha}`, "c-sha", c.url));
+    li.append(linkOrText("span", c.sha, "c-sha", c.url));
     if (c.files) {
       li.append(text("span", ` ${c.files}f `, "st--dim"));
       li.append(text("span", `+${c.add}`, "st--good"));
@@ -627,6 +627,14 @@ function syncRepos(repos) {
        n(repo.prs.length, "PR", "PRs"),
        n(repo.issues.length, "issue", "issues")].join(" · ")));
     preservingFocus(r.treesBody, () => renderTrees(r.treesBody, repo.worktrees));
+    // renderCollisions/renderLoose/renderSources are NOT wrapped in preservingFocus:
+    // none of the three renders a focusable node today (renderSources' <details>
+    // summary lives outside the list this rebuilds). CORRECTED (found by
+    // review-a11y, confirmed by review-adjudicate, 2026-09-07): the plan's own
+    // LEFT OUT section names linking Loose ends' orphaned-PR references as an
+    // easy follow-up, "the identical shape to needs-you's PR links" -- the moment
+    // renderLoose renders a link, it MUST be wrapped the same way renderNeeds is,
+    // or focus is lost to <body> on every 2-second tick, same as before this fix.
     renderCollisions(r.collTable, repo.collisions, repo.worktrees);
     preservingFocus(r.prsBox, () => renderPrs(r.prsBox, repo));
     preservingFocus(r.ticker, () => renderTicker(r.ticker, repo.commits));

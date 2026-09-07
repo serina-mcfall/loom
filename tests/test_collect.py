@@ -386,6 +386,15 @@ class TestCollectSources(unittest.TestCase):
         # output proves the list is genuinely non-empty without containing
         # the unreachable commit, and the call-count assertion below proves
         # exactly one rev-list call covers the whole batch.
+        #
+        # CORRECTED (found by review-tests, confirmed by review-adjudicate,
+        # 2026-09-07): the decoy above was neither a prefix NOR a substring
+        # of the unreachable sha, so `full.startswith(sha)` (correct) and a
+        # regressed `sha in full` (wrong -- would match ANY sha appearing
+        # anywhere inside a full sha, not just as its prefix) produced
+        # identical results here. The third decoy below embeds the
+        # unreachable sha's digits mid-string, not at position 0, so only
+        # the correct prefix-match semantics pass this test.
         recordings = self._recordings(
             pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
             issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
@@ -406,9 +415,15 @@ class TestCollectSources(unittest.TestCase):
         recordings["git rev-list --remotes=origin/* --since-as-filter 2026-07-26T10:00:00+12:00"] = {
             "returncode": 0,
             # A decoy full sha that is neither commit -- proves membership
-            # is genuinely checked, not "list has something in it".
+            # is genuinely checked, not "list has something in it". A THIRD
+            # decoy embeds the unreachable commit's abbreviated sha mid-string
+            # (not at position 0) -- proves membership is a PREFIX match, not
+            # a substring match: a regressed `sha in full` would wrongly call
+            # "2ee9911" reachable via this line, while `full.startswith(sha)`
+            # correctly does not.
             "stdout": ("161948bfeedfacecafebeef0123456789abcdef\n"
-                       "deadbeef00000000000000000000000000000000\n"),
+                       "deadbeef00000000000000000000000000000000\n"
+                       "aaaaaaaa2ee9911bbbbbbbbbbbbbbbbbbbbbbbbbb\n"),
             "stderr": "",
         }
         runner = ReplayRunner(recordings)
@@ -442,6 +457,37 @@ class TestCollectSources(unittest.TestCase):
         }
         recordings["git rev-list --remotes=origin/* --since-as-filter 2026-07-27T07:31:55+12:00"] = {
             "returncode": 128, "stdout": "", "stderr": "fatal: bad revision",
+        }
+        runner = ReplayRunner(recordings)
+        snapshot = collect(runner, "/repo", tempfile.mkdtemp())
+        commit = snapshot["repos"][0]["commits"][0]
+        self.assertIsNone(commit["url"])
+
+    def test_a_repo_with_no_github_remote_skips_the_reachability_call_entirely(self):
+        # Found by review-code, confirmed by review-adjudicate, 2026-09-07: a
+        # repo with real commit history but no GitHub-shaped origin (a GitLab/
+        # Bitbucket remote, or none at all) used to pay one `git rev-list`
+        # subprocess call every tick for a `commit_url` that can NEVER be
+        # produced without a GitHub repo to point at -- independent of whether
+        # any commit is actually reachable. `ReplayRunner` raises on any
+        # unrecorded call, so simply not recording `git rev-list --remotes=
+        # origin/*` here is itself the proof the call never happens.
+        recordings = self._recordings(
+            pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+            issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+        )
+        recordings["git remote get-url origin"] = {
+            "returncode": 0, "stdout": "git@gitlab.com:you/example.git\n", "stderr": "",
+        }
+        # gh calls are keyed on "-R you/example" regardless of origin_repo, so
+        # the PR/issue fixtures above still apply unchanged.
+        recordings["git log --all --no-merges -n 40 "
+                   "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat"] = {
+            "returncode": 0,
+            "stdout": ("\x1e161948b\x1f2026-08-03T07:31:55+12:00\x1f"
+                       "pushed to origin\x1fHEAD -> feature-c\n"
+                       "3\t1\tsrc/board.ts\n"),
+            "stderr": "",
         }
         runner = ReplayRunner(recordings)
         snapshot = collect(runner, "/repo", tempfile.mkdtemp())
