@@ -16,8 +16,12 @@ from loom import cost as cost_mod
 NOW = datetime(2026, 8, 3, 8, 0, 0, tzinfo=timezone.utc)
 
 
-def pr(number, branch):
-    return PullRequest(number, "t", branch, False, None, "none", "2026-08-03T00:00:00Z")
+def pr(number, branch, url=None):
+    return PullRequest(
+        number=number, title="t", branch=branch, draft=False, review=None,
+        checks="none", updated_at="2026-08-03T00:00:00Z",
+        url=url or f"https://github.com/you/example/pull/{number}",
+    )
 
 
 class TestFindFlags(unittest.TestCase):
@@ -136,10 +140,24 @@ class TestSubprocessBudget(unittest.TestCase):
 
     # Per tick, include_gh=False, one worktree:
     #   repo-level   default_branch, worktree list, tmux, origin remote,
-    #                recent_commits                                        = 5
+    #                recent_commits, remote_reachable_shas               = 6
     #   per worktree rev-list (ahead/behind), status (counts AND paths),
     #                merge-base, diff merge-base..HEAD                     = 4
-    BUDGET = 9
+    #
+    # `remote_reachable_shas` raised this from 5 to 6 (BUDGET 9 -> 10),
+    # 2026-09-07, closing the interactivity spec's known "commit links can
+    # 404 for unpushed commits" gap -- justified here per this test's own
+    # rule, not slipped in silently. It is ONE call for the WHOLE commit
+    # batch (never per-commit -- the per-commit alternative, `git
+    # merge-base --is-ancestor` x40, was rejected specifically because of
+    # this budget), and only runs at all when recent_commits() found at
+    # least one commit AND the repo has a resolvable GitHub remote --
+    # CORRECTED (found by review-final, 2026-09-07): the second condition
+    # was added by the same-day fix that closed review-code's finding that
+    # this call ran even with no GitHub remote, wasting a subprocess on a
+    # url that could never be produced. Repo-level cost either way, not
+    # `7n`, so it does not multiply with worktree count.
+    BUDGET = 10
 
     def _runner(self):
         return ReplayRunner({
@@ -161,8 +179,16 @@ class TestSubprocessBudget(unittest.TestCase):
             "git diff --name-only -z base1 HEAD":
                 {"returncode": 0, "stdout": "", "stderr": ""},
             "git log --all --no-merges -n 40 "
-            "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat":
-                {"returncode": 0, "stdout": "", "stderr": ""},
+            "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat": {
+                "returncode": 0,
+                "stdout": ("\x1e161948b\x1f2026-08-03T07:31:55+12:00\x1f"
+                           "a commit, so the budget exercises the real path\x1fHEAD -> main\n"
+                           "1\t0\tREADME.md\n"),
+                "stderr": "",
+            },
+            "git rev-list --remotes=origin/* --since-as-filter 2026-07-27T07:31:55+12:00":
+                {"returncode": 0, "stdout": "161948bfeedfacecafebeef0123456789abcdef\n",
+                 "stderr": ""},
         })
 
     def test_one_tick_over_one_worktree_stays_within_budget(self):
@@ -290,9 +316,9 @@ class TestCollectSources(unittest.TestCase):
             "git remote get-url origin":
                 {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
             "gh pr list -R you/example --state open --limit 50 --json "
-            "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,updatedAt": pr_result,
+            "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,updatedAt,url": pr_result,
             "gh issue list -R you/example --state open --limit 50 --json "
-            "number,title,labels,assignees": issue_result,
+            "number,title,labels,assignees,url": issue_result,
             "git log -1 --format=%h%x1f%aI%x1f%s": {
                 "returncode": 0,
                 "stdout": "abc1234\x1f2026-08-03T07:00:00+12:00\x1fSome commit\n",
@@ -319,6 +345,158 @@ class TestCollectSources(unittest.TestCase):
         self.assertTrue(sources["gh:prs"]["ok"])
         self.assertFalse(sources["gh:issues"]["ok"])
         self.assertIsNotNone(sources["gh:issues"]["error"])
+
+    def test_a_worktree_whose_branch_matches_a_pr_gets_the_real_pr_url(self):
+        # The interactivity spec's worktree-badge link: pr_url must be the
+        # SAME real gh-provided url the PRs & Issues panel uses, not a
+        # separately constructed string -- proves by_branch's widening from
+        # {branch: number} to {branch: PullRequest} actually reuses the
+        # object rather than just re-deriving the number from it. The url
+        # below is deliberately NOT what a naive f"https://github.com/
+        # {issue_repo}/pull/{number}" reconstruction from "you/example"
+        # (this fixture's real origin) and 42 would produce -- an earlier
+        # version used a url matching that exact pattern, so a regression
+        # that silently reconstructed instead of reusing would have passed
+        # unnoticed. Found by an independent codex review, 2026-09-07.
+        real_url = "https://github.com/a-totally-different-org/renamed-repo/pull/999?tab=files"
+        pr_json = json.dumps([{
+            "number": 42, "title": "t", "headRefName": "main",
+            "isDraft": False, "reviewDecision": None, "statusCheckRollup": [],
+            "updatedAt": "", "url": real_url,
+        }])
+        runner = ReplayRunner(self._recordings(
+            pr_result={"returncode": 0, "stdout": pr_json, "stderr": ""},
+            issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+        ))
+        snapshot = collect(runner, "/repo", tempfile.mkdtemp())
+        wt = snapshot["repos"][0]["worktrees"][0]
+        self.assertEqual(wt["pr"], 42)
+        self.assertEqual(wt["pr_url"], real_url)
+
+    def test_reachable_and_unreachable_commits_in_the_same_batch_are_told_apart(self):
+        # git has no notion of GitHub, so this is the one link that is BUILT
+        # (issue_repo + sha), never fetched -- proves collect() actually
+        # wires ghsrc.commit_url() in, using the real captured git-log
+        # fixture shape from tests/test_gitsrc.py (LOG) rather than a
+        # hand-rolled one that could diverge from the real numstat format.
+        #
+        # TWO commits in ONE batch, one reachable and one not, against a
+        # rev-list result that is neither empty nor "everything matches" --
+        # found by an independent codex review, 2026-09-07: a first draft's
+        # tests used a single-commit batch, so `commit_reachable()` could
+        # have been replaced with `bool(remote_shas)` (or reachability moved
+        # inside the loop, one call per commit) and every test still
+        # passed. This shape rules out both: the decoy sha in rev-list's
+        # output proves the list is genuinely non-empty without containing
+        # the unreachable commit, and the call-count assertion below proves
+        # exactly one rev-list call covers the whole batch.
+        #
+        # CORRECTED (found by review-tests, confirmed by review-adjudicate,
+        # 2026-09-07): the decoy above was neither a prefix NOR a substring
+        # of the unreachable sha, so `full.startswith(sha)` (correct) and a
+        # regressed `sha in full` (wrong -- would match ANY sha appearing
+        # anywhere inside a full sha, not just as its prefix) produced
+        # identical results here. The third decoy below embeds the
+        # unreachable sha's digits mid-string, not at position 0, so only
+        # the correct prefix-match semantics pass this test.
+        recordings = self._recordings(
+            pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+            issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+        )
+        recordings["git log --all --no-merges -n 40 "
+                   "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat"] = {
+            "returncode": 0,
+            "stdout": ("\x1e161948b\x1f2026-08-03T07:31:55+12:00\x1f"
+                       "pushed to origin\x1fHEAD -> feature-c\n"
+                       "3\t1\tsrc/board.ts\n"
+                       "\x1e2ee9911\x1f2026-08-02T10:00:00+12:00\x1f"
+                       "never pushed anywhere\x1fHEAD -> feature-c\n"
+                       "1\t0\tsrc/other.ts\n"),
+            "stderr": "",
+        }
+        # min(when) is the 08-02 commit; SINCE_MARGIN (7 days) is subtracted
+        # from it, giving this exact bound.
+        recordings["git rev-list --remotes=origin/* --since-as-filter 2026-07-26T10:00:00+12:00"] = {
+            "returncode": 0,
+            # A decoy full sha that is neither commit -- proves membership
+            # is genuinely checked, not "list has something in it". A THIRD
+            # decoy embeds the unreachable commit's abbreviated sha mid-string
+            # (not at position 0) -- proves membership is a PREFIX match, not
+            # a substring match: a regressed `sha in full` would wrongly call
+            # "2ee9911" reachable via this line, while `full.startswith(sha)`
+            # correctly does not.
+            "stdout": ("161948bfeedfacecafebeef0123456789abcdef\n"
+                       "deadbeef00000000000000000000000000000000\n"
+                       "aaaaaaaa2ee9911bbbbbbbbbbbbbbbbbbbbbbbbbb\n"),
+            "stderr": "",
+        }
+        runner = ReplayRunner(recordings)
+        snapshot = collect(runner, "/repo", tempfile.mkdtemp())
+        commits = {c["sha"]: c for c in snapshot["repos"][0]["commits"]}
+        self.assertEqual(commits["161948b"]["url"],
+                          "https://github.com/you/example/commit/161948b")
+        self.assertIsNone(commits["2ee9911"]["url"])
+        rev_list_calls = [c for c in runner.calls if c[:2] == ("git", "rev-list")
+                          and "--remotes=origin/*" in c]
+        self.assertEqual(len(rev_list_calls), 1,
+                          f"expected exactly one batched reachability call, got "
+                          f"{len(rev_list_calls)}: {rev_list_calls}")
+
+    def test_a_failed_reachability_check_also_withholds_the_url(self):
+        # Same honesty rule the rest of this project follows: a git call
+        # that fails must never be read as "checked and it's fine". If
+        # `git rev-list --remotes` itself fails, no commit gets a url,
+        # not every commit.
+        recordings = self._recordings(
+            pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+            issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+        )
+        recordings["git log --all --no-merges -n 40 "
+                   "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat"] = {
+            "returncode": 0,
+            "stdout": ("\x1e161948b\x1f2026-08-03T07:31:55+12:00\x1f"
+                       "test(clues): flatten\x1fHEAD -> feature-c\n"
+                       "3\t1\tsrc/board.ts\n"),
+            "stderr": "",
+        }
+        recordings["git rev-list --remotes=origin/* --since-as-filter 2026-07-27T07:31:55+12:00"] = {
+            "returncode": 128, "stdout": "", "stderr": "fatal: bad revision",
+        }
+        runner = ReplayRunner(recordings)
+        snapshot = collect(runner, "/repo", tempfile.mkdtemp())
+        commit = snapshot["repos"][0]["commits"][0]
+        self.assertIsNone(commit["url"])
+
+    def test_a_repo_with_no_github_remote_skips_the_reachability_call_entirely(self):
+        # Found by review-code, confirmed by review-adjudicate, 2026-09-07: a
+        # repo with real commit history but no GitHub-shaped origin (a GitLab/
+        # Bitbucket remote, or none at all) used to pay one `git rev-list`
+        # subprocess call every tick for a `commit_url` that can NEVER be
+        # produced without a GitHub repo to point at -- independent of whether
+        # any commit is actually reachable. `ReplayRunner` raises on any
+        # unrecorded call, so simply not recording `git rev-list --remotes=
+        # origin/*` here is itself the proof the call never happens.
+        recordings = self._recordings(
+            pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+            issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+        )
+        recordings["git remote get-url origin"] = {
+            "returncode": 0, "stdout": "git@gitlab.com:you/example.git\n", "stderr": "",
+        }
+        # gh calls are keyed on "-R you/example" regardless of origin_repo, so
+        # the PR/issue fixtures above still apply unchanged.
+        recordings["git log --all --no-merges -n 40 "
+                   "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat"] = {
+            "returncode": 0,
+            "stdout": ("\x1e161948b\x1f2026-08-03T07:31:55+12:00\x1f"
+                       "pushed to origin\x1fHEAD -> feature-c\n"
+                       "3\t1\tsrc/board.ts\n"),
+            "stderr": "",
+        }
+        runner = ReplayRunner(recordings)
+        snapshot = collect(runner, "/repo", tempfile.mkdtemp())
+        commit = snapshot["repos"][0]["commits"][0]
+        self.assertIsNone(commit["url"])
 
     def test_empty_state_directory_is_not_a_hooks_failure(self):
         runner = ReplayRunner(self._recordings(

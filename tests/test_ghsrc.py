@@ -1,12 +1,12 @@
 import json
 import unittest
 from loom.runner import ReplayRunner
-from loom.ghsrc import origin_repo, fetch_prs, fetch_issues, derive_checks
+from loom.ghsrc import origin_repo, fetch_prs, fetch_issues, derive_checks, commit_url
 
 PR_ARGS = ("gh pr list -R you/example --state open --limit 50 --json "
-           "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,updatedAt")
+           "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,updatedAt,url")
 ISSUE_ARGS = ("gh issue list -R you/example --state open --limit 50 --json "
-              "number,title,labels,assignees")
+              "number,title,labels,assignees,url")
 
 
 class TestOriginRepo(unittest.TestCase):
@@ -106,12 +106,34 @@ class TestFetchPrs(unittest.TestCase):
             "headRefName": "fix/one-clues-owner", "isDraft": False,
             "reviewDecision": "", "statusCheckRollup": [],
             "updatedAt": "2026-08-02T20:49:00Z",
+            "url": "https://github.com/you/example/pull/67",
         }])
         runner = ReplayRunner({PR_ARGS: {"returncode": 0, "stdout": payload, "stderr": ""}})
         prs, status = fetch_prs(runner, "/repo", "you/example")
         self.assertIsNone(prs[0].review)
         self.assertEqual(prs[0].checks, "none")
         self.assertTrue(status.ok)
+
+    def test_url_survives_from_gh_json_unchanged(self):
+        # The interactivity spec's whole point: gh's own real url, never
+        # reconstructed from owner/repo/number. Deliberately a URL a naive
+        # f"https://github.com/{repo}/pull/{number}" reconstruction could
+        # NOT produce (different owner/repo AND a query string) -- an
+        # earlier version of this test used a url matching that exact
+        # pattern, so a regression that silently swapped passthrough for
+        # reconstruction would have passed unnoticed. Found by an
+        # independent codex review, 2026-09-07.
+        real_url = "https://github.com/a-totally-different-org/renamed-repo/pull/999?tab=files"
+        payload = json.dumps([{
+            "number": 67, "title": "One owner for the clues",
+            "headRefName": "fix/one-clues-owner", "isDraft": False,
+            "reviewDecision": "", "statusCheckRollup": [],
+            "updatedAt": "2026-08-02T20:49:00Z",
+            "url": real_url,
+        }])
+        runner = ReplayRunner({PR_ARGS: {"returncode": 0, "stdout": payload, "stderr": ""}})
+        prs, _ = fetch_prs(runner, "/repo", "you/example")
+        self.assertEqual(prs[0].url, real_url)
 
     def test_the_repo_is_always_pinned_with_dash_R(self):
         runner = ReplayRunner({PR_ARGS: {"returncode": 0, "stdout": "[]", "stderr": ""}})
@@ -142,7 +164,8 @@ class TestFetchPrs(unittest.TestCase):
         # silently under a still-green status.
         payload = json.dumps([
             {"number": 67, "title": "Good one", "headRefName": "fix/x", "isDraft": False,
-             "reviewDecision": "", "statusCheckRollup": [], "updatedAt": "2026-08-02T20:49:00Z"},
+             "reviewDecision": "", "statusCheckRollup": [], "updatedAt": "2026-08-02T20:49:00Z",
+             "url": "https://github.com/you/example/pull/67"},
             {"title": "Missing its number", "headRefName": "fix/y"},
         ])
         runner = ReplayRunner({PR_ARGS: {"returncode": 0, "stdout": payload, "stderr": ""}})
@@ -157,14 +180,30 @@ class TestFetchIssues(unittest.TestCase):
         payload = json.dumps([{
             "number": 55, "title": "A retried clue read",
             "labels": [{"name": "bug"}, {"name": "client"}], "assignees": [],
+            "url": "https://github.com/you/example/issues/55",
         }])
         runner = ReplayRunner({ISSUE_ARGS: {"returncode": 0, "stdout": payload, "stderr": ""}})
         issues, status = fetch_issues(runner, "/repo", "you/example")
         self.assertEqual(issues[0].labels, ["bug", "client"])
 
+    def test_url_survives_from_gh_json_unchanged(self):
+        # Deliberately mismatched from a naive reconstruction -- see the PR
+        # test's comment above for why. Found by an independent codex
+        # review, 2026-09-07.
+        real_url = "https://github.com/a-totally-different-org/renamed-repo/issues/999?tab=comments"
+        payload = json.dumps([{
+            "number": 55, "title": "A retried clue read",
+            "labels": [], "assignees": [],
+            "url": real_url,
+        }])
+        runner = ReplayRunner({ISSUE_ARGS: {"returncode": 0, "stdout": payload, "stderr": ""}})
+        issues, _ = fetch_issues(runner, "/repo", "you/example")
+        self.assertEqual(issues[0].url, real_url)
+
     def test_a_malformed_record_is_skipped_and_degrades_the_source_not_the_snapshot(self):
         payload = json.dumps([
-            {"number": 55, "title": "Good one", "labels": [], "assignees": []},
+            {"number": 55, "title": "Good one", "labels": [], "assignees": [],
+             "url": "https://github.com/you/example/issues/55"},
             {"number": 56, "title": "Bad label", "labels": [{"not_name": "x"}], "assignees": []},
         ])
         runner = ReplayRunner({ISSUE_ARGS: {"returncode": 0, "stdout": payload, "stderr": ""}})
@@ -172,6 +211,17 @@ class TestFetchIssues(unittest.TestCase):
         self.assertEqual([i.number for i in issues], [55])
         self.assertFalse(status.ok)
         self.assertIsNotNone(status.error)
+
+
+class TestCommitUrl(unittest.TestCase):
+    def test_none_with_no_github_remote(self):
+        self.assertIsNone(commit_url(None, "abc1234"))
+
+    def test_builds_the_real_commit_page(self):
+        self.assertEqual(
+            commit_url("you/example", "abc1234"),
+            "https://github.com/you/example/commit/abc1234",
+        )
 
 
 if __name__ == "__main__":

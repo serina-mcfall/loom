@@ -14,6 +14,14 @@ Every import is standard library or first-party, enforced on every push by
 `scripts/check_stdlib_only.py`, which fails on an import it has never heard of rather
 than allowing it.
 
+**Also needs git ≥ 2.37**, for `--since-as-filter` (added in that release), used by
+the commit-reachability check behind clickable commit links —
+[`docs/superpowers/specs/2026-09-07-loom-interactivity-design.md`](docs/superpowers/specs/2026-09-07-loom-interactivity-design.md).
+Not enforced at runtime: an older git fails that one call, and every commit link is
+withheld the same way an honestly-unverified one already is — found by review-final,
+2026-09-07, since this requirement had been recorded in the design doc but not here,
+where a user actually looks.
+
 The floor was measured rather than assumed, by running the suite and a real
 `loom snapshot` on each interpreter:
 

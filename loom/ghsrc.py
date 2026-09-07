@@ -23,8 +23,8 @@ _NAME = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 SSH_RE = re.compile(rf"^git@github\.com:(?P<repo>{_NAME}/{_NAME}?)(?:\.git)?$")
 HTTPS_RE = re.compile(rf"^https://github\.com/(?P<repo>{_NAME}/{_NAME}?)(?:\.git)?/?$")
 
-PR_FIELDS = "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,updatedAt"
-ISSUE_FIELDS = "number,title,labels,assignees"
+PR_FIELDS = "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,updatedAt,url"
+ISSUE_FIELDS = "number,title,labels,assignees,url"
 FAILING = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
 GOOD = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
@@ -46,6 +46,7 @@ class PullRequest:
     review: str | None
     checks: str
     updated_at: str
+    url: str
 
 
 @dataclass
@@ -54,6 +55,7 @@ class Issue:
     title: str
     labels: list[str]
     assignees: list[str]
+    url: str
 
 
 def origin_repo(runner: Runner, root: str) -> str | None:
@@ -67,6 +69,113 @@ def origin_repo(runner: Runner, root: str) -> str | None:
         if m:
             return m.group("repo")
     return None
+
+
+def remote_reachable_shas(runner: Runner, root: str, since_iso: str) -> list[str] | None:
+    """Full shas reachable from `origin`'s remote-tracking refs, no older
+    than `since_iso` -- ONE subprocess call.
+
+    The OUTPUT is bounded by recency, but the WALK is not: `--since-as-filter`
+    (see gap 2 below) deliberately gives up the traversal-pruning that plain
+    `--since` would otherwise use, so this call inspects the full remote
+    history rather than stopping early. Measured on a 60k-commit synthetic
+    repo at ~115x the work of the pruned equivalent -- negligible at this
+    project's realistic repo sizes, but "bounded like `recent_commits()`
+    bounds itself by count" would overstate what this actually does. Found
+    by `review-adjudicate`, 2026-09-07.
+
+    Requires git >= 2.37 for `--since-as-filter` (added in that release).
+    This project's stated floor is "Python 3.10 or newer -- nothing else";
+    this is the one place that additionally assumes a modern git. Not
+    enforced at runtime: a git older than 2.37 will fail this call's option
+    parsing, `r.ok` will be false, and every commit link is withheld via the
+    same "cannot verify, do not link" path a failed call already takes for
+    any other reason.
+
+    Returns `None` on a failed git call -- an honest "could not verify",
+    never a guessed empty list, which `commit_reachable` below treats as
+    "do not link" (CORRECTED, found by review-final, 2026-09-07: this used
+    to name `commit_url`, which has no `remote_shas` parameter and cannot
+    act on this; the guard is `commit_reachable`, called from
+    `loom/collect.py`) rather than silently trusting an unmeasured state.
+
+    This is what closes the gap `commit_url`'s docstring used to carry as a
+    known, undone limitation (found by an independent codex review,
+    2026-09-07): `recent_commits()` runs `git log --all`, which includes
+    commits on a branch that has never been pushed, and every one used to
+    get a GitHub link regardless. The naive fix -- `git merge-base
+    --is-ancestor <sha> <ref>` per commit -- costs one subprocess call PER
+    COMMIT, up to 40 more per tick, against a budget this project measures
+    and tests explicitly (audit 2026-08-05 finding M4,
+    `tests/test_collect.py::TestSubprocessBudget`). This function is the
+    single-call alternative: one `git rev-list` covers every `origin`
+    remote-tracking branch at once, and membership is then a plain Python
+    set lookup with no further subprocess cost.
+
+    THREE CORRECTNESS GAPS IN A FIRST DRAFT, all found by an independent
+    codex review and verified empirically against a real git repo (a
+    scratch repo, not this one) before being trusted, 2026-09-07:
+
+    1. `--remotes` (bare) matches EVERY configured remote, not just
+       `origin` -- a commit pushed only to some other remote (a personal
+       fork, a backup mirror) would be marked reachable even though
+       `commit_url`'s link always points at `origin`'s GitHub repo, where
+       it was never pushed. Scoped to `--remotes=origin/*`. Verified: with
+       one commit pushed only to `origin` and a second pushed only to a
+       second remote, bare `--remotes` returned both; `--remotes=origin/*`
+       correctly returned only the first.
+    2. `--since` can stop the traversal early when history isn't strictly
+       date-ordered (a merge commit dated earlier than its own parents --
+       possible with clock skew or an unusual rebase), silently dropping
+       commits that ARE reachable and ARE new enough. `--since-as-filter`
+       is git's own documented fix for exactly this: it filters by date
+       without using it to prune the walk.
+    3. The bound passed in is derived from `Commit.when`, which is author
+       date (`%aI`) -- but `--since`/`--since-as-filter` filter by
+       COMMITTER date. Verified empirically: a commit with an author date
+       after a cutoff but a committer date before it was excluded, meaning
+       author-date and committer-date are NOT interchangeable here. Rather
+       than plumb committer date through `gitsrc.Commit` (a wider change to
+       an already-audited, widely-read dataclass), the caller
+       (`loom/collect.py`) pads the bound with a safety margin generous
+       enough to absorb realistic author/committer skew -- see
+       `_commit_dicts`'s own comment for the exact margin and why it is a
+       deliberately loose bound, not a precise one.
+    """
+    r = runner.run(["git", "rev-list", "--remotes=origin/*", "--since-as-filter", since_iso],
+                    cwd=root)
+    if not r.ok:
+        return None
+    return r.stdout.split()
+
+
+def commit_reachable(sha: str, remote_shas: list[str] | None) -> bool:
+    """Is the abbreviated `sha` a prefix of some full sha `remote_shas`
+    reached? `remote_shas is None` (the git call failed) is treated as
+    "cannot verify" -- the safe direction is to withhold the link, not to
+    guess it is fine. `recent_commits()` never collects a full sha (see
+    `gitsrc.LOG_FORMAT`'s `%h`), so this is a prefix match, not equality.
+    """
+    if remote_shas is None:
+        return False
+    return any(full.startswith(sha) for full in remote_shas)
+
+
+def commit_url(issue_repo: str | None, sha: str) -> str | None:
+    """A commit's GitHub page, or None with no GitHub remote to point at.
+
+    Unlike a PR or issue, `git log` has no notion of GitHub -- there is no
+    `url` field to ask gh for, so this is the one link in the interactivity
+    spec that is built rather than fetched. GitHub resolves an abbreviated
+    sha (which is all loom/gitsrc.py's `%h` ever collects) in a commit URL,
+    so the short sha already on hand is enough IF the commit actually
+    reached GitHub -- callers are expected to check `commit_reachable`
+    first (see `loom/collect.py`) so this only ever gets called for a
+    commit already confirmed to be on some remote-tracking ref.
+    """
+    if issue_repo is None:
+        return None
+    return f"https://github.com/{issue_repo}/commit/{sha}"
 
 
 def derive_checks(rollup: list[dict]) -> str:
@@ -131,6 +240,7 @@ def fetch_prs(runner: Runner, root: str, repo: str) -> tuple[list[PullRequest], 
                 review=(p.get("reviewDecision") or None),
                 checks=derive_checks(p.get("statusCheckRollup") or []),
                 updated_at=p.get("updatedAt", ""),
+                url=p["url"],
             ))
         except (KeyError, TypeError) as exc:
             bad.append(f"malformed PR record: missing {exc}")
@@ -153,6 +263,7 @@ def fetch_issues(runner: Runner, root: str, repo: str) -> tuple[list[Issue], Sou
                 number=i["number"], title=i["title"],
                 labels=[l["name"] for l in i.get("labels") or []],
                 assignees=[a["login"] for a in i.get("assignees") or []],
+                url=i["url"],
             ))
         except (KeyError, TypeError) as exc:
             bad.append(f"malformed issue record: missing {exc}")

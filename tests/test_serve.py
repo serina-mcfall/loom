@@ -137,6 +137,52 @@ class TestApplyGhCache(unittest.TestCase):
         sources = {s["name"]: s for s in repo["sources"]}
         self.assertFalse(sources["gh:prs"]["ok"])
 
+    def test_a_fast_tick_recomputes_worktree_pr_url_from_the_cached_pr_list(self):
+        # A worktree's pr/pr_url is computed by collect() against WHATEVER prs
+        # list that tick's own collection saw -- empty on every fast tick,
+        # since include_gh=False skips gh entirely. Splicing repo["prs"] back
+        # from cache is not enough by itself: the worktree's OWN pr/pr_url
+        # fields, set by an earlier collect() call before this cache splice
+        # even runs, must be recomputed from the just-restored list, or they
+        # stay whatever the fast tick's own (PR-less) collect() produced.
+        # Found by an independent codex review, 2026-09-07: 58 of every 60
+        # seconds, a worktree's PR link would silently vanish.
+        # The url is deliberately NOT what f"https://github.com/{repo}/pull/{n}"
+        # would reconstruct from this test's own repo/number -- found by
+        # review-tests, confirmed by review-adjudicate, 2026-09-07: the original
+        # fixture's url happened to equal the naive reconstruction, so a future
+        # regression that reconstructed instead of passing the real value through
+        # would still have passed this test.
+        real_url = "https://github.com/a-totally-different-org/renamed-repo/pull/999?tab=files"
+        cache = self._good_cache(prs=[
+            {"number": 1, "branch": "feature-a", "url": real_url},
+        ])
+        snap = self._snap(prs=[], gh_ok=False)
+        # This fast tick's own collect() ran with no gh data, so it produced
+        # exactly what a real fast tick would: no PR match for this worktree.
+        snap["repos"][0]["worktrees"] = [
+            {"dir": "a", "branch": "feature-a", "pr": None, "pr_url": None},
+        ]
+        apply_gh_cache(snap, cache, include_gh=False, now_iso="T2")
+        wt = snap["repos"][0]["worktrees"][0]
+        self.assertEqual(wt["pr"], 1)
+        self.assertEqual(wt["pr_url"], real_url)
+
+    def test_a_fast_tick_with_no_matching_pr_leaves_the_worktree_pr_fields_none(self):
+        # Negative control: a worktree whose branch matches nothing in the
+        # cached PR list must not pick up someone else's PR.
+        cache = self._good_cache(prs=[
+            {"number": 1, "branch": "feature-a", "url": "https://github.com/you/example/pull/1"},
+        ])
+        snap = self._snap(prs=[], gh_ok=False)
+        snap["repos"][0]["worktrees"] = [
+            {"dir": "b", "branch": "feature-b", "pr": None, "pr_url": None},
+        ]
+        apply_gh_cache(snap, cache, include_gh=False, now_iso="T2")
+        wt = snap["repos"][0]["worktrees"][0]
+        self.assertIsNone(wt["pr"])
+        self.assertIsNone(wt["pr_url"])
+
     def test_git_only_sources_are_never_touched_by_the_splice(self):
         cache = self._good_cache(prs=[])
         snap = self._snap(prs=[], gh_ok=False)
@@ -710,6 +756,21 @@ class TestHandlerRoutes(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self._get("/static/definitely-not-here.css")
         self.assertEqual(cm.exception.code, 404)
+
+    def test_a_woff2_font_is_served_with_no_charset_parameter(self):
+        # Pins the one genuinely new piece of Python behavior the UI reskin
+        # added: the content-type table's "css"/"js" entries get a
+        # "; charset=utf-8" suffix (meaningful for text), but "woff2" must
+        # NOT -- a charset parameter is meaningless on a binary font
+        # container, and a first draft appended it unconditionally, keyed
+        # only on the file extension existing at all rather than on whether
+        # the type is text. review-code caught this as a Low finding,
+        # 2026-09-07; nothing in this suite pinned it before or after the
+        # fix, so a future content-type entry (say, "png") could silently
+        # reintroduce the same defect and stay green.
+        with self._get("/static/Lexend-Regular.woff2") as r:
+            self.assertEqual(r.status, 200)
+            self.assertEqual(r.headers.get("Content-Type"), "font/woff2")
 
     def test_the_index_route_serves_the_real_index_html(self):
         # Task 11 built loom/static/index.html; "/" is a live route now, not

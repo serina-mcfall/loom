@@ -6,7 +6,7 @@ import json
 import os
 import time
 from dataclasses import asdict, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -99,6 +99,61 @@ def _worktree_parents(trees: list[gitsrc.Worktree], root: str) -> list[str]:
                    if os.path.dirname(t.path.rstrip("/")) != own})
 
 
+SINCE_MARGIN = timedelta(days=7)
+
+
+def _commit_dicts(runner: Runner, root: str, issue_repo: str | None) -> list[dict]:
+    """Each recent commit, with a `url` ONLY when it is verified reachable
+    from `origin`'s remote-tracking refs -- ONE extra subprocess call total
+    for the whole batch (`ghsrc.remote_reachable_shas`), never one per
+    commit. See that function's docstring for why a per-commit check was
+    rejected (subprocess budget, audit finding M4).
+
+    A repo with no commits at all skips the reachability call entirely --
+    there is nothing to check, and an unbounded `git rev-list` would be a
+    needless full-history call.
+
+    CORRECTED (found by review-code, confirmed by review-adjudicate,
+    2026-09-07): a repo with no GitHub remote (`issue_repo is None`) also
+    skips the reachability call now. `commit_url` returns `None` whenever
+    `issue_repo is None`, independent of reachability -- so every commit's
+    `url` was going to be `None` regardless, and paying for a `git rev-list`
+    subprocess call every tick to learn that was a needless spend against
+    this project's own tested subprocess budget.
+
+    THE `SINCE_MARGIN`: `remote_reachable_shas` filters by COMMITTER date,
+    but `Commit.when` (used for the bound below) is AUTHOR date -- the two
+    are not interchangeable (verified empirically, see that function's
+    docstring), and `gitsrc.Commit` is not being widened to carry both just
+    for this. Padding the oldest collected commit's date by a full week is a
+    deliberately LOOSE bound, not a precise one: it costs a slightly larger
+    `git rev-list` scan in exchange for not silently under-counting a commit
+    whose committer date drifted from its author date by anything short of
+    a week -- far more slack than ordinary commits, amends, or rebases
+    produce. If a commit's committer date is backdated further than that
+    (deliberately rewritten history, not normal use), it can still read as
+    unreachable; that residual gap is accepted, not hidden. The same margin
+    also absorbs `min()` being taken over parsed instants rather than raw
+    `%aI` strings (see below) -- differing UTC offsets can disagree with
+    true chronological order by at most the realistic timezone range, well
+    under a week (found by review-code, 2026-09-07: the original code took
+    `min()` over the raw ISO-8601 strings, which is not guaranteed to match
+    true chronological order across differing offsets).
+    """
+    commits = gitsrc.recent_commits(runner, root)
+    if not commits:
+        return []
+    if issue_repo is None:
+        return [{**asdict(c), "url": None} for c in commits]
+    since = (min(datetime.fromisoformat(c.when) for c in commits) - SINCE_MARGIN).isoformat()
+    remote_shas = ghsrc.remote_reachable_shas(runner, root, since)
+    return [
+        {**asdict(c), "url": (ghsrc.commit_url(issue_repo, c.sha)
+                               if ghsrc.commit_reachable(c.sha, remote_shas) else None)}
+        for c in commits
+    ]
+
+
 def reap(state_dir: str, older_than_hours: int = 24,
          now: datetime | None = None) -> int:
     """Clear sessions that stopped long ago. Age alone never deletes an active one."""
@@ -173,7 +228,10 @@ def collect(runner: Runner, root: str,
             pr_status = ghsrc.SourceStatus("gh:prs", False, no_repo)
             issue_status = ghsrc.SourceStatus("gh:issues", False, no_repo)
 
-    by_branch = {p.branch: p.number for p in prs}
+    # The whole PullRequest, not just its number -- so the worktree table's PR
+    # badge can carry the same real gh-provided `url` the PRs & Issues panel
+    # uses, rather than a second, separately constructed link.
+    by_branch = {p.branch: p for p in prs}
     tree_by_branch = {t.branch: t.dir for t in trees if t.branch}
     tree_dicts = []
     now = datetime.now(timezone.utc).astimezone()
@@ -197,11 +255,14 @@ def collect(runner: Runner, root: str,
                                    cost_mod.DEFAULT_HOME, now)
         if c["unknown_reason"] in cost_error_reasons:
             cost_unmeasured.append(t.dir)
+        matched_pr = by_branch.get(t.branch or "")
         tree_dicts.append({
             "dir": t.dir, "path": t.path, "branch": t.branch,
             "ahead": t.ahead, "behind": t.behind,
             "dirty": asdict(t.dirty) if t.dirty is not None else None,
-            "agent": asdict(a), "pr": by_branch.get(t.branch or ""),
+            "agent": asdict(a),
+            "pr": matched_pr.number if matched_pr else None,
+            "pr_url": matched_pr.url if matched_pr else None,
             "cost": c,
         })
     cost_unmeasured.sort()
@@ -230,7 +291,7 @@ def collect(runner: Runner, root: str,
             "issues": [{k: v for k, v in asdict(i).items() if k != "assignees"}
                        for i in issues],
             "collisions": found_collisions,
-            "commits": [asdict(c) for c in gitsrc.recent_commits(runner, root)],
+            "commits": _commit_dicts(runner, root, repo),
             "flags": find_flags(trees, prs, parents),
             "sources": [
                 asdict(ghsrc.SourceStatus("git", True)),

@@ -1,10 +1,10 @@
 {
   "state": "READY",
-  "sha": "0501255c55a2e71a02cef4b302596969f2027a59",
-  "plan": "2026-09-06-issue-17-untracked-dir-counting.md",
-  "recorded_at": "2026-09-07T07:33:07+12:00",
+  "sha": "908cf96141df69cbf994f132ebfb15f2385b686b",
+  "plan": "2026-09-07-loom-interactivity-links.md",
+  "recorded_at": "2026-09-07T17:15:08+12:00",
   "checks": {
-    "ledger": "pass (manual: check-ledger.sh's task-heading regex does not match this repo's STEP-N plan format -- mechanical exit is FAIL against every plan-issue plan, including this one and issue #11's; read .superpowers/sdd/2026-09-06-issue-17-untracked-dir-counting/progress.md directly, which maps Task N: complete lines onto the plan's STEP N sections with commit shas and records what each review round found)",
-    "test_cmd": "python3 -m unittest discover -s tests (374 tests, OK, after merging origin/main which brought in issue #14's 19 and issue #15's tests); mypy --strict --allow-any-generics loom/ loom_cli.py hooks/ scripts/ (clean)"
+    "ledger": "check-ledger.sh exit 1 on the untracked ledger's wording ('Step N' vs the required 'Task N') -- fixed in this range, all 5 tasks now carry a 'Task N: complete' line; ledger is deliberately untracked, matching this repo's own .superpowers/sdd/.gitignore ('*'), a repo-wide convention applying identically to every branch (confirmed: no SDD ledger has ever been committed here, including the reskin's) -- review-final examined this and ruled it not a finding. Full review history: 2 external Codex rounds closed 7 findings against the initial build, a 3rd Codex round scoped to the commit-reachability fix found 3 bugs + 1 test gap (all closed, confirmed by review-adjudicate), then this repo's OWN formal pipeline ran in full -- review-code/review-tests/review-a11y/review-docs in parallel (16 raw findings) -> review-adjudicate (1 Blocker + 2 Medium + 4 Low confirmed, 7 refuted) -> fixed -> review-final (1 Blocker: this verdict itself going stale the moment the fix commit landed after it was recorded, now corrected; 6 Medium/Low documentation-drift findings, all fixed in this range). See .review/interactivity/adjudicated.md and .superpowers/sdd/2026-09-07-loom-interactivity-links/progress.md for full detail. review-final flagged one thing NOT run: qa explore mode (plan GATES) -- no live click-through against a real fleet with open PRs/issues has confirmed link destinations; recorded as ledger OPEN ITEM 4, not blocking this verdict.",
+    "test_cmd": "python3 -m unittest discover -s tests (386 tests, OK, standalone run); mypy NOT run this session (no pip/mypy available in this environment), same known gap every verdict this session has recorded -- CI's separate `types` job still runs it on push"
   }
 }
