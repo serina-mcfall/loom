@@ -17,9 +17,10 @@ def tree(dir_, branch, state="none", unstaged=0, age=5.0):
             "dirty": {"staged": 0, "unstaged": unstaged, "untracked": 0}}
 
 
-def pr(number, branch, review=None, checks="none"):
+def pr(number, branch, review=None, checks="none", url=None):
     return {"number": number, "branch": branch, "review": review,
-            "checks": checks, "draft": False}
+            "checks": checks, "draft": False,
+            "url": url or f"https://github.com/you/example/pull/{number}"}
 
 
 class TestNeedsYou(unittest.TestCase):
@@ -75,6 +76,17 @@ class TestNeedsYou(unittest.TestCase):
     def test_a_failing_pr_does_not_count_as_awaiting_review(self):
         items = needs_you(repo(prs=[pr(58, "x", review=None, checks="failing")]))
         self.assertEqual([i["kind"] for i in items], ["pr_failing"])
+
+    def test_pr_items_carry_the_real_pr_url_not_a_derived_one(self):
+        # The interactivity spec's whole point for this list: pr_url must be
+        # the input PR dict's own url, never reconstructed from pr_number
+        # (which is only ever baked into `subject` as text).
+        real_url = "https://github.com/you/example/pull/58"
+        failing = needs_you(repo(prs=[pr(58, "x", checks="failing", url=real_url)]))
+        self.assertEqual(failing[0]["pr_url"], real_url)
+        awaiting = needs_you(repo(prs=[pr(59, "y", review=None, checks="none",
+                                          url="https://github.com/you/example/pull/59")]))
+        self.assertEqual(awaiting[0]["pr_url"], "https://github.com/you/example/pull/59")
 
     def test_an_approved_pr_is_not_awaiting_review(self):
         self.assertEqual(needs_you(repo(prs=[pr(58, "x", review="APPROVED")])), [])

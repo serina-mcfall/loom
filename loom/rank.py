@@ -75,12 +75,13 @@ def needs_you(repo: dict) -> list[dict]:
         if p.get("checks") == "failing":
             pr_number = p.get("number", "?")
             items.append({"rank": 4, "kind": "pr_failing", "subject": f"PR #{pr_number}",
-                          "detail": "checks are failing"})
+                          "detail": "checks are failing", "pr_url": p.get("url")})
         elif p.get("review") in AWAITING_REVIEW:
             # "none" (no CI configured) counts as not failing, or this never fires.
             pr_number = p.get("number", "?")
             items.append({"rank": 2, "kind": "pr_awaiting_review",
-                          "subject": f"PR #{pr_number}", "detail": "no review yet"})
+                          "subject": f"PR #{pr_number}", "detail": "no review yet",
+                          "pr_url": p.get("url")})
 
     for c in repo.get("collisions", []):
         branches = c.get("branches", [])
