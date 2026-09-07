@@ -1,10 +1,10 @@
 {
   "state": "READY",
-  "sha": "c7e8c9b5b2dc847c1f75dabce2d083de3adfb0b4",
-  "plan": "2026-09-07-loom-ui-reskin.md",
-  "recorded_at": "2026-09-07T10:48:57+12:00",
+  "sha": "f18bed295cf526fc527dff95e40e08da902bd1d5",
+  "plan": "2026-09-07-loom-interactivity-links.md",
+  "recorded_at": "2026-09-07T16:00:14+12:00",
   "checks": {
-    "ledger": "pass (check-ledger.sh docs/plans/2026-09-07-loom-ui-reskin.md: plan declares 6 tasks, ledger found at .superpowers/sdd/2026-09-07-loom-ui-reskin/progress.md, all 6 have a Task N: complete line); read the ledger directly for what each review round found and fixed -- 1 Blocker + 5 Medium + 5 Low from review-code/review-a11y/review-adjudicate against the build commits, then 1 Blocker + 1 High + 3 Medium + 1 Low from review-final against the whole branch, all closed",
-    "test_cmd": "python3 -m unittest discover -s tests (375 tests, OK -- 374 from the build, +1 new: test_a_woff2_font_is_served_with_no_charset_parameter, added closing a review-final finding); mypy NOT run this session (no pip/mypy available in this environment) -- the one Python change (serve.py's ctype ternary between two string literals) is trivially typed, and CI's separate `types` job still runs it on push"
+    "ledger": "pass (ledger found at .superpowers/sdd/2026-09-07-loom-interactivity-links/progress.md, all 5 plan steps have a Step N: complete line); read the ledger directly for what each review round found and fixed -- 2 external Codex review rounds closed 7 findings against the initial build (2 a11y Blockers: missing color on a linked needs-you item, focus lost on every 2s render tick; plus a stale worktree pr_url cache and a tautological url-passthrough test), a third Codex round scoped to the commit-reachability fix found 3 correctness bugs + 1 test gap (wrong remote scope, --since traversal pruning, author/committer date mismatch, weak fixtures), all closed and independently confirmed by review-adjudicate, which also surfaced 2 documentation-only advisories (undocumented git >=2.37 floor, a stale 'bounded' claim) closed in this same commit range. NOTE: the plan's own GATES line (review-code/review-tests/review-a11y/qa explore mode/review-final) was not run as such -- the external Codex+adjudicate cycle was substituted by explicit direction, and whether the named pipeline should still run is recorded as an open item in the ledger, not silently waived.",
+    "test_cmd": "python3 -m unittest discover -s tests (385 tests, OK, standalone run -- 375 at the start of this plan's steps, +10 from steps 1-3's new coverage and the commit-reachability round's consolidated reachability test); mypy NOT run this session (no pip/mypy available in this environment), same known gap the prior verdict recorded -- CI's separate `types` job still runs it on push"
   }
 }
