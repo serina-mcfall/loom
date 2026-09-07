@@ -202,10 +202,12 @@ fixed the same day):**
    subject in the same list is equally bold, and identical styling on both
    sides of a link/non-link boundary is not a cue. `.needs-subject` now
    carries the same permanent underline as `.issue-num`/`.c-sha`. `.pr-num`
-   alone genuinely keeps the hover-only underline: it only ever renders on
-   a worktree with a matched PR, whose `url` field is a required `str`
-   (never absent when a PR match exists), so there is no unlinked `.pr-num`
-   sibling in practice for bold to fail to distinguish from.
+   alone genuinely keeps the hover-only underline: CORRECTED (found by
+   review-final, 2026-09-07) — it has two call sites, the worktree table
+   and the PRs & Issues panel (one per open PR), not one. Both take their
+   url from a `PullRequest`, whose `url` field is a required `str` (never
+   absent when a match exists), so there is no unlinked `.pr-num` sibling
+   at either site for bold to fail to distinguish from.
 2. `.needs-subject`'s CSS set `font-weight: 700` but never `color` —
    `<strong>` always inherited the page's text color for free, and
    swapping the tag to `<a>` for a linked item meant the browser's own

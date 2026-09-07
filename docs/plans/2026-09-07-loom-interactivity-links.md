@@ -131,7 +131,9 @@ STEP 4  loom.js + loom.css: render real links wherever a PR/issue        [needs 
           - renderTicker (loom.js:329) — each commit's sha, using `c.url`
           - renderNeeds (loom.js:112) — for `pr_failing`/
             `pr_awaiting_review` items ONLY: `item.subject` is already
-            exactly `"PR #N "` for these two kinds (loom/rank.py:77,83)
+            exactly `"PR #N"` for these two kinds (loom/rank.py:77,83)
+            -- CORRECTED (found by review-final, 2026-09-07): no trailing
+            space, matching this plan's own ALREADY TRUE section above
             — the whole `<strong>` becomes the link when `item.pr_url`
             is present, no substring parsing needed. The other four
             `needs_you` kinds (agent-waiting, collision, stopped-dirty,
@@ -160,10 +162,12 @@ STEP 4  loom.js + loom.css: render real links wherever a PR/issue        [needs 
         an unlinked sibling in the same list is equally bold and the cue
         distinguishes nothing. `.needs-subject` now carries the same
         permanent underline as `.issue-num`/`.c-sha`. `.pr-num` alone keeps
-        hover-only underlining -- it has no unlinked-sibling problem, since
-        it only ever renders on a worktree with a matched PR, whose `url`
-        is a required field. Read the shipped CSS, not this paragraph, for
-        the actual rule.
+        hover-only underlining -- CORRECTED (found by review-final,
+        2026-09-07): it has two call sites, the worktree table and the
+        PRs & Issues panel (one per open PR), not one. Both take their
+        url from a `PullRequest`, whose `url` is a required field, so
+        neither has an unlinked-sibling problem. Read the shipped CSS,
+        not this paragraph, for the actual rule.
         done when: `python3 -m unittest discover -s tests` still green
         (this step touches only static assets); loading the dashboard
         in a real browser (`python3 loom_cli.py serve`) shows each of

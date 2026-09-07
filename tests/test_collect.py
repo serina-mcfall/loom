@@ -151,8 +151,12 @@ class TestSubprocessBudget(unittest.TestCase):
     # batch (never per-commit -- the per-commit alternative, `git
     # merge-base --is-ancestor` x40, was rejected specifically because of
     # this budget), and only runs at all when recent_commits() found at
-    # least one commit -- a repo-level cost, not `7n`, so it does not
-    # multiply with worktree count.
+    # least one commit AND the repo has a resolvable GitHub remote --
+    # CORRECTED (found by review-final, 2026-09-07): the second condition
+    # was added by the same-day fix that closed review-code's finding that
+    # this call ran even with no GitHub remote, wasting a subprocess on a
+    # url that could never be produced. Repo-level cost either way, not
+    # `7n`, so it does not multiply with worktree count.
     BUDGET = 10
 
     def _runner(self):

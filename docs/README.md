@@ -15,6 +15,7 @@ what the code did. This is that enumeration.
 | [`superpowers/specs/2026-08-03-loom-design.md`](superpowers/specs/2026-08-03-loom-design.md) | The design: architecture, the snapshot contract, error honesty, ranking, accessibility requirements, threat model — **and a corrections list recording every place execution proved the original wrong** |
 | [`superpowers/specs/2026-08-06-allow-list-design.md`](superpowers/specs/2026-08-06-allow-list-design.md) | Which repositories the board shows: an allow list, not a deny list, and why a missing name is reported rather than dropped |
 | [`superpowers/specs/2026-08-27-tokens-cost-design.md`](superpowers/specs/2026-08-27-tokens-cost-design.md) | The tokens-and-cost panel (issue #11): the pricing table's source and staleness handling, the per-worktree vs fleet-total unknown rule, and the six OPEN decisions this feature resolved |
+| [`superpowers/specs/2026-09-07-loom-interactivity-design.md`](superpowers/specs/2026-09-07-loom-interactivity-design.md) | Clickable PR/issue/commit links across the dashboard: real `gh`-provided URLs vs. built commit links, the commit-reachability check and the git ≥2.37 floor it implies, and a long corrections trail from three independent review rounds |
 | [`../research/langfuse.md`](../research/langfuse.md) | What Langfuse is, what Claude Code's OTEL spans actually carry, and what stays unverified. A research note, so it describes **external** behaviour rather than this code — dated, sourced, and carrying its own corrections |
 
 **The corrections list is the load-bearing part.** A spec that quietly matches whatever
@@ -50,6 +51,7 @@ log beside it, or you will be reading a list of problems that have since been fi
 |---|---|
 | [`plans/2026-08-17-issue-11-tokens-cost-panel.md`](plans/2026-08-17-issue-11-tokens-cost-panel.md) | The tokens-and-cost panel (issue #11), step-by-step, with its review-plan revision history |
 | [`plans/2026-09-06-issue-14-stale-verdict-gate.md`](plans/2026-09-06-issue-14-stale-verdict-gate.md) | Distinguishing "never reviewed" from "reviewed, then diverged" in the verdict gate (issue #14), step-by-step, with its review-plan revision history |
+| [`plans/2026-09-07-loom-interactivity-links.md`](plans/2026-09-07-loom-interactivity-links.md) | Clickable PR/issue/commit links, five steps, with SUPERSEDED/CORRECTED annotations from three independent review rounds |
 
 A plan describes what was **intended** before the build started, not what shipped —
 read it beside the code, the same way an audit is read beside its remediation log.

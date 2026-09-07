@@ -93,8 +93,11 @@ def remote_reachable_shas(runner: Runner, root: str, since_iso: str) -> list[str
     any other reason.
 
     Returns `None` on a failed git call -- an honest "could not verify",
-    never a guessed empty list, which `commit_url` below treats as "do not
-    link" rather than silently trusting an unmeasured state.
+    never a guessed empty list, which `commit_reachable` below treats as
+    "do not link" (CORRECTED, found by review-final, 2026-09-07: this used
+    to name `commit_url`, which has no `remote_shas` parameter and cannot
+    act on this; the guard is `commit_reachable`, called from
+    `loom/collect.py`) rather than silently trusting an unmeasured state.
 
     This is what closes the gap `commit_url`'s docstring used to carry as a
     known, undone limitation (found by an independent codex review,

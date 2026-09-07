@@ -248,9 +248,12 @@ tbody tr:nth-child(even) { background: #1d1e3b; }
    list is equally bold -- bold cannot distinguish a link from the plain
    text beside it when both carry it. `.needs-subject` now gets the same
    permanent underline as `.issue-num`/`.c-sha`. `.pr-num` genuinely is
-   exempt: it is only ever rendered on a worktree with a matched PR, whose
-   `url` field is a required `str` (never absent when `pr` is truthy), so
-   there is no unlinked `.pr-num` sibling in practice to collide with. */
+   exempt: CORRECTED (found by review-final, 2026-09-07) -- it has TWO
+   call sites, the worktree table (renderTrees) and the PRs & Issues panel
+   (renderPrs, one per open PR), not one. Both take their url from a
+   `PullRequest`, whose `url` field is a required `str` (never absent when
+   a match exists), so there is no unlinked `.pr-num` sibling at either
+   site to collide with. */
 a.pr-num { text-decoration: none; }
 a.pr-num:hover, a.pr-num:focus-visible { text-decoration: underline; }
 a.issue-num, a.c-sha, a.needs-subject { text-decoration: underline; }

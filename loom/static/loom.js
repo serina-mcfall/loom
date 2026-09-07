@@ -326,8 +326,8 @@ function renderPrs(box, repo) {
   const list = document.createElement("ul");
   for (const p of repo.prs) {
     const li = document.createElement("li");
-    li.append(linkOrText("span", `#${p.number} `, "pr-num", p.url));
-    li.append(text("span", p.branch, "pr-branch"));
+    li.append(linkOrText("span", `#${p.number}`, "pr-num", p.url));
+    li.append(text("span", ` ${p.branch}`, "pr-branch"));
     li.append(text("span", " — "));
     const review = p.review || "no review";
     li.append(text("span", review, REVIEW_CLASS[p.review] || "st--warn"));
