@@ -6,7 +6,7 @@ import json
 import os
 import time
 from dataclasses import asdict, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -99,21 +99,37 @@ def _worktree_parents(trees: list[gitsrc.Worktree], root: str) -> list[str]:
                    if os.path.dirname(t.path.rstrip("/")) != own})
 
 
+SINCE_MARGIN = timedelta(days=7)
+
+
 def _commit_dicts(runner: Runner, root: str, issue_repo: str | None) -> list[dict]:
     """Each recent commit, with a `url` ONLY when it is verified reachable
-    from some remote-tracking ref -- ONE extra subprocess call total for the
-    whole batch (`ghsrc.remote_reachable_shas`), never one per commit. See
-    that function's docstring for why a per-commit check was rejected
-    (subprocess budget, audit finding M4).
+    from `origin`'s remote-tracking refs -- ONE extra subprocess call total
+    for the whole batch (`ghsrc.remote_reachable_shas`), never one per
+    commit. See that function's docstring for why a per-commit check was
+    rejected (subprocess budget, audit finding M4).
 
     A repo with no commits at all skips the reachability call entirely --
-    there is nothing to check, and `git rev-list --since` on no bound would
-    be a needless full-history call.
+    there is nothing to check, and an unbounded `git rev-list` would be a
+    needless full-history call.
+
+    THE `SINCE_MARGIN`: `remote_reachable_shas` filters by COMMITTER date,
+    but `Commit.when` (used for the bound below) is AUTHOR date -- the two
+    are not interchangeable (verified empirically, see that function's
+    docstring), and `gitsrc.Commit` is not being widened to carry both just
+    for this. Padding the oldest collected commit's date by a full week is a
+    deliberately LOOSE bound, not a precise one: it costs a slightly larger
+    `git rev-list` scan in exchange for not silently under-counting a commit
+    whose committer date drifted from its author date by anything short of
+    a week -- far more slack than ordinary commits, amends, or rebases
+    produce. If a commit's committer date is backdated further than that
+    (deliberately rewritten history, not normal use), it can still read as
+    unreachable; that residual gap is accepted, not hidden.
     """
     commits = gitsrc.recent_commits(runner, root)
     if not commits:
         return []
-    since = min(c.when for c in commits)
+    since = (datetime.fromisoformat(min(c.when for c in commits)) - SINCE_MARGIN).isoformat()
     remote_shas = ghsrc.remote_reachable_shas(runner, root, since)
     return [
         {**asdict(c), "url": (ghsrc.commit_url(issue_repo, c.sha)

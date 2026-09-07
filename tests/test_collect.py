@@ -182,7 +182,7 @@ class TestSubprocessBudget(unittest.TestCase):
                            "1\t0\tREADME.md\n"),
                 "stderr": "",
             },
-            "git rev-list --remotes --since 2026-08-03T07:31:55+12:00":
+            "git rev-list --remotes=origin/* --since-as-filter 2026-07-27T07:31:55+12:00":
                 {"returncode": 0, "stdout": "161948bfeedfacecafebeef0123456789abcdef\n",
                  "stderr": ""},
         })
@@ -369,15 +369,23 @@ class TestCollectSources(unittest.TestCase):
         self.assertEqual(wt["pr"], 42)
         self.assertEqual(wt["pr_url"], real_url)
 
-    def test_a_commit_gets_its_real_github_commit_url(self):
+    def test_reachable_and_unreachable_commits_in_the_same_batch_are_told_apart(self):
         # git has no notion of GitHub, so this is the one link that is BUILT
         # (issue_repo + sha), never fetched -- proves collect() actually
         # wires ghsrc.commit_url() in, using the real captured git-log
-        # fixture from tests/test_gitsrc.py (LOG) rather than a hand-rolled
-        # one that could diverge from the real numstat format. Also proves
-        # the sha is verified reachable from a remote-tracking ref before
-        # getting a url at all -- see the negative control below for the
-        # unreachable case.
+        # fixture shape from tests/test_gitsrc.py (LOG) rather than a
+        # hand-rolled one that could diverge from the real numstat format.
+        #
+        # TWO commits in ONE batch, one reachable and one not, against a
+        # rev-list result that is neither empty nor "everything matches" --
+        # found by an independent codex review, 2026-09-07: a first draft's
+        # tests used a single-commit batch, so `commit_reachable()` could
+        # have been replaced with `bool(remote_shas)` (or reachability moved
+        # inside the loop, one call per commit) and every test still
+        # passed. This shape rules out both: the decoy sha in rev-list's
+        # output proves the list is genuinely non-empty without containing
+        # the unreachable commit, and the call-count assertion below proves
+        # exactly one rev-list call covers the whole batch.
         recordings = self._recordings(
             pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
             issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
@@ -386,49 +394,34 @@ class TestCollectSources(unittest.TestCase):
                    "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat"] = {
             "returncode": 0,
             "stdout": ("\x1e161948b\x1f2026-08-03T07:31:55+12:00\x1f"
-                       "test(clues): flatten\x1fHEAD -> feature-c\n"
-                       "3\t1\tsrc/board.ts\n"),
+                       "pushed to origin\x1fHEAD -> feature-c\n"
+                       "3\t1\tsrc/board.ts\n"
+                       "\x1e2ee9911\x1f2026-08-02T10:00:00+12:00\x1f"
+                       "never pushed anywhere\x1fHEAD -> feature-c\n"
+                       "1\t0\tsrc/other.ts\n"),
             "stderr": "",
         }
-        recordings["git rev-list --remotes --since 2026-08-03T07:31:55+12:00"] = {
+        # min(when) is the 08-02 commit; SINCE_MARGIN (7 days) is subtracted
+        # from it, giving this exact bound.
+        recordings["git rev-list --remotes=origin/* --since-as-filter 2026-07-26T10:00:00+12:00"] = {
             "returncode": 0,
-            "stdout": "161948bfeedfacecafebeef0123456789abcdef\n",
+            # A decoy full sha that is neither commit -- proves membership
+            # is genuinely checked, not "list has something in it".
+            "stdout": ("161948bfeedfacecafebeef0123456789abcdef\n"
+                       "deadbeef00000000000000000000000000000000\n"),
             "stderr": "",
         }
         runner = ReplayRunner(recordings)
         snapshot = collect(runner, "/repo", tempfile.mkdtemp())
-        commit = snapshot["repos"][0]["commits"][0]
-        self.assertEqual(commit["sha"], "161948b")
-        self.assertEqual(commit["url"], "https://github.com/you/example/commit/161948b")
-
-    def test_an_unpushed_commit_gets_no_url(self):
-        # Negative control: a commit git log --all finds (it exists on some
-        # LOCAL ref) but that never shows up in `git rev-list --remotes`
-        # must not get a link that would 404. Same fixture shape as the
-        # positive control above, except the rev-list output does not
-        # contain this sha at all.
-        recordings = self._recordings(
-            pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
-            issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
-        )
-        recordings["git log --all --no-merges -n 40 "
-                   "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat"] = {
-            "returncode": 0,
-            "stdout": ("\x1e161948b\x1f2026-08-03T07:31:55+12:00\x1f"
-                       "test(clues): flatten\x1fHEAD -> feature-c\n"
-                       "3\t1\tsrc/board.ts\n"),
-            "stderr": "",
-        }
-        recordings["git rev-list --remotes --since 2026-08-03T07:31:55+12:00"] = {
-            "returncode": 0,
-            "stdout": "",  # nothing on any remote yet
-            "stderr": "",
-        }
-        runner = ReplayRunner(recordings)
-        snapshot = collect(runner, "/repo", tempfile.mkdtemp())
-        commit = snapshot["repos"][0]["commits"][0]
-        self.assertEqual(commit["sha"], "161948b")
-        self.assertIsNone(commit["url"])
+        commits = {c["sha"]: c for c in snapshot["repos"][0]["commits"]}
+        self.assertEqual(commits["161948b"]["url"],
+                          "https://github.com/you/example/commit/161948b")
+        self.assertIsNone(commits["2ee9911"]["url"])
+        rev_list_calls = [c for c in runner.calls if c[:2] == ("git", "rev-list")
+                          and "--remotes=origin/*" in c]
+        self.assertEqual(len(rev_list_calls), 1,
+                          f"expected exactly one batched reachability call, got "
+                          f"{len(rev_list_calls)}: {rev_list_calls}")
 
     def test_a_failed_reachability_check_also_withholds_the_url(self):
         # Same honesty rule the rest of this project follows: a git call
@@ -447,7 +440,7 @@ class TestCollectSources(unittest.TestCase):
                        "3\t1\tsrc/board.ts\n"),
             "stderr": "",
         }
-        recordings["git rev-list --remotes --since 2026-08-03T07:31:55+12:00"] = {
+        recordings["git rev-list --remotes=origin/* --since-as-filter 2026-07-27T07:31:55+12:00"] = {
             "returncode": 128, "stdout": "", "stderr": "fatal: bad revision",
         }
         runner = ReplayRunner(recordings)

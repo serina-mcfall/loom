@@ -72,10 +72,10 @@ def origin_repo(runner: Runner, root: str) -> str | None:
 
 
 def remote_reachable_shas(runner: Runner, root: str, since_iso: str) -> list[str] | None:
-    """Full shas reachable from ANY remote-tracking ref, no older than
-    `since_iso` -- ONE subprocess call, bounded by recency rather than full
-    history, the same way `gitsrc.recent_commits()` bounds itself by count
-    rather than walking the whole repo.
+    """Full shas reachable from `origin`'s remote-tracking refs, no older
+    than `since_iso` -- ONE subprocess call, bounded by recency rather than
+    full history, the same way `gitsrc.recent_commits()` bounds itself by
+    count rather than walking the whole repo.
 
     Returns `None` on a failed git call -- an honest "could not verify",
     never a guessed empty list, which `commit_url` below treats as "do not
@@ -90,14 +90,42 @@ def remote_reachable_shas(runner: Runner, root: str, since_iso: str) -> list[str
     COMMIT, up to 40 more per tick, against a budget this project measures
     and tests explicitly (audit 2026-08-05 finding M4,
     `tests/test_collect.py::TestSubprocessBudget`). This function is the
-    single-call alternative: one `git rev-list --remotes --since=<date>`
-    covers every remote-tracking branch at once, and membership is then a
-    plain Python set lookup with no further subprocess cost. `--since`
-    bounds the walk to roughly the same window `recent_commits()`'s own
-    40-commit limit already implies, so this does not become a full-history
-    scan on an old, busy repo.
+    single-call alternative: one `git rev-list` covers every `origin`
+    remote-tracking branch at once, and membership is then a plain Python
+    set lookup with no further subprocess cost.
+
+    THREE CORRECTNESS GAPS IN A FIRST DRAFT, all found by an independent
+    codex review and verified empirically against a real git repo (a
+    scratch repo, not this one) before being trusted, 2026-09-07:
+
+    1. `--remotes` (bare) matches EVERY configured remote, not just
+       `origin` -- a commit pushed only to some other remote (a personal
+       fork, a backup mirror) would be marked reachable even though
+       `commit_url`'s link always points at `origin`'s GitHub repo, where
+       it was never pushed. Scoped to `--remotes=origin/*`. Verified: with
+       one commit pushed only to `origin` and a second pushed only to a
+       second remote, bare `--remotes` returned both; `--remotes=origin/*`
+       correctly returned only the first.
+    2. `--since` can stop the traversal early when history isn't strictly
+       date-ordered (a merge commit dated earlier than its own parents --
+       possible with clock skew or an unusual rebase), silently dropping
+       commits that ARE reachable and ARE new enough. `--since-as-filter`
+       is git's own documented fix for exactly this: it filters by date
+       without using it to prune the walk.
+    3. The bound passed in is derived from `Commit.when`, which is author
+       date (`%aI`) -- but `--since`/`--since-as-filter` filter by
+       COMMITTER date. Verified empirically: a commit with an author date
+       after a cutoff but a committer date before it was excluded, meaning
+       author-date and committer-date are NOT interchangeable here. Rather
+       than plumb committer date through `gitsrc.Commit` (a wider change to
+       an already-audited, widely-read dataclass), the caller
+       (`loom/collect.py`) pads the bound with a safety margin generous
+       enough to absorb realistic author/committer skew -- see
+       `_commit_dicts`'s own comment for the exact margin and why it is a
+       deliberately loose bound, not a precise one.
     """
-    r = runner.run(["git", "rev-list", "--remotes", "--since", since_iso], cwd=root)
+    r = runner.run(["git", "rev-list", "--remotes=origin/*", "--since-as-filter", since_iso],
+                    cwd=root)
     if not r.ok:
         return None
     return r.stdout.split()
