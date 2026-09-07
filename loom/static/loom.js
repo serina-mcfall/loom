@@ -88,12 +88,34 @@ function linkOrText(tag, value, className, url) {
  *  this fix's job. */
 function preservingFocus(container, render) {
   const active = document.activeElement;
-  const focusedHref = (active && active.tagName === "A" && container.contains(active))
-    ? active.href : null;
+  let focusedHref = null;
+  let ordinal = 0;
+  if (active && active.tagName === "A" && container.contains(active)) {
+    focusedHref = active.href;
+    // TWO REAL GAPS in a first draft, found by an independent codex
+    // review, 2026-09-07, both fixed here:
+    //  1. `href` alone is not always a unique identity -- two worktrees
+    //     can share the same PR, so two links can share the same href.
+    //     `.find()` always returned the FIRST one, silently moving focus
+    //     to the wrong row when the SECOND was the one actually focused.
+    //     Fixed by also recording this link's ORDINAL among same-href
+    //     matches before the render, then restoring to the same ordinal
+    //     after -- a much weaker, more reliable assumption than absolute
+    //     DOM position, and correct even when multiple rows genuinely do
+    //     share one href.
+    //  2. `.focus()` scrolls its target into view by default. If a user
+    //     focused a link, then scrolled elsewhere (in the page or inside
+    //     a capped panel) WITHOUT changing focus, the next tick's
+    //     restoration would silently yank the scroll position back.
+    //     `preventScroll: true` (below) stops that.
+    const matches = [...container.querySelectorAll("a")].filter((a) => a.href === focusedHref);
+    ordinal = matches.indexOf(active);
+  }
   render();
   if (focusedHref) {
-    const match = [...container.querySelectorAll("a")].find((a) => a.href === focusedHref);
-    if (match) match.focus();
+    const matches = [...container.querySelectorAll("a")].filter((a) => a.href === focusedHref);
+    const match = matches[ordinal] || matches[0];
+    if (match) match.focus({ preventScroll: true });
   }
 }
 
@@ -526,8 +548,13 @@ function buildRepoSection(repo, i) {
   // <details>/<summary> still is the disclosure: keyboard-operable and
   // correctly announced with zero custom ARIA, the W3C APG pattern for
   // free. "Data sources" now lives in a real, visible <h3> inside
-  // <summary>, so the old visually-hidden-heading trick is gone AND heading
-  // nav still finds it.
+  // <summary>, so the old visually-hidden-heading trick is gone -- the
+  // landmark region holds regardless, but heading navigation finding the
+  // nested <h3> is NOT guaranteed across every browser/AT combination
+  // (some flatten a <summary>'s descendant roles); not re-verified against
+  // a real matrix, disclosed rather than claimed. Found by an independent
+  // codex review, 2026-09-07 -- this comment previously stated the
+  // opposite as fact.
   // Mirrors panel() (above, this file) by hand rather than calling it: the
   // heading has to live INSIDE <summary>, which panel()'s fixed
   // section+heading+body shape can't express. If panel() ever changes

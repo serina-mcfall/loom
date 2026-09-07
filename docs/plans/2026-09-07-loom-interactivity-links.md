@@ -143,6 +143,17 @@ STEP 4  loom.js + loom.css: render real links wherever a PR/issue        [needs 
         `<span class="pr-num">` fallback is untouched. `:focus-visible`'s
         existing global outline rule already covers these links with no
         change.
+        SUPERSEDED (2026-09-07, found by an independent codex review):
+        hover/focus-only underlining for ALL FOUR classes shipped and then
+        turned out to be a WCAG 1.4.1/G183 violation for the two that
+        carry no other non-color cue -- `.issue-num` and `.c-sha` have
+        normal font weight, so color was their only resting distinction
+        from surrounding text. Those two now carry a PERMANENT underline;
+        `.pr-num`/`.needs-subject` correctly kept hover-only, since their
+        bold weight is already a valid non-color cue. Following this
+        step's instructions as originally written would recreate the
+        violation -- read the shipped CSS, not this paragraph, for the
+        actual rule.
         done when: `python3 -m unittest discover -s tests` still green
         (this step touches only static assets); loading the dashboard
         in a real browser (`python3 loom_cli.py serve`) shows each of
