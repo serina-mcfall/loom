@@ -140,10 +140,20 @@ class TestSubprocessBudget(unittest.TestCase):
 
     # Per tick, include_gh=False, one worktree:
     #   repo-level   default_branch, worktree list, tmux, origin remote,
-    #                recent_commits                                        = 5
+    #                recent_commits, remote_reachable_shas               = 6
     #   per worktree rev-list (ahead/behind), status (counts AND paths),
     #                merge-base, diff merge-base..HEAD                     = 4
-    BUDGET = 9
+    #
+    # `remote_reachable_shas` raised this from 5 to 6 (BUDGET 9 -> 10),
+    # 2026-09-07, closing the interactivity spec's known "commit links can
+    # 404 for unpushed commits" gap -- justified here per this test's own
+    # rule, not slipped in silently. It is ONE call for the WHOLE commit
+    # batch (never per-commit -- the per-commit alternative, `git
+    # merge-base --is-ancestor` x40, was rejected specifically because of
+    # this budget), and only runs at all when recent_commits() found at
+    # least one commit -- a repo-level cost, not `7n`, so it does not
+    # multiply with worktree count.
+    BUDGET = 10
 
     def _runner(self):
         return ReplayRunner({
@@ -165,8 +175,16 @@ class TestSubprocessBudget(unittest.TestCase):
             "git diff --name-only -z base1 HEAD":
                 {"returncode": 0, "stdout": "", "stderr": ""},
             "git log --all --no-merges -n 40 "
-            "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat":
-                {"returncode": 0, "stdout": "", "stderr": ""},
+            "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat": {
+                "returncode": 0,
+                "stdout": ("\x1e161948b\x1f2026-08-03T07:31:55+12:00\x1f"
+                           "a commit, so the budget exercises the real path\x1fHEAD -> main\n"
+                           "1\t0\tREADME.md\n"),
+                "stderr": "",
+            },
+            "git rev-list --remotes --since 2026-08-03T07:31:55+12:00":
+                {"returncode": 0, "stdout": "161948bfeedfacecafebeef0123456789abcdef\n",
+                 "stderr": ""},
         })
 
     def test_one_tick_over_one_worktree_stays_within_budget(self):
@@ -356,7 +374,10 @@ class TestCollectSources(unittest.TestCase):
         # (issue_repo + sha), never fetched -- proves collect() actually
         # wires ghsrc.commit_url() in, using the real captured git-log
         # fixture from tests/test_gitsrc.py (LOG) rather than a hand-rolled
-        # one that could diverge from the real numstat format.
+        # one that could diverge from the real numstat format. Also proves
+        # the sha is verified reachable from a remote-tracking ref before
+        # getting a url at all -- see the negative control below for the
+        # unreachable case.
         recordings = self._recordings(
             pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
             issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
@@ -369,11 +390,70 @@ class TestCollectSources(unittest.TestCase):
                        "3\t1\tsrc/board.ts\n"),
             "stderr": "",
         }
+        recordings["git rev-list --remotes --since 2026-08-03T07:31:55+12:00"] = {
+            "returncode": 0,
+            "stdout": "161948bfeedfacecafebeef0123456789abcdef\n",
+            "stderr": "",
+        }
         runner = ReplayRunner(recordings)
         snapshot = collect(runner, "/repo", tempfile.mkdtemp())
         commit = snapshot["repos"][0]["commits"][0]
         self.assertEqual(commit["sha"], "161948b")
         self.assertEqual(commit["url"], "https://github.com/you/example/commit/161948b")
+
+    def test_an_unpushed_commit_gets_no_url(self):
+        # Negative control: a commit git log --all finds (it exists on some
+        # LOCAL ref) but that never shows up in `git rev-list --remotes`
+        # must not get a link that would 404. Same fixture shape as the
+        # positive control above, except the rev-list output does not
+        # contain this sha at all.
+        recordings = self._recordings(
+            pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+            issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+        )
+        recordings["git log --all --no-merges -n 40 "
+                   "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat"] = {
+            "returncode": 0,
+            "stdout": ("\x1e161948b\x1f2026-08-03T07:31:55+12:00\x1f"
+                       "test(clues): flatten\x1fHEAD -> feature-c\n"
+                       "3\t1\tsrc/board.ts\n"),
+            "stderr": "",
+        }
+        recordings["git rev-list --remotes --since 2026-08-03T07:31:55+12:00"] = {
+            "returncode": 0,
+            "stdout": "",  # nothing on any remote yet
+            "stderr": "",
+        }
+        runner = ReplayRunner(recordings)
+        snapshot = collect(runner, "/repo", tempfile.mkdtemp())
+        commit = snapshot["repos"][0]["commits"][0]
+        self.assertEqual(commit["sha"], "161948b")
+        self.assertIsNone(commit["url"])
+
+    def test_a_failed_reachability_check_also_withholds_the_url(self):
+        # Same honesty rule the rest of this project follows: a git call
+        # that fails must never be read as "checked and it's fine". If
+        # `git rev-list --remotes` itself fails, no commit gets a url,
+        # not every commit.
+        recordings = self._recordings(
+            pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+            issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+        )
+        recordings["git log --all --no-merges -n 40 "
+                   "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat"] = {
+            "returncode": 0,
+            "stdout": ("\x1e161948b\x1f2026-08-03T07:31:55+12:00\x1f"
+                       "test(clues): flatten\x1fHEAD -> feature-c\n"
+                       "3\t1\tsrc/board.ts\n"),
+            "stderr": "",
+        }
+        recordings["git rev-list --remotes --since 2026-08-03T07:31:55+12:00"] = {
+            "returncode": 128, "stdout": "", "stderr": "fatal: bad revision",
+        }
+        runner = ReplayRunner(recordings)
+        snapshot = collect(runner, "/repo", tempfile.mkdtemp())
+        commit = snapshot["repos"][0]["commits"][0]
+        self.assertIsNone(commit["url"])
 
     def test_empty_state_directory_is_not_a_hooks_failure(self):
         runner = ReplayRunner(self._recordings(

@@ -44,16 +44,24 @@ instead of reading a number and switching tabs to look it up by hand.
   `git log` knows nothing about GitHub — so commit links are
   necessarily built, not fetched.
 
-  **Correction (2026-09-07, found by an independent codex review):** a
-  built commit link is a *candidate* destination, not evidence the page
-  exists. `gitsrc.recent_commits()` runs `git log --all`, which includes
-  commits on a branch that has never been pushed — every one still gets
-  a link. A correct fix (verifying each commit is an ancestor of a
-  remote-tracking ref) costs one subprocess call per commit, up to 40
-  more per tick against this project's own measured, tested subprocess
-  budget (audit finding M4) — deliberately not attempted as part of this
-  round; see `loom/ghsrc.py`'s `commit_url()` docstring for the batched-
-  call shape a real fix would need.
+  **Correction (2026-09-07, found by an independent codex review, later
+  closed the same day):** a built commit link is a *candidate*
+  destination, not evidence the page exists on its own —
+  `gitsrc.recent_commits()` runs `git log --all`, which includes commits
+  on a branch that has never been pushed, and every one used to get a
+  link regardless. Verifying each commit individually (`git merge-base
+  --is-ancestor <sha> <ref>`) would cost one subprocess call per commit,
+  up to 40 more per tick against this project's own measured, tested
+  subprocess budget (audit finding M4) — rejected for exactly that
+  reason. Closed instead with `ghsrc.remote_reachable_shas()`: ONE `git
+  rev-list --remotes --since=<date>` call for the whole batch, bounded
+  by the same recency window `recent_commits()` already implies, with
+  membership checked in Python afterward at no further subprocess cost.
+  `TestSubprocessBudget`'s budget moved from 9 to 10 to carry this,
+  justified in that test itself, not slipped in silently. Verified live
+  against this repo's own real history: every one of this session's
+  (unpushed) commits correctly shows no link, and every already-pushed
+  commit before them correctly does.
 
 ## Design
 

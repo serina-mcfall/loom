@@ -99,6 +99,29 @@ def _worktree_parents(trees: list[gitsrc.Worktree], root: str) -> list[str]:
                    if os.path.dirname(t.path.rstrip("/")) != own})
 
 
+def _commit_dicts(runner: Runner, root: str, issue_repo: str | None) -> list[dict]:
+    """Each recent commit, with a `url` ONLY when it is verified reachable
+    from some remote-tracking ref -- ONE extra subprocess call total for the
+    whole batch (`ghsrc.remote_reachable_shas`), never one per commit. See
+    that function's docstring for why a per-commit check was rejected
+    (subprocess budget, audit finding M4).
+
+    A repo with no commits at all skips the reachability call entirely --
+    there is nothing to check, and `git rev-list --since` on no bound would
+    be a needless full-history call.
+    """
+    commits = gitsrc.recent_commits(runner, root)
+    if not commits:
+        return []
+    since = min(c.when for c in commits)
+    remote_shas = ghsrc.remote_reachable_shas(runner, root, since)
+    return [
+        {**asdict(c), "url": (ghsrc.commit_url(issue_repo, c.sha)
+                               if ghsrc.commit_reachable(c.sha, remote_shas) else None)}
+        for c in commits
+    ]
+
+
 def reap(state_dir: str, older_than_hours: int = 24,
          now: datetime | None = None) -> int:
     """Clear sessions that stopped long ago. Age alone never deletes an active one."""
@@ -236,8 +259,7 @@ def collect(runner: Runner, root: str,
             "issues": [{k: v for k, v in asdict(i).items() if k != "assignees"}
                        for i in issues],
             "collisions": found_collisions,
-            "commits": [{**asdict(c), "url": ghsrc.commit_url(repo, c.sha)}
-                        for c in gitsrc.recent_commits(runner, root)],
+            "commits": _commit_dicts(runner, root, repo),
             "flags": find_flags(trees, prs, parents),
             "sources": [
                 asdict(ghsrc.SourceStatus("git", True)),

@@ -71,32 +71,61 @@ def origin_repo(runner: Runner, root: str) -> str | None:
     return None
 
 
+def remote_reachable_shas(runner: Runner, root: str, since_iso: str) -> list[str] | None:
+    """Full shas reachable from ANY remote-tracking ref, no older than
+    `since_iso` -- ONE subprocess call, bounded by recency rather than full
+    history, the same way `gitsrc.recent_commits()` bounds itself by count
+    rather than walking the whole repo.
+
+    Returns `None` on a failed git call -- an honest "could not verify",
+    never a guessed empty list, which `commit_url` below treats as "do not
+    link" rather than silently trusting an unmeasured state.
+
+    This is what closes the gap `commit_url`'s docstring used to carry as a
+    known, undone limitation (found by an independent codex review,
+    2026-09-07): `recent_commits()` runs `git log --all`, which includes
+    commits on a branch that has never been pushed, and every one used to
+    get a GitHub link regardless. The naive fix -- `git merge-base
+    --is-ancestor <sha> <ref>` per commit -- costs one subprocess call PER
+    COMMIT, up to 40 more per tick, against a budget this project measures
+    and tests explicitly (audit 2026-08-05 finding M4,
+    `tests/test_collect.py::TestSubprocessBudget`). This function is the
+    single-call alternative: one `git rev-list --remotes --since=<date>`
+    covers every remote-tracking branch at once, and membership is then a
+    plain Python set lookup with no further subprocess cost. `--since`
+    bounds the walk to roughly the same window `recent_commits()`'s own
+    40-commit limit already implies, so this does not become a full-history
+    scan on an old, busy repo.
+    """
+    r = runner.run(["git", "rev-list", "--remotes", "--since", since_iso], cwd=root)
+    if not r.ok:
+        return None
+    return r.stdout.split()
+
+
+def commit_reachable(sha: str, remote_shas: list[str] | None) -> bool:
+    """Is the abbreviated `sha` a prefix of some full sha `remote_shas`
+    reached? `remote_shas is None` (the git call failed) is treated as
+    "cannot verify" -- the safe direction is to withhold the link, not to
+    guess it is fine. `recent_commits()` never collects a full sha (see
+    `gitsrc.LOG_FORMAT`'s `%h`), so this is a prefix match, not equality.
+    """
+    if remote_shas is None:
+        return False
+    return any(full.startswith(sha) for full in remote_shas)
+
+
 def commit_url(issue_repo: str | None, sha: str) -> str | None:
-    """A commit's CANDIDATE GitHub page, or None with no GitHub remote to
-    point at -- not a guarantee the page exists.
+    """A commit's GitHub page, or None with no GitHub remote to point at.
 
     Unlike a PR or issue, `git log` has no notion of GitHub -- there is no
     `url` field to ask gh for, so this is the one link in the interactivity
     spec that is built rather than fetched. GitHub resolves an abbreviated
     sha (which is all loom/gitsrc.py's `%h` ever collects) in a commit URL,
     so the short sha already on hand is enough IF the commit actually
-    reached GitHub.
-
-    KNOWN LIMITATION, found by an independent codex review, 2026-09-07:
-    `gitsrc.recent_commits()` runs `git log --all`, which walks every local
-    ref, including a commit made moments ago on a branch that has never been
-    pushed. Every commit this function is called on gets a link regardless,
-    so a link can 404 for a real, honest reason -- the commit genuinely
-    isn't on GitHub yet, not a bug in the URL. A correct fix would verify
-    each commit is an ancestor of a remote-tracking ref (e.g. `git
-    merge-base --is-ancestor <sha> origin/<default-branch>`), but that is
-    one subprocess call PER COMMIT -- up to 40 more per tick, against a
-    budget this project measures and tests explicitly (audit 2026-08-05
-    finding M4, `tests/test_collect.py::TestSubprocessBudget`). Deliberately
-    NOT attempted here: a real fix needs its own design (a single batched
-    call, e.g. `git rev-list <remote-ref>` intersected with the already-
-    collected shas, would avoid the per-commit cost) rather than a hasty
-    patch that trades a known-honest 404 for a subprocess-budget regression.
+    reached GitHub -- callers are expected to check `commit_reachable`
+    first (see `loom/collect.py`) so this only ever gets called for a
+    commit already confirmed to be on some remote-tracking ref.
     """
     if issue_repo is None:
         return None
