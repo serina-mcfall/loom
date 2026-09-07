@@ -116,17 +116,24 @@ class TestFetchPrs(unittest.TestCase):
 
     def test_url_survives_from_gh_json_unchanged(self):
         # The interactivity spec's whole point: gh's own real url, never
-        # reconstructed from owner/repo/number.
+        # reconstructed from owner/repo/number. Deliberately a URL a naive
+        # f"https://github.com/{repo}/pull/{number}" reconstruction could
+        # NOT produce (different owner/repo AND a query string) -- an
+        # earlier version of this test used a url matching that exact
+        # pattern, so a regression that silently swapped passthrough for
+        # reconstruction would have passed unnoticed. Found by an
+        # independent codex review, 2026-09-07.
+        real_url = "https://github.com/a-totally-different-org/renamed-repo/pull/999?tab=files"
         payload = json.dumps([{
             "number": 67, "title": "One owner for the clues",
             "headRefName": "fix/one-clues-owner", "isDraft": False,
             "reviewDecision": "", "statusCheckRollup": [],
             "updatedAt": "2026-08-02T20:49:00Z",
-            "url": "https://github.com/you/example/pull/67",
+            "url": real_url,
         }])
         runner = ReplayRunner({PR_ARGS: {"returncode": 0, "stdout": payload, "stderr": ""}})
         prs, _ = fetch_prs(runner, "/repo", "you/example")
-        self.assertEqual(prs[0].url, "https://github.com/you/example/pull/67")
+        self.assertEqual(prs[0].url, real_url)
 
     def test_the_repo_is_always_pinned_with_dash_R(self):
         runner = ReplayRunner({PR_ARGS: {"returncode": 0, "stdout": "[]", "stderr": ""}})
@@ -180,14 +187,18 @@ class TestFetchIssues(unittest.TestCase):
         self.assertEqual(issues[0].labels, ["bug", "client"])
 
     def test_url_survives_from_gh_json_unchanged(self):
+        # Deliberately mismatched from a naive reconstruction -- see the PR
+        # test's comment above for why. Found by an independent codex
+        # review, 2026-09-07.
+        real_url = "https://github.com/a-totally-different-org/renamed-repo/issues/999?tab=comments"
         payload = json.dumps([{
             "number": 55, "title": "A retried clue read",
             "labels": [], "assignees": [],
-            "url": "https://github.com/you/example/issues/55",
+            "url": real_url,
         }])
         runner = ReplayRunner({ISSUE_ARGS: {"returncode": 0, "stdout": payload, "stderr": ""}})
         issues, _ = fetch_issues(runner, "/repo", "you/example")
-        self.assertEqual(issues[0].url, "https://github.com/you/example/issues/55")
+        self.assertEqual(issues[0].url, real_url)
 
     def test_a_malformed_record_is_skipped_and_degrades_the_source_not_the_snapshot(self):
         payload = json.dumps([

@@ -329,11 +329,18 @@ class TestCollectSources(unittest.TestCase):
         # SAME real gh-provided url the PRs & Issues panel uses, not a
         # separately constructed string -- proves by_branch's widening from
         # {branch: number} to {branch: PullRequest} actually reuses the
-        # object rather than just re-deriving the number from it.
+        # object rather than just re-deriving the number from it. The url
+        # below is deliberately NOT what a naive f"https://github.com/
+        # {issue_repo}/pull/{number}" reconstruction from "you/example"
+        # (this fixture's real origin) and 42 would produce -- an earlier
+        # version used a url matching that exact pattern, so a regression
+        # that silently reconstructed instead of reusing would have passed
+        # unnoticed. Found by an independent codex review, 2026-09-07.
+        real_url = "https://github.com/a-totally-different-org/renamed-repo/pull/999?tab=files"
         pr_json = json.dumps([{
             "number": 42, "title": "t", "headRefName": "main",
             "isDraft": False, "reviewDecision": None, "statusCheckRollup": [],
-            "updatedAt": "", "url": "https://github.com/you/example/pull/42",
+            "updatedAt": "", "url": real_url,
         }])
         runner = ReplayRunner(self._recordings(
             pr_result={"returncode": 0, "stdout": pr_json, "stderr": ""},
@@ -342,7 +349,7 @@ class TestCollectSources(unittest.TestCase):
         snapshot = collect(runner, "/repo", tempfile.mkdtemp())
         wt = snapshot["repos"][0]["worktrees"][0]
         self.assertEqual(wt["pr"], 42)
-        self.assertEqual(wt["pr_url"], "https://github.com/you/example/pull/42")
+        self.assertEqual(wt["pr_url"], real_url)
 
     def test_a_commit_gets_its_real_github_commit_url(self):
         # git has no notion of GitHub, so this is the one link that is BUILT

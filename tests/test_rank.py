@@ -80,13 +80,18 @@ class TestNeedsYou(unittest.TestCase):
     def test_pr_items_carry_the_real_pr_url_not_a_derived_one(self):
         # The interactivity spec's whole point for this list: pr_url must be
         # the input PR dict's own url, never reconstructed from pr_number
-        # (which is only ever baked into `subject` as text).
-        real_url = "https://github.com/you/example/pull/58"
+        # (which is only ever baked into `subject` as text). Deliberately a
+        # url a number-derived reconstruction could not produce -- see the
+        # ghsrc/collect provenance tests for why this matters even though
+        # rank.py itself never has an issue_repo in scope to reconstruct
+        # from. Found by an independent codex review, 2026-09-07.
+        real_url = "https://github.com/a-totally-different-org/renamed-repo/pull/999?tab=files"
         failing = needs_you(repo(prs=[pr(58, "x", checks="failing", url=real_url)]))
         self.assertEqual(failing[0]["pr_url"], real_url)
+        other_url = "https://github.com/another-different-org/other-repo/pull/111?tab=checks"
         awaiting = needs_you(repo(prs=[pr(59, "y", review=None, checks="none",
-                                          url="https://github.com/you/example/pull/59")]))
-        self.assertEqual(awaiting[0]["pr_url"], "https://github.com/you/example/pull/59")
+                                          url=other_url)]))
+        self.assertEqual(awaiting[0]["pr_url"], other_url)
 
     def test_an_approved_pr_is_not_awaiting_review(self):
         self.assertEqual(needs_you(repo(prs=[pr(58, "x", review="APPROVED")])), [])
