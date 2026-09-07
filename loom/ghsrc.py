@@ -23,8 +23,8 @@ _NAME = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 SSH_RE = re.compile(rf"^git@github\.com:(?P<repo>{_NAME}/{_NAME}?)(?:\.git)?$")
 HTTPS_RE = re.compile(rf"^https://github\.com/(?P<repo>{_NAME}/{_NAME}?)(?:\.git)?/?$")
 
-PR_FIELDS = "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,updatedAt"
-ISSUE_FIELDS = "number,title,labels,assignees"
+PR_FIELDS = "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,updatedAt,url"
+ISSUE_FIELDS = "number,title,labels,assignees,url"
 FAILING = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
 GOOD = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
@@ -46,6 +46,7 @@ class PullRequest:
     review: str | None
     checks: str
     updated_at: str
+    url: str
 
 
 @dataclass
@@ -54,6 +55,7 @@ class Issue:
     title: str
     labels: list[str]
     assignees: list[str]
+    url: str
 
 
 def origin_repo(runner: Runner, root: str) -> str | None:
@@ -67,6 +69,20 @@ def origin_repo(runner: Runner, root: str) -> str | None:
         if m:
             return m.group("repo")
     return None
+
+
+def commit_url(issue_repo: str | None, sha: str) -> str | None:
+    """A commit's real GitHub page, or None with no GitHub remote to point at.
+
+    Unlike a PR or issue, `git log` has no notion of GitHub -- there is no
+    `url` field to ask gh for, so this is the one link in the interactivity
+    spec that is built rather than fetched. GitHub resolves an abbreviated
+    sha (which is all loom/gitsrc.py's `%h` ever collects) in a commit URL,
+    so the short sha already on hand is enough.
+    """
+    if issue_repo is None:
+        return None
+    return f"https://github.com/{issue_repo}/commit/{sha}"
 
 
 def derive_checks(rollup: list[dict]) -> str:
@@ -131,6 +147,7 @@ def fetch_prs(runner: Runner, root: str, repo: str) -> tuple[list[PullRequest], 
                 review=(p.get("reviewDecision") or None),
                 checks=derive_checks(p.get("statusCheckRollup") or []),
                 updated_at=p.get("updatedAt", ""),
+                url=p["url"],
             ))
         except (KeyError, TypeError) as exc:
             bad.append(f"malformed PR record: missing {exc}")
@@ -153,6 +170,7 @@ def fetch_issues(runner: Runner, root: str, repo: str) -> tuple[list[Issue], Sou
                 number=i["number"], title=i["title"],
                 labels=[l["name"] for l in i.get("labels") or []],
                 assignees=[a["login"] for a in i.get("assignees") or []],
+                url=i["url"],
             ))
         except (KeyError, TypeError) as exc:
             bad.append(f"malformed issue record: missing {exc}")

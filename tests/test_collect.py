@@ -16,8 +16,12 @@ from loom import cost as cost_mod
 NOW = datetime(2026, 8, 3, 8, 0, 0, tzinfo=timezone.utc)
 
 
-def pr(number, branch):
-    return PullRequest(number, "t", branch, False, None, "none", "2026-08-03T00:00:00Z")
+def pr(number, branch, url=None):
+    return PullRequest(
+        number=number, title="t", branch=branch, draft=False, review=None,
+        checks="none", updated_at="2026-08-03T00:00:00Z",
+        url=url or f"https://github.com/you/example/pull/{number}",
+    )
 
 
 class TestFindFlags(unittest.TestCase):
@@ -290,9 +294,9 @@ class TestCollectSources(unittest.TestCase):
             "git remote get-url origin":
                 {"returncode": 0, "stdout": "git@github.com:you/example.git\n", "stderr": ""},
             "gh pr list -R you/example --state open --limit 50 --json "
-            "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,updatedAt": pr_result,
+            "number,title,headRefName,isDraft,reviewDecision,statusCheckRollup,updatedAt,url": pr_result,
             "gh issue list -R you/example --state open --limit 50 --json "
-            "number,title,labels,assignees": issue_result,
+            "number,title,labels,assignees,url": issue_result,
             "git log -1 --format=%h%x1f%aI%x1f%s": {
                 "returncode": 0,
                 "stdout": "abc1234\x1f2026-08-03T07:00:00+12:00\x1fSome commit\n",
