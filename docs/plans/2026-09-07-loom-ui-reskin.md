@@ -131,6 +131,13 @@ STEP 5  loom.css + loom.js: state badges become chips                      [need
         `.chip`/`.chip--working`/`.chip--waiting`/etc. rules in loom.css —
         tinted, rounded background using the SAME colors `state--*`
         already uses today, so nothing here is a new color decision.
+        CORRECTED (2026-09-07, found by an independent codex review, after
+        this step's own build): true for six of the seven states, not all
+        seven -- `idle` had no prior `state--idle` rule at all (it
+        inherited plain `--text`), so grouping it under the shared dim
+        tint IS a new color decision for that one state. See the design
+        doc's own correction in "Layout & hierarchy" for the kept
+        rationale.
         done when: loading the dashboard shows each worktree's Agent cell
         as a small rounded, tinted pill; viewing the rendered HTML (browser
         inspector) confirms the glyph AND word are both still inside the
@@ -142,6 +149,17 @@ STEP 6  Full-pass manual verification                                      [need
         design doc's own Tests section says so, and ALREADY TRUE confirms
         no existing test touches either file's content) — this step IS
         the plan's verification, not a placeholder for one.
+        CORRECTED (2026-09-07, found by an independent codex review, well
+        after this step ran): both claims above stopped being true during
+        the review-final fix round, which added
+        `tests/test_serve.py::test_a_woff2_font_is_served_with_no_charset_parameter`
+        -- the one genuinely new Python behavior this plan's step 1 added
+        (a value-keyed conditional, not just a static table entry) had
+        gone untested until then. See the design doc's own Tests-section
+        correction. Also: "reaches the needs-you hero" below is imprecise
+        -- the hero has no interactive control of its own (by design, per
+        index.html's own comment), so it is never a Tab stop; read this as
+        reading-order, not a literal focus stop.
         done when: `python3 -m unittest discover -s tests` shows 374
         passed; a full keyboard-only pass (Tab, no mouse) reaches the
         needs-you hero, every existing scroll region, and the new
@@ -171,6 +189,11 @@ GATES     review-code applies to the whole diff (loom.css, loom.js,
           no new automated test coverage by design (manual verification
           only, per the design doc's own Tests section) — there is
           nothing for it to review.
+          CORRECTED (2026-09-07, found by an independent codex review):
+          this stopped being true once the review-final fix round added
+          one real test (see STEP 6's own correction above) — noted here
+          rather than silently left wrong, though re-running review-tests
+          retroactively over one already-shipped test is not warranted.
           qa explore mode DOES apply: after step 6, drive the real
           dashboard through both fleet states (quiet and needs-you-non-
           empty, as already mocked during brainstorming), keyboard-only,

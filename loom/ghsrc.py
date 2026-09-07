@@ -72,13 +72,31 @@ def origin_repo(runner: Runner, root: str) -> str | None:
 
 
 def commit_url(issue_repo: str | None, sha: str) -> str | None:
-    """A commit's real GitHub page, or None with no GitHub remote to point at.
+    """A commit's CANDIDATE GitHub page, or None with no GitHub remote to
+    point at -- not a guarantee the page exists.
 
     Unlike a PR or issue, `git log` has no notion of GitHub -- there is no
     `url` field to ask gh for, so this is the one link in the interactivity
     spec that is built rather than fetched. GitHub resolves an abbreviated
     sha (which is all loom/gitsrc.py's `%h` ever collects) in a commit URL,
-    so the short sha already on hand is enough.
+    so the short sha already on hand is enough IF the commit actually
+    reached GitHub.
+
+    KNOWN LIMITATION, found by an independent codex review, 2026-09-07:
+    `gitsrc.recent_commits()` runs `git log --all`, which walks every local
+    ref, including a commit made moments ago on a branch that has never been
+    pushed. Every commit this function is called on gets a link regardless,
+    so a link can 404 for a real, honest reason -- the commit genuinely
+    isn't on GitHub yet, not a bug in the URL. A correct fix would verify
+    each commit is an ancestor of a remote-tracking ref (e.g. `git
+    merge-base --is-ancestor <sha> origin/<default-branch>`), but that is
+    one subprocess call PER COMMIT -- up to 40 more per tick, against a
+    budget this project measures and tests explicitly (audit 2026-08-05
+    finding M4, `tests/test_collect.py::TestSubprocessBudget`). Deliberately
+    NOT attempted here: a real fix needs its own design (a single batched
+    call, e.g. `git rev-list <remote-ref>` intersected with the already-
+    collected shas, would avoid the per-commit cost) rather than a hasty
+    patch that trades a known-honest 404 for a subprocess-budget regression.
     """
     if issue_repo is None:
         return None
