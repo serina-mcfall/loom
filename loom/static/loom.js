@@ -39,6 +39,29 @@ const text = (tag, value, className) => {
   return n;
 };
 
+/** The same rendering `text()` always did, except when `url` is truthy: then
+ *  it's a real `<a>` instead of a bare `tag`, opening in a new tab (this is a
+ *  live, auto-refreshing dashboard -- navigating away in the same tab loses
+ *  the SSE connection until you come back) with rel="noopener noreferrer",
+ *  which is not optional on a target="_blank" link -- its absence is a real
+ *  security hole (reverse tabnabbing). A trailing visually-hidden span warns
+ *  assistive tech about the new tab BEFORE it opens, matching WCAG's own
+ *  guidance for links that change context without asking. `url` is null for
+ *  every "no GitHub remote" / "no matching PR" case already threaded through
+ *  the Python side -- this function makes no decision about when a link
+ *  should exist, it only renders the one it's handed. */
+function linkOrText(tag, value, className, url) {
+  if (!url) return text(tag, value, className);
+  const a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.textContent = value;
+  if (className) a.className = className;
+  a.append(text("span", " (opens in a new tab)", "visually-hidden"));
+  return a;
+}
+
 // null/undefined in the snapshot means CANNOT TELL, never zero. Rendering it as
 // "?" is the whole point of audit finding H3: `String(null)` gave "null", and
 // `t.dirty || {}` quietly turned an unmeasurable tree back into a row of zeros,
@@ -109,7 +132,12 @@ function renderNeeds(items) {
     // `show_repo` is decided in loom.view.aggregate_needs -- the page does not
     // work out whether the repo name is worth the clutter.
     if (item.show_repo) li.append(text("span", `${item.repo} · `, "repo-tag"));
-    li.append(text("strong", `${item.subject} `));
+    // `item.subject` is already exactly "PR #N " for the two kinds that ever
+    // carry `pr_url` (loom/rank.py's pr_failing/pr_awaiting_review) -- the
+    // whole subject becomes the link, no substring parsing needed. Linking
+    // swaps the tag from <strong> to <a>, so "needs-subject" carries the
+    // bold weight in loom.css regardless of which one rendered.
+    li.append(linkOrText("strong", `${item.subject} `, "needs-subject", item.pr_url));
     li.append(text("span", `— ${item.detail}`));
     list.append(li);
   }
@@ -168,7 +196,11 @@ function renderTrees(body, trees) {
     tr.append(th, text("td", t.branch || "detached"));
     // `pr` links this tree to the review waiting on it. Em dash, not blank, so an
     // empty cell is never mistaken for a rendering failure.
-    tr.append(text("td", t.pr ? `#${t.pr}` : "—", t.pr ? "pr-num" : "st--dim"));
+    const prTd = document.createElement("td");
+    prTd.append(t.pr
+      ? linkOrText("span", `#${t.pr}`, "pr-num", t.pr_url)
+      : text("span", "—", "st--dim"));
+    tr.append(prTd);
     const state = (t.agent && t.agent.state) || "none";
     // A tinted, rounded chip -- visual only. The glyph and word inside are
     // exactly what STATE_LABEL always printed; nothing here changes what a
@@ -237,7 +269,7 @@ function renderPrs(box, repo) {
   const list = document.createElement("ul");
   for (const p of repo.prs) {
     const li = document.createElement("li");
-    li.append(text("span", `#${p.number} `, "pr-num"));
+    li.append(linkOrText("span", `#${p.number} `, "pr-num", p.url));
     li.append(text("span", p.branch, "pr-branch"));
     li.append(text("span", " — "));
     const review = p.review || "no review";
@@ -253,7 +285,7 @@ function renderPrs(box, repo) {
   }
   for (const i of repo.issues) {
     const li = document.createElement("li");
-    li.append(text("span", `#${i.number} `, "issue-num"));
+    li.append(linkOrText("span", `#${i.number} `, "issue-num", i.url));
     li.append(text("span", i.title));
     if (i.labels && i.labels.length) {
       li.append(text("span", ` [${i.labels.join(", ")}]`, "issue-label"));
@@ -326,7 +358,7 @@ function renderTicker(ol, commits) {
     li.append(text("span", c.subject));
     // sha, files and the +/- totals were all collected and rendered nowhere (L2).
     // The sha is what you need to `git show` the thing you just read about.
-    li.append(text("span", ` ${c.sha}`, "c-sha"));
+    li.append(linkOrText("span", ` ${c.sha}`, "c-sha", c.url));
     if (c.files) {
       li.append(text("span", ` ${c.files}f `, "st--dim"));
       li.append(text("span", `+${c.add}`, "st--good"));

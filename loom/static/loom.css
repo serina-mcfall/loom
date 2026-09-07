@@ -229,6 +229,21 @@ tbody tr:nth-child(even) { background: #1d1e3b; }
                   border-bottom: 1px solid var(--line); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden;
                    clip-path: inset(50%); white-space: nowrap; }
+/* Real links (PR/issue numbers, commit shas, the needs-you PR reference) --
+   same colour as the plain text they replace, underlined only on hover/focus
+   so the page reads exactly as it did before this existed, and reveals the
+   affordance on interaction. Scoped to `a.` specifically: the "no matching
+   URL" fallback renders the identical class on a plain, non-anchor element,
+   which this must not touch. :focus-visible's existing outline rule already
+   covers these with no change needed here. */
+a.pr-num, a.issue-num, a.c-sha, a.needs-subject { text-decoration: none; }
+a.pr-num:hover, a.pr-num:focus-visible,
+a.issue-num:hover, a.issue-num:focus-visible,
+a.c-sha:hover, a.c-sha:focus-visible,
+a.needs-subject:hover, a.needs-subject:focus-visible { text-decoration: underline; }
+/* `<strong>` is bold by the browser default; linking swaps the tag to `<a>`,
+   which is not -- this keeps the weight identical either way. */
+.needs-subject { font-weight: 700; }
 :focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
