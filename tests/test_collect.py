@@ -324,6 +324,50 @@ class TestCollectSources(unittest.TestCase):
         self.assertFalse(sources["gh:issues"]["ok"])
         self.assertIsNotNone(sources["gh:issues"]["error"])
 
+    def test_a_worktree_whose_branch_matches_a_pr_gets_the_real_pr_url(self):
+        # The interactivity spec's worktree-badge link: pr_url must be the
+        # SAME real gh-provided url the PRs & Issues panel uses, not a
+        # separately constructed string -- proves by_branch's widening from
+        # {branch: number} to {branch: PullRequest} actually reuses the
+        # object rather than just re-deriving the number from it.
+        pr_json = json.dumps([{
+            "number": 42, "title": "t", "headRefName": "main",
+            "isDraft": False, "reviewDecision": None, "statusCheckRollup": [],
+            "updatedAt": "", "url": "https://github.com/you/example/pull/42",
+        }])
+        runner = ReplayRunner(self._recordings(
+            pr_result={"returncode": 0, "stdout": pr_json, "stderr": ""},
+            issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+        ))
+        snapshot = collect(runner, "/repo", tempfile.mkdtemp())
+        wt = snapshot["repos"][0]["worktrees"][0]
+        self.assertEqual(wt["pr"], 42)
+        self.assertEqual(wt["pr_url"], "https://github.com/you/example/pull/42")
+
+    def test_a_commit_gets_its_real_github_commit_url(self):
+        # git has no notion of GitHub, so this is the one link that is BUILT
+        # (issue_repo + sha), never fetched -- proves collect() actually
+        # wires ghsrc.commit_url() in, using the real captured git-log
+        # fixture from tests/test_gitsrc.py (LOG) rather than a hand-rolled
+        # one that could diverge from the real numstat format.
+        recordings = self._recordings(
+            pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+            issue_result={"returncode": 0, "stdout": "[]", "stderr": ""},
+        )
+        recordings["git log --all --no-merges -n 40 "
+                   "--format=%x1e%h%x1f%aI%x1f%s%x1f%D --numstat"] = {
+            "returncode": 0,
+            "stdout": ("\x1e161948b\x1f2026-08-03T07:31:55+12:00\x1f"
+                       "test(clues): flatten\x1fHEAD -> feature-c\n"
+                       "3\t1\tsrc/board.ts\n"),
+            "stderr": "",
+        }
+        runner = ReplayRunner(recordings)
+        snapshot = collect(runner, "/repo", tempfile.mkdtemp())
+        commit = snapshot["repos"][0]["commits"][0]
+        self.assertEqual(commit["sha"], "161948b")
+        self.assertEqual(commit["url"], "https://github.com/you/example/commit/161948b")
+
     def test_empty_state_directory_is_not_a_hooks_failure(self):
         runner = ReplayRunner(self._recordings(
             pr_result={"returncode": 0, "stdout": "[]", "stderr": ""},

@@ -173,7 +173,10 @@ def collect(runner: Runner, root: str,
             pr_status = ghsrc.SourceStatus("gh:prs", False, no_repo)
             issue_status = ghsrc.SourceStatus("gh:issues", False, no_repo)
 
-    by_branch = {p.branch: p.number for p in prs}
+    # The whole PullRequest, not just its number -- so the worktree table's PR
+    # badge can carry the same real gh-provided `url` the PRs & Issues panel
+    # uses, rather than a second, separately constructed link.
+    by_branch = {p.branch: p for p in prs}
     tree_by_branch = {t.branch: t.dir for t in trees if t.branch}
     tree_dicts = []
     now = datetime.now(timezone.utc).astimezone()
@@ -197,11 +200,14 @@ def collect(runner: Runner, root: str,
                                    cost_mod.DEFAULT_HOME, now)
         if c["unknown_reason"] in cost_error_reasons:
             cost_unmeasured.append(t.dir)
+        matched_pr = by_branch.get(t.branch or "")
         tree_dicts.append({
             "dir": t.dir, "path": t.path, "branch": t.branch,
             "ahead": t.ahead, "behind": t.behind,
             "dirty": asdict(t.dirty) if t.dirty is not None else None,
-            "agent": asdict(a), "pr": by_branch.get(t.branch or ""),
+            "agent": asdict(a),
+            "pr": matched_pr.number if matched_pr else None,
+            "pr_url": matched_pr.url if matched_pr else None,
             "cost": c,
         })
     cost_unmeasured.sort()
@@ -230,7 +236,8 @@ def collect(runner: Runner, root: str,
             "issues": [{k: v for k, v in asdict(i).items() if k != "assignees"}
                        for i in issues],
             "collisions": found_collisions,
-            "commits": [asdict(c) for c in gitsrc.recent_commits(runner, root)],
+            "commits": [{**asdict(c), "url": ghsrc.commit_url(repo, c.sha)}
+                        for c in gitsrc.recent_commits(runner, root)],
             "flags": find_flags(trees, prs, parents),
             "sources": [
                 asdict(ghsrc.SourceStatus("git", True)),
