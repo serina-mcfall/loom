@@ -83,6 +83,29 @@ python3 scripts/check_stdlib_only.py     # every import is stdlib or first-party
 
 Both run on every push, across Python 3.10 through 3.13.
 
+## Merging
+
+This repository is behind the **review gate**. Two commit statuses are required
+on `main`, and a pull request cannot merge until both are green:
+
+| Status | Posted by | Means |
+|---|---|---|
+| `review-gate` | `review-gate.sh verdict --post` | the reviewers ran, and nothing blocking survived adjudication |
+| `human-review` | `human-review.sh <pr>` | a person read the result and released it |
+
+A status that has never been posted reads as **Expected** and blocks. That is
+deliberate: nothing reviewed must never look the same as nothing wrong. If the
+merge box says *"Expected — waiting for status to be reported"*, the gate is
+working and waiting on you, not broken.
+
+Both scripts live in the `review-pr` skill of the
+[`serina-skills`](https://github.com/serina-mcfall/serina-skills) plugin.
+
+**A repository admin can bypass both.** That is a deliberate trade for solo
+work, and it means the gate is advisory rather than absolute for anyone using
+admin credentials — including agents acting on them. It stops an unreviewed
+merge from happening *by accident*; it does not stop one happening on purpose.
+
 ## Licence
 
 [MIT](LICENSE) — © 2026 Serina McFall.
